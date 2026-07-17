@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Relay 管理面板</title>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="container">
+<header>
+<div class="logo">
+<div class="logo-mark">
+<img src="/assets/favicon.svg" alt="" aria-hidden="true">
+</div>
+<div>
+<div class="logo-text">LLM Relay</div>
+<div class="logo-sub">通用 LLM 代理网关</div>
+</div>
+</div>
+<div class="header-actions">
+<span class="header-chip">Admin</span>
+<button class="theme-toggle" onclick="toggleTheme()" title="切换主题"></button>
+<form method="post" action="/logout" style="margin:0"><button class="btn-logout" type="submit" data-icon="logout" title="退出登录">退出</button></form>
+</div>
+</header>
+
+<div class="card">
+<div class="stats-header">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Token 统计</h2>
+<div class="card-desc">请求与 Token 用量概览</div>
+</div>
+<div class="btns">
+<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>
+<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>
+<span id="resetStatus" style="font-size:13.5px;color:var(--text-ter)"></span>
+</div>
+</div>
+<div id="statsContent" class="stats-content">
+<div class="skeleton-grid">
+<div class="skeleton-card"></div><div class="skeleton-card"></div>
+<div class="skeleton-card"></div><div class="skeleton-card"></div>
+</div>
+</div>
+</div>
+
+<div class="card">
+<div class="card-head upstream-card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>多上游配置</h2>
+<div class="card-desc">配置上游端点、协议类型与模型白名单</div>
+</div>
+<div class="upstream-filterbar">
+<label class="upstream-keyword-search">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+<input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()">
+</label>
+<select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()">
+<option value="">全部模型</option>
+</select>
+</div>
+</div>
+<div class="table-scroll">
+<table class="tbl" id="upstreamTable">
+<thead><tr><th class="col-drag" aria-label="拖动排序"></th><th class="col-name">名称</th><th class="col-url">Base URL</th><th class="col-key">API Key</th><th class="col-type">接口类型</th><th class="col-bridge" title="兼容模式会降级并告警；严格模式会拒绝有损协议转换">桥接模式</th><th class="col-models">模型</th><th class="col-action"></th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="actions">
+<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button>
+<button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button>
+</div>
+</div>
+
+<div class="config-grid">
+<div class="card">
+<div class="card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>模型映射</h2>
+<div class="card-desc">将请求模型名映射到实际上游模型</div>
+</div>
+</div>
+<div class="table-scroll">
+<table class="tbl" id="aliasTable">
+<thead><tr><th class="col-select" title="选择后在右侧维护该模型的推理力度映射"></th><th class="col-alias">别名（请求名）</th><th class="col-upstream">上游</th><th class="col-model">实际模型（上游名）</th><th class="col-reasoning">思维链</th><th class="col-action"></th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="actions">
+<button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button>
+<button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button>
+</div>
+</div>
+
+<div class="card">
+<div class="card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--orange)"></span><span id="effortMapTitle">推理力度映射（全局）</span></h2>
+<div class="card-desc">映射客户端 reasoning effort 到上游取值</div>
+</div>
+</div>
+<div class="table-scroll">
+<table class="tbl" id="effortTable">
+<thead><tr><th class="col-key">请求值</th><th class="col-val">映射值</th><th class="col-action"></th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="actions">
+<button class="btn btn-primary" data-icon="plus" onclick="addEffortRow()">添加映射</button>
+<button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button>
+</div>
+</div>
+
+<div class="card full-row">
+<div class="card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Hosted Web Search 自动回退</h2>
+<div class="card-desc card-desc-single">所有上游均先尝试原生搜索；明确不支持时自动使用这里配置的全局搜索服务。</div>
+</div>
+<label class="head-switch" id="webSearchEnabledGroup" title="启用网关搜索回退">
+<span class="head-switch-text">启用网关搜索回退</span>
+<span class="switch">
+<input id="webSearchEnabled" type="checkbox" onchange="syncWebSearchForm()">
+<span class="switch-slider"></span>
+</span>
+</label>
+</div>
+<div class="web-search-grid">
+<div class="form-group"><label>Provider</label><select id="webSearchProvider" class="m-select" onchange="syncWebSearchForm()"><option value="searxng">SearXNG</option><option value="duckduckgo">DuckDuckGo（公共）</option><option value="tavily">Tavily</option></select></div>
+<div class="form-group"><label>最大结果数</label><input id="webSearchMaxResults" type="number" min="1" max="20" value="6"></div>
+<div class="form-group" id="webSearchSearxModeGroup"><label>SearXNG 实例模式</label><select id="webSearchSearxMode" class="m-select" onchange="syncWebSearchForm()"><option value="auto">自动优选与故障切换</option><option value="selected">从官方实时列表选择</option><option value="custom">手动指定 URL</option></select></div>
+<div class="form-group" id="webSearchFallbackProviderGroup"><label>自动模式兜底 <span class="hint">SearXNG 不可用时自动调用，无需 API Key</span></label><select id="webSearchFallbackProvider" class="m-select"><option value="duckduckgo">DuckDuckGo Lite（推荐）</option><option value="none">关闭兜底</option></select></div>
+<div class="form-group"><label>超时（秒）</label><input id="webSearchTimeout" type="number" min="1" max="60" value="10"></div>
+<div class="form-group web-search-wide" id="webSearchSearxInstanceGroup"><label>公共实例 <span class="hint" id="webSearchSearxStatus">数据来源：searx.space</span></label><div class="inline-control"><select id="webSearchSearxInstance" class="m-select" onchange="selectSearXNGInstance()"><option value="">加载实例列表…</option></select><button type="button" class="btn btn-primary" data-icon="refresh" onclick="loadSearXNGInstances(true)">刷新列表</button></div></div>
+<div class="form-group"><label>最大工具轮次</label><input id="webSearchMaxRounds" type="number" min="1" max="4" value="2"></div>
+<div class="form-group web-search-wide" id="webSearchBaseURLGroup"><label><span id="webSearchBaseURLLabel">Base URL</span> <span class="hint" id="webSearchBaseURLHint"></span></label><input id="webSearchBaseURL" type="url" placeholder="https://search.example.com"></div>
+<div class="form-group"><label>结果上限（字节）</label><input id="webSearchMaxBytes" type="number" min="1024" max="1048576" value="65536"></div>
+<div class="form-group web-search-wide" id="webSearchAPIKeyGroup"><label>API Key <span class="hint">仅 Tavily 需要；支持 env:环境变量名</span></label><input id="webSearchAPIKey" type="password" placeholder="Tavily key 或 env:TAVILY_API_KEY"></div>
+</div>
+<div class="actions"><button class="btn btn-success" data-icon="save" onclick="saveConfig('Web Search 配置')">保存 Web Search</button></div>
+</div>
+
+<div class="card full-row">
+<div class="card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>SOCKS5 代理</h2>
+<div class="card-desc">出口代理、轮询与限流切换</div>
+</div>
+</div>
+<div class="table-scroll">
+<table class="tbl" id="socks5Table">
+<thead><tr><th class="col-name">名称</th><th class="col-addr">地址</th><th class="col-user">用户名</th><th class="col-pass">密码</th><th class="col-action"></th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="form-group compact-select-row">
+<label>启用代理</label>
+<select id="activeSocks5" class="m-select">
+<option value="">直连（不使用代理）</option>
+</select>
+</div>
+<div class="actions">
+<button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button>
+<button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button>
+</div>
+</div>
+</div>
+</div>
+<div id="toast"></div>
+<script src="/assets/marked.min.js"></script>
+<script src="/assets/purify.min.js"></script>
+<script src="/assets/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# LLM Relay 运行时配置与统计数据
+config.json
+stats.json
+
+# 本地构建产物
+/llmrelay
+/llmgatewaygo
+/*.exe

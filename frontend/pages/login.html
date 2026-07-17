@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 — LLM Relay</title>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/login.css">
+</head>
+<body>
+<div class="container">
+<div class="card">
+<div class="theme-bar">
+<div class="logo">
+<div class="logo-mark">
+<img src="/assets/favicon.svg" alt="" aria-hidden="true">
+</div>
+<div>
+<div class="logo-text">LLM Relay</div>
+<div class="logo-sub">管理面板</div>
+</div>
+</div>
+<button class="theme-toggle" onclick="toggleTheme()" title="切换主题"></button>
+</div>
+<div class="subtitle">请输入管理密码以继续</div>
+<div class="msg" id="login-msg"></div>
+<form method="post" action="/login">
+<div class="field">
+<label for="pwd">密码</label>
+<input id="pwd" name="password" type="password" placeholder="输入管理密码" autocomplete="current-password" required>
+</div>
+<button class="btn" type="submit">登录</button>
+</form>
+</div>
+</div>
+<script src="/assets/login.js"></script>
+</body>
+</html>
