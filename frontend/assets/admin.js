@@ -1091,6 +1091,10 @@ function showDangerConfirm(triggerEl, options) {
   const description = settings.description || "请确认是否继续。";
   const note = settings.note || "此操作可能无法撤销。";
   const confirmLabel = settings.confirmLabel || "确认删除";
+  const details = Array.isArray(settings.details)
+    ? settings.details.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const detailsTitle = settings.detailsTitle || "受影响的配置";
   return new Promise((resolve) => {
     let settled = false;
     const pop = openPopover(
@@ -1110,6 +1114,13 @@ function showDangerConfirm(triggerEl, options) {
             "</span><strong>" +
             esc(subject) +
             "</strong></div>"
+          : "") +
+        (details.length
+          ? '<div class="danger-confirm-details"><div class="danger-confirm-details-title">' +
+            esc(detailsTitle) +
+            "</div><ul>" +
+            details.map((item) => "<li>" + esc(item) + "</li>").join("") +
+            "</ul></div>"
           : "") +
         '<div class="danger-confirm-note"><span>' +
         ICONS.alert +
@@ -1159,16 +1170,110 @@ function confirmConfigDelete(triggerEl, itemType, itemName) {
   });
 }
 
+function upstreamAliasDeleteImpact(upstreamName) {
+  const aliases = [];
+  let targetCount = 0;
+  Object.keys(aliasData || {}).forEach((aliasName) => {
+    const entry = aliasData[aliasName] || {};
+    const targets = normalizeAliasTargets(entry.targets || []);
+    const removedTargets = targets.filter(
+      (target) => target.upstream === upstreamName,
+    );
+    if (!removedTargets.length) return;
+    const remainingTargets = targets.filter(
+      (target) => target.upstream !== upstreamName,
+    );
+    targetCount += removedTargets.length;
+    aliases.push({
+      aliasName: aliasName,
+      removedTargets: removedTargets,
+      remainingTargets: remainingTargets,
+      removeAlias: remainingTargets.length === 0,
+    });
+  });
+  return {
+    aliases: aliases,
+    targetCount: targetCount,
+    removedAliasCount: aliases.filter((item) => item.removeAlias).length,
+  };
+}
+
+function upstreamDeleteConfirm(triggerEl, upstreamName, impact) {
+  if (!impact.targetCount) {
+    return showDangerConfirm(triggerEl, {
+      title: "确认删除上游？",
+      subject: upstreamName,
+      description: "该上游将从当前配置列表中移除，没有关联的模型映射需要删除。",
+      note: "删除后需保存配置才会生效；保存前可通过刷新页面恢复。",
+      confirmLabel: "确认删除",
+    });
+  }
+
+  const aliasCount = impact.aliases.length;
+  const removedAliasCount = impact.removedAliasCount;
+  let description =
+    "该上游将从当前配置列表中移除，同时删除 " +
+    impact.targetCount +
+    " 个关联的上游模型映射，涉及 " +
+    aliasCount +
+    " 个模型别名。";
+  if (removedAliasCount) {
+    description +=
+      "其中 " +
+      removedAliasCount +
+      " 个别名删除这些映射后已无可用目标，也会一并删除。";
+  }
+  return showDangerConfirm(triggerEl, {
+    title: "确认删除上游及关联模型映射？",
+    subject: upstreamName,
+    description: description,
+    detailsTitle: "将删除的模型映射（" + impact.targetCount + " 个）",
+    details: impact.aliases.map((item) => {
+      const models = item.removedTargets
+        .map((target) => target.target_model)
+        .join("、");
+      return (
+        item.aliasName +
+        " → " +
+        models +
+        (item.removeAlias ? "（模型别名也将删除）" : "")
+      );
+    }),
+    note: "删除后需保存配置才会生效；保存前可通过刷新页面恢复。",
+    confirmLabel: "删除上游及映射",
+  });
+}
+
+function applyUpstreamAliasDelete(impact) {
+  let selectedAliasRemoved = false;
+  impact.aliases.forEach((item) => {
+    const entry = aliasData[item.aliasName];
+    if (!entry) return;
+    if (item.removeAlias) {
+      delete aliasData[item.aliasName];
+      if (selectedAliasKey === item.aliasName) selectedAliasRemoved = true;
+      return;
+    }
+    aliasData[item.aliasName] = {
+      ...entry,
+      targets: item.remainingTargets,
+    };
+  });
+  if (selectedAliasRemoved) selectedAliasKey = "";
+  return selectedAliasRemoved;
+}
+
 async function delUpstream(btn) {
   const row = btn.closest("tr");
   const ni = row.querySelector('[data-field="name"]');
   const upstreamName = ni?.value?.trim() || "";
-  if (!(await confirmConfigDelete(btn, "上游", upstreamName))) return;
   collectAliases();
-  if (ni && ni.value && upstreamData[ni.value.trim()])
-    delete upstreamData[ni.value.trim()];
+  const impact = upstreamAliasDeleteImpact(upstreamName);
+  if (!(await upstreamDeleteConfirm(btn, upstreamName, impact))) return;
+  const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
   row.remove();
   collectUpstreams();
+  if (upstreamName) delete modelListByUpstream[upstreamName];
   if (!Object.keys(upstreamData).length)
     document.querySelector("#upstreamTable tbody").innerHTML = emptyRowHtml(
       8,
@@ -1180,6 +1285,7 @@ async function delUpstream(btn) {
   renderUpstreamModelFilter();
   filterUpstreamRows();
   renderAliasTable();
+  if (selectedAliasRemoved) showSelectedEffortMap();
 }
 
 function collectUpstreams() {
@@ -3062,15 +3168,25 @@ function buildAliasTargetOptionsHtml(candidates, selected) {
     .join("");
 }
 
+function sortAliasTargetsByWeight(targets) {
+  return normalizeAliasTargets(targets)
+    .map((target, index) => ({ target: target, index: index }))
+    .sort(
+      (a, b) => b.target.weight - a.target.weight || a.index - b.index,
+    )
+    .map((item) => item.target);
+}
+
 function buildAliasTargetSelectedRows(targets) {
-  if (!targets.length) {
+  const sortedTargets = sortAliasTargetsByWeight(targets);
+  if (!sortedTargets.length) {
     return (
       '<div class="alias-target-selected-empty">' +
       ICONS.layers +
       "<span>尚未添加上游模型</span></div>"
     );
   }
-  return targets
+  return sortedTargets
     .map(
       (target) =>
         '<div class="alias-target-selected-row" data-upstream="' +
@@ -3129,7 +3245,7 @@ function buildAliasTargetsPopoverHtml(targets) {
     ICONS.search +
     '<input type="search" role="combobox" aria-expanded="false" aria-controls="aliasTargetOptions" aria-autocomplete="list" autocomplete="off" placeholder="搜索上游名称或模型 ID" onfocus="openAliasTargetOptions(this)" onclick="openAliasTargetOptions(this)" oninput="filterAliasTargetOptions(this)" onkeydown="handleAliasTargetSearchKeydown(event)"></label>' +
     '<div class="alias-target-options" id="aliasTargetOptions" role="listbox" hidden></div></div>' +
-    '<div class="alias-target-selected-head"><span>已添加模型</span><span>权重 0 不参与轮询</span></div>' +
+    '<div class="alias-target-selected-head"><span>已添加模型</span><span>按权重降序 · 权重 0 不参与轮询</span></div>' +
     '<div class="alias-target-selected-list">' +
     buildAliasTargetSelectedRows(targets) +
     "</div>"
@@ -3385,11 +3501,35 @@ function commitAliasTargetWeightInput(input) {
   updateAliasTargetEditorState(input);
 }
 
+function aliasTargetWeightFromRow(row) {
+  const parsedWeight = Number.parseInt(
+    row?.querySelector('input[type="number"]')?.value,
+    10,
+  );
+  return Number.isFinite(parsedWeight)
+    ? Math.min(Math.max(parsedWeight, 0), 1000000)
+    : 1;
+}
+
+function sortAliasTargetSelectedRowsByWeight(pop) {
+  const list = pop?.querySelector(".alias-target-selected-list");
+  if (!list) return;
+  Array.from(list.querySelectorAll(".alias-target-selected-row"))
+    .map((row, index) => ({
+      row: row,
+      index: index,
+      weight: aliasTargetWeightFromRow(row),
+    }))
+    .sort((a, b) => b.weight - a.weight || a.index - b.index)
+    .forEach((item) => list.appendChild(item.row));
+}
+
 function updateAliasTargetEditorState(source) {
   const pop = source?.classList?.contains("alias-target-popover")
     ? source
     : source?.closest?.(".alias-target-popover");
   if (!pop) return;
+  sortAliasTargetSelectedRowsByWeight(pop);
   const targets = readAliasTargetsFromPopover(pop);
   const selected = new Set(
     targets.map((target) =>
@@ -3398,13 +3538,7 @@ function updateAliasTargetEditorState(source) {
   );
   const totalWeight = targets.reduce((sum, target) => sum + target.weight, 0);
   pop.querySelectorAll(".alias-target-selected-row").forEach((row) => {
-    const parsedWeight = Number.parseInt(
-      row.querySelector('input[type="number"]')?.value,
-      10,
-    );
-    const weight = Number.isFinite(parsedWeight)
-      ? Math.min(Math.max(parsedWeight, 0), 1000000)
-      : 1;
+    const weight = aliasTargetWeightFromRow(row);
     const percent = totalWeight ? (weight / totalWeight) * 100 : 0;
     const label = row.querySelector(".alias-target-percent");
     row.classList.toggle("is-inactive", weight === 0);
