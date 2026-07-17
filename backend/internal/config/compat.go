@@ -13,6 +13,7 @@ import (
 
 type AppConfig = domain.AppConfig
 type ModelAlias = domain.ModelAlias
+type ModelAliasTarget = domain.ModelAliasTarget
 type UpstreamConfig = domain.UpstreamConfig
 type UpstreamType = domain.UpstreamType
 type BridgeMode = domain.BridgeMode

@@ -830,6 +830,33 @@ func TestValidateConfigRejectsUnknownRoutes(t *testing.T) {
 	if err := validateConfig(badAlias); err == nil {
 		t.Fatal("validateConfig accepted an alias pointing to an unknown upstream")
 	}
+	badWeightedAlias := &AppConfig{
+		Upstreams: map[string]*UpstreamConfig{"good": {BaseURL: "https://example.test/v1", APIType: UpstreamOpenAI}},
+		ModelAlias: map[string]ModelAlias{"model": {Targets: []ModelAliasTarget{
+			{TargetModel: "target", Upstream: "missing", Weight: 1},
+		}}},
+	}
+	if err := validateConfig(badWeightedAlias); err == nil {
+		t.Fatal("validateConfig accepted a weighted target pointing to an unknown upstream")
+	}
+	badWeight := &AppConfig{
+		Upstreams: map[string]*UpstreamConfig{"good": {BaseURL: "https://example.test/v1", APIType: UpstreamOpenAI}},
+		ModelAlias: map[string]ModelAlias{"model": {Targets: []ModelAliasTarget{
+			{TargetModel: "target", Upstream: "good", Weight: -1},
+		}}},
+	}
+	if err := validateConfig(badWeight); err == nil {
+		t.Fatal("validateConfig accepted a negative model target weight")
+	}
+	allDisabled := &AppConfig{
+		Upstreams: map[string]*UpstreamConfig{"good": {BaseURL: "https://example.test/v1", APIType: UpstreamOpenAI}},
+		ModelAlias: map[string]ModelAlias{"model": {Targets: []ModelAliasTarget{
+			{TargetModel: "target", Upstream: "good", Weight: 0},
+		}}},
+	}
+	if err := validateConfig(allDisabled); err == nil {
+		t.Fatal("validateConfig accepted an alias with no positive target weight")
+	}
 }
 
 func TestNonOpenAIModelSyncFallsBackToOpenAIV1(t *testing.T) {
@@ -915,7 +942,14 @@ func TestModelSyncFallbackOnlyAppliesToNonOpenAIBaseWithoutV1(t *testing.T) {
 func TestNormalizeConfigPreservesUpstreamOrderAndAppendsMissingNames(t *testing.T) {
 	cfg := AppConfig{
 		ModelAlias: map[string]ModelAlias{
-			"model": {TargetModel: "target", ReasoningEffortMap: map[string]string{" low ": " high "}},
+			"model": {
+				TargetModel: "legacy-target",
+				Upstream:    "alpha",
+				Targets: []ModelAliasTarget{
+					{TargetModel: " target ", Upstream: " bravo ", Weight: 0},
+				},
+				ReasoningEffortMap: map[string]string{" low ": " high "},
+			},
 		},
 		Upstreams: map[string]*UpstreamConfig{
 			"charlie": {BaseURL: "https://charlie.example/v1", APIType: UpstreamOpenAI},
@@ -928,6 +962,35 @@ func TestNormalizeConfigPreservesUpstreamOrderAndAppendsMissingNames(t *testing.
 	requireTestEqual(t, "upstream order", cfg.UpstreamOrder, []string{"bravo", "alpha", "charlie"})
 	requireTestEqual(t, "default follows order", cfg.DefaultUpstream, "bravo")
 	requireTestEqual(t, "normalized model effort map", cfg.ModelAlias["model"].ReasoningEffortMap, map[string]string{"low": "high"})
+	requireTestEqual(t, "normalized weighted targets", cfg.ModelAlias["model"].Targets, []ModelAliasTarget{{TargetModel: "target", Upstream: "bravo", Weight: 0}})
+	if cfg.ModelAlias["model"].TargetModel != "" || cfg.ModelAlias["model"].Upstream != "" {
+		t.Fatal("normalized weighted alias retained legacy target fields")
+	}
+}
+
+func TestModelAliasTargetWeightJSONCompatibility(t *testing.T) {
+	var legacyTarget ModelAliasTarget
+	if err := json.Unmarshal([]byte(`{"target_model":"legacy","upstream":"primary"}`), &legacyTarget); err != nil {
+		t.Fatalf("unmarshal legacy target: %v", err)
+	}
+	if legacyTarget.Weight != 1 {
+		t.Fatalf("legacy target weight=%d, want 1", legacyTarget.Weight)
+	}
+
+	var disabledTarget ModelAliasTarget
+	if err := json.Unmarshal([]byte(`{"target_model":"disabled","upstream":"backup","weight":0}`), &disabledTarget); err != nil {
+		t.Fatalf("unmarshal disabled target: %v", err)
+	}
+	if disabledTarget.Weight != 0 {
+		t.Fatalf("disabled target weight=%d, want 0", disabledTarget.Weight)
+	}
+	encoded, err := json.Marshal(disabledTarget)
+	if err != nil {
+		t.Fatalf("marshal disabled target: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"weight":0`) {
+		t.Fatalf("disabled target JSON %s does not preserve zero weight", encoded)
+	}
 }
 
 func TestModelReasoningEffortMapOverridesGlobalMap(t *testing.T) {

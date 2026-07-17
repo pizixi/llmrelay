@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ======================== 配置 ========================
@@ -16,15 +17,16 @@ var (
 	configPath = "config.json"
 	modelAlias = map[string]ModelAlias{}
 
-	reasoningEffortMap = map[string]string{}
-	webSearchCfg       WebSearchConfig
-	debugMode          bool
-	debugLogBodies     bool
-	apiAccessKey       string
-	upstreamOrder      []string
-	configMu           sync.RWMutex
-	configFileMu       sync.Mutex
-	configUpdateMu     sync.Mutex
+	reasoningEffortMap  = map[string]string{}
+	webSearchCfg        WebSearchConfig
+	debugMode           bool
+	debugLogBodies      bool
+	apiAccessKey        string
+	upstreamOrder       []string
+	configMu            sync.RWMutex
+	configFileMu        sync.Mutex
+	configUpdateMu      sync.Mutex
+	aliasTargetCounters sync.Map
 )
 
 // ======================== 配置管理 ========================
@@ -85,16 +87,45 @@ func ValidateConfig(cfg *AppConfig) error {
 	if defaultName != "" && len(cfg.Upstreams) > 0 && cfg.Upstreams[defaultName] == nil {
 		return fmt.Errorf("default_upstream %q does not exist", defaultName)
 	}
+	upstreamExists := func(name string) bool {
+		if len(cfg.Upstreams) == 0 && cfg.Upstream != nil && name == "default" {
+			return true
+		}
+		return cfg.Upstreams[name] != nil
+	}
 	for model, alias := range cfg.ModelAlias {
-		upstreamName := strings.TrimSpace(alias.Upstream)
-		if upstreamName == "" {
+		if len(alias.Targets) == 0 {
+			upstreamName := strings.TrimSpace(alias.Upstream)
+			if upstreamName != "" && !upstreamExists(upstreamName) {
+				return fmt.Errorf("model alias %q references unknown upstream %q", model, upstreamName)
+			}
 			continue
 		}
-		if len(cfg.Upstreams) == 0 && cfg.Upstream != nil && upstreamName == "default" {
-			continue
+		seenTargets := make(map[string]struct{}, len(alias.Targets))
+		hasRoutableTarget := false
+		for index, target := range alias.Targets {
+			upstreamName := strings.TrimSpace(target.Upstream)
+			targetModel := strings.TrimSpace(target.TargetModel)
+			if upstreamName == "" || targetModel == "" {
+				return fmt.Errorf("model alias %q target %d must have upstream and target_model", model, index+1)
+			}
+			if !upstreamExists(upstreamName) {
+				return fmt.Errorf("model alias %q references unknown upstream %q", model, upstreamName)
+			}
+			if target.Weight < 0 || target.Weight > 1000000 {
+				return fmt.Errorf("model alias %q target %d weight must be between 0 and 1000000", model, index+1)
+			}
+			if target.Weight > 0 {
+				hasRoutableTarget = true
+			}
+			key := upstreamName + "\x00" + targetModel
+			if _, exists := seenTargets[key]; exists {
+				return fmt.Errorf("model alias %q has duplicate target %q on upstream %q", model, targetModel, upstreamName)
+			}
+			seenTargets[key] = struct{}{}
 		}
-		if cfg.Upstreams[upstreamName] == nil {
-			return fmt.Errorf("model alias %q references unknown upstream %q", model, upstreamName)
+		if !hasRoutableTarget {
+			return fmt.Errorf("model alias %q must have at least one target with a weight greater than 0", model)
 		}
 	}
 	if err := ValidateWebSearchConfig(cfg.WebSearch); err != nil {
@@ -111,6 +142,28 @@ func NormalizeConfig(cfg *AppConfig) {
 		trimmedKey := strings.TrimSpace(key)
 		alias.TargetModel = strings.TrimSpace(alias.TargetModel)
 		alias.Upstream = strings.TrimSpace(alias.Upstream)
+		if len(alias.Targets) > 0 {
+			targets := make([]ModelAliasTarget, 0, len(alias.Targets))
+			seen := make(map[string]struct{}, len(alias.Targets))
+			for _, target := range alias.Targets {
+				target.TargetModel = strings.TrimSpace(target.TargetModel)
+				target.Upstream = strings.TrimSpace(target.Upstream)
+				if target.TargetModel == "" || target.Upstream == "" {
+					continue
+				}
+				identity := target.Upstream + "\x00" + target.TargetModel
+				if _, exists := seen[identity]; exists {
+					continue
+				}
+				seen[identity] = struct{}{}
+				targets = append(targets, target)
+			}
+			alias.Targets = targets
+			if len(targets) > 0 {
+				alias.TargetModel = ""
+				alias.Upstream = ""
+			}
+		}
 		alias.ReasoningEffortMap = NormalizeReasoningEffortMap(alias.ReasoningEffortMap)
 		if trimmedKey == "" {
 			delete(cfg.ModelAlias, key)
@@ -293,7 +346,14 @@ func ApplyConfig(cfg AppConfig) {
 	configMu.Lock()
 	defer configMu.Unlock()
 	if cfg.ModelAlias != nil {
-		modelAlias = cfg.ModelAlias
+		modelAlias = make(map[string]ModelAlias, len(cfg.ModelAlias))
+		for name, alias := range cfg.ModelAlias {
+			modelAlias[name] = CloneModelAlias(alias)
+		}
+		aliasTargetCounters.Range(func(key, _ any) bool {
+			aliasTargetCounters.Delete(key)
+			return true
+		})
 	}
 
 	if cfg.ReasoningEffortMap != nil {
@@ -327,7 +387,14 @@ func ResolveRequestModel(model string) (string, ModelAlias, string, *UpstreamCon
 	configMu.RLock()
 	found, aliasMatched := modelAlias[m]
 	if aliasMatched {
-		alias = found
+		alias = CloneModelAlias(found)
+		if len(alias.Targets) > 0 {
+			counterValue, _ := aliasTargetCounters.LoadOrStore(m, &atomic.Uint64{})
+			counter := counterValue.(*atomic.Uint64)
+			target := SelectWeightedAliasTarget(alias.Targets, counter.Add(1)-1)
+			alias.TargetModel = target.TargetModel
+			alias.Upstream = target.Upstream
+		}
 	}
 	directModelMatched := false
 	if !aliasMatched {
@@ -431,4 +498,43 @@ func CloneStringMap(source map[string]string) map[string]string {
 		result[key] = value
 	}
 	return result
+}
+
+func CloneModelAlias(source ModelAlias) ModelAlias {
+	result := source
+	result.ReasoningEffortMap = CloneStringMap(source.ReasoningEffortMap)
+	if source.Targets != nil {
+		result.Targets = append([]ModelAliasTarget(nil), source.Targets...)
+	}
+	return result
+}
+
+// SelectWeightedAliasTarget returns a target for a zero-based sequence number.
+// ResolveRequestModel keeps an independent sequence per alias, producing a stable
+// weighted cycle without the short-term skew of random selection.
+func SelectWeightedAliasTarget(targets []ModelAliasTarget, sequence uint64) ModelAliasTarget {
+	if len(targets) == 0 {
+		return ModelAliasTarget{}
+	}
+	var total uint64
+	for _, target := range targets {
+		if target.Weight <= 0 {
+			continue
+		}
+		total += uint64(target.Weight)
+	}
+	if total == 0 {
+		return ModelAliasTarget{}
+	}
+	position := sequence % total
+	for _, target := range targets {
+		if target.Weight <= 0 {
+			continue
+		}
+		if position < uint64(target.Weight) {
+			return target
+		}
+		position -= uint64(target.Weight)
+	}
+	return ModelAliasTarget{}
 }

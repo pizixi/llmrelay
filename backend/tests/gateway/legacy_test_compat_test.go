@@ -39,6 +39,7 @@ type ResponseToolNameMapping = responses.ToolNameMapping
 type UpstreamConfig = domain.UpstreamConfig
 type UpstreamType = domain.UpstreamType
 type ModelAlias = domain.ModelAlias
+type ModelAliasTarget = domain.ModelAliasTarget
 type ModelInfo = domain.ModelInfo
 type WebSearchConfig = domain.WebSearchConfig
 type WireProtocol = bridge.WireProtocol

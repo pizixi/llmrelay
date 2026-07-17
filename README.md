@@ -31,7 +31,7 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 
 模型路由遵循以下规则：
 
-- 模型名是已配置的别名；别名可以指定实际上游模型、目标上游及是否启用推理内容。
+- 模型名是已配置的别名；别名可以配置一个或多个“目标上游 + 实际模型”，并用正整数权重分配请求。
 - 没有匹配别名时，模型名原样发送到默认上游。
 - 默认上游的 `custom_models` 非空时，它是直接模型的允许列表，不在列表中的模型会在访问上游前返回 404。
 - 默认上游的 `custom_models` 为空时不限制模型名，由上游判断模型是否存在及当前密钥是否有权访问。
@@ -39,6 +39,22 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 直接模型会保留客户端显式发送的 `thinking`、`reasoning` 或 `reasoning_effort`。命中模型别名时，只有启用该别名的“思维链”开关才会向上游发送这些推理参数；关闭后该策略会一致应用于三种客户端协议的透传、桥接和 Web Search 回退路径。
 
 显式模型别名的优先级高于默认上游模型。核心解析逻辑位于 `backend/internal/routing/resolver.go` 和 `backend/internal/config/`。
+
+多目标映射使用按别名独立计数的加权周期分配。例如下面的 `3:1` 配置每四个请求会将三个请求路由到主上游、一个请求路由到备用上游。权重为 `0` 的目标会保留在配置中但不参与轮询；每个映射至少需要一个权重大于 `0` 的目标。旧版单目标 `target_model/upstream` 配置仍可读取，并会在管理页保存时转换为 `targets`：
+
+```json
+{
+  "model_alias": {
+    "balanced-chat": {
+      "targets": [
+        { "upstream": "primary", "target_model": "gpt-5.1", "weight": 3 },
+        { "upstream": "backup", "target_model": "claude-sonnet-4-5", "weight": 1 }
+      ],
+      "with_reasoning": true
+    }
+  }
+}
+```
 
 ## 协议桥接
 

@@ -75,6 +75,36 @@ func TestResolveRequestModelRoutingQuadrants(t *testing.T) {
 	}
 }
 
+func TestResolveRequestModelUsesWeightedAliasTargets(t *testing.T) {
+	installRoutingTestConfig(t, "https://example.test/v1")
+	configMu.Lock()
+	modelAlias["weighted"] = ModelAlias{Targets: []ModelAliasTarget{
+		{TargetModel: "disabled-model", Upstream: "mapped", Weight: 0},
+		{TargetModel: "primary-model", Upstream: "default", Weight: 3},
+		{TargetModel: "backup-model", Upstream: "mapped", Weight: 1},
+	}}
+	configMu.Unlock()
+	syncLegacyConfig()
+
+	wantModels := []string{
+		"primary-model", "primary-model", "primary-model", "backup-model",
+		"primary-model", "primary-model", "primary-model", "backup-model",
+	}
+	for index, wantModel := range wantModels {
+		model, alias, upstreamName, upstream, aliasMatched, matched := resolveRequestModel("weighted")
+		wantUpstream := "default"
+		if wantModel == "backup-model" {
+			wantUpstream = "mapped"
+		}
+		if model != wantModel || alias.TargetModel != wantModel || upstreamName != wantUpstream {
+			t.Fatalf("request %d route = model %q alias target %q upstream %q; want %q on %q", index+1, model, alias.TargetModel, upstreamName, wantModel, wantUpstream)
+		}
+		if !aliasMatched || !matched || upstream == nil {
+			t.Fatalf("request %d did not resolve a configured target", index+1)
+		}
+	}
+}
+
 func TestResolveRequestModelAllowsAnyModelWhenDefaultAllowlistIsEmpty(t *testing.T) {
 	installRoutingTestConfig(t, "https://example.test/v1")
 	configMu.Lock()

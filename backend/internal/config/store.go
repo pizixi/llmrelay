@@ -19,8 +19,7 @@ func Snapshot() AppConfig {
 		DefaultUpstream:    defaultUpstreamName,
 	}
 	for name, alias := range modelAlias {
-		alias.ReasoningEffortMap = CloneStringMap(alias.ReasoningEffortMap)
-		result.ModelAlias[name] = alias
+		result.ModelAlias[name] = CloneModelAlias(alias)
 	}
 	for name, upstream := range upstreamCfgs {
 		result.Upstreams[name] = CloneUpstreamConfig(upstream)

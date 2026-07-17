@@ -3,6 +3,8 @@
 // 该包不执行文件、网络或 HTTP 操作，避免基础类型反向依赖具体实现。
 package domain
 
+import "encoding/json"
+
 // UpstreamType 表示上游服务使用的 API 协议。
 type UpstreamType string
 
@@ -67,10 +69,37 @@ type AppConfig struct {
 }
 
 type ModelAlias struct {
-	TargetModel        string            `json:"target_model"`
-	Upstream           string            `json:"upstream,omitempty"`
-	WithReasoning      bool              `json:"with_reasoning,omitempty"`
-	ReasoningEffortMap map[string]string `json:"reasoning_effort_map,omitempty"`
+	TargetModel        string             `json:"target_model,omitempty"`
+	Upstream           string             `json:"upstream,omitempty"`
+	Targets            []ModelAliasTarget `json:"targets,omitempty"`
+	WithReasoning      bool               `json:"with_reasoning,omitempty"`
+	ReasoningEffortMap map[string]string  `json:"reasoning_effort_map,omitempty"`
+}
+
+type ModelAliasTarget struct {
+	TargetModel string `json:"target_model"`
+	Upstream    string `json:"upstream"`
+	Weight      int    `json:"weight"`
+}
+
+// UnmarshalJSON keeps legacy targets without a weight at the historical
+// default of 1 while preserving an explicitly configured zero weight.
+func (target *ModelAliasTarget) UnmarshalJSON(data []byte) error {
+	var value struct {
+		TargetModel string `json:"target_model"`
+		Upstream    string `json:"upstream"`
+		Weight      *int   `json:"weight"`
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	target.TargetModel = value.TargetModel
+	target.Upstream = value.Upstream
+	target.Weight = 1
+	if value.Weight != nil {
+		target.Weight = *value.Weight
+	}
+	return nil
 }
 
 type ModelInfo struct {
