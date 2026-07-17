@@ -1,0 +1,205 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: llmrelay
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+          - goos: windows
+            goarch: arm64
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          EXT=""
+          if [ "${GOOS}" = "windows" ]; then
+            EXT=".exe"
+          fi
+          mkdir -p dist
+          BIN_NAME="${APP_NAME}${EXT}"
+          go build -trimpath -ldflags="-s -w" -o "dist/${BIN_NAME}" .
+          echo "Built dist/${BIN_NAME}"
+
+      - name: Package artifact
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          EXT=""
+          if [ "${GOOS}" = "windows" ]; then
+            EXT=".exe"
+          fi
+          BIN_NAME="${APP_NAME}${EXT}"
+          ASSET_BASE="${APP_NAME}_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir -p package
+          cp "dist/${BIN_NAME}" "package/${BIN_NAME}"
+          if [ -f README.md ]; then
+            cp README.md package/
+          fi
+          if [ -f LICENSE ]; then
+            cp LICENSE package/
+          fi
+          cd package
+          if [ "${ARCHIVE}" = "zip" ]; then
+            zip -9 "../dist/${ASSET_BASE}.zip" *
+          else
+            tar -czf "../dist/${ASSET_BASE}.tar.gz" *
+          fi
+          cd ..
+          ls -lah dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} assets/ \;
+          cd assets
+          sha256sum * > SHA256SUMS.txt
+          ls -lah
+          cat SHA256SUMS.txt
+
+      - name: Build release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          NOTES_FILE="release-notes.md"
+
+          {
+            echo "## ${VERSION}"
+            echo
+          } > "${NOTES_FILE}"
+
+          # Prefer annotated tag message when present.
+          TAG_MSG="$(git tag -l --format='%(contents)' "${VERSION}" | sed '/^$/d' || true)"
+          if [ -n "${TAG_MSG}" ]; then
+            {
+              echo "### 更新说明"
+              echo
+              echo "${TAG_MSG}"
+              echo
+            } >> "${NOTES_FILE}"
+          fi
+
+          # Commit summary since previous tag.
+          PREV_TAG="$(git describe --tags --abbrev=0 "${VERSION}^" 2>/dev/null || true)"
+          {
+            echo "### 变更摘要"
+            echo
+            if [ -n "${PREV_TAG}" ]; then
+              echo "对比范围：\`${PREV_TAG}...${VERSION}\`"
+              echo
+              git log --pretty=format:'- %s (%h)' "${PREV_TAG}..${VERSION}"
+            else
+              echo "首个正式版本，完整提交历史："
+              echo
+              git log --pretty=format:'- %s (%h)' "${VERSION}"
+            fi
+            echo
+            echo
+            echo "### 下载说明"
+            echo
+            echo "| 平台 | 架构 | 文件 |"
+            echo "| --- | --- | --- |"
+            echo "| Linux | amd64 | \`${APP_NAME}_${VERSION}_linux_amd64.tar.gz\` |"
+            echo "| Linux | arm64 | \`${APP_NAME}_${VERSION}_linux_arm64.tar.gz\` |"
+            echo "| macOS | amd64 (Intel) | \`${APP_NAME}_${VERSION}_darwin_amd64.tar.gz\` |"
+            echo "| macOS | arm64 (Apple Silicon) | \`${APP_NAME}_${VERSION}_darwin_arm64.tar.gz\` |"
+            echo "| Windows | amd64 | \`${APP_NAME}_${VERSION}_windows_amd64.zip\` |"
+            echo "| Windows | arm64 | \`${APP_NAME}_${VERSION}_windows_arm64.zip\` |"
+            echo
+            echo "校验文件：\`SHA256SUMS.txt\`"
+            echo
+            echo "解压后直接运行二进制即可。前端资源已嵌入可执行文件，无需额外依赖。"
+          } >> "${NOTES_FILE}"
+
+          echo "notes_file=${NOTES_FILE}" >> "${GITHUB_OUTPUT}"
+          echo "----- release notes -----"
+          cat "${NOTES_FILE}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.notes_file }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          files: |
+            assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -173,6 +173,26 @@ go run . -password "管理密码" -api-key "对外 API 密钥"
 
 对外 API Key 也可通过 `LLMGATEWAYGO_API_KEY` 或兼容环境变量 `LLM2API_API_KEY` 设置。
 
+
+## 发布
+
+推送符合 `v*` 的 Git tag 后，GitHub Actions 会自动交叉编译并创建 Release：
+
+```bash
+# 推荐使用附注 tag 写更新说明
+git tag -a v1.0.0 -m "首个正式版本
+- 支持多协议路由
+- 管理后台与 API 鉴权"
+
+git push origin v1.0.0
+```
+
+Release 产物包含：
+
+- Linux / macOS / Windows 的 amd64、arm64 二进制压缩包
+- `SHA256SUMS.txt` 校验文件
+- 更新说明（tag 附注 + 相对上一版本的提交摘要 + GitHub 自动生成的变更记录）
+
 ## 安全建议
 
 默认管理密码是 `123456`，对外 API 默认不启用鉴权。公网部署前应显式设置安全的 `-password` 和 `-api-key`，并通过 HTTPS 反向代理访问。
