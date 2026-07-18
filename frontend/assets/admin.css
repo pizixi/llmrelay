@@ -341,10 +341,6 @@ header {
   gap: 3px;
 }
 
-.upstream-card-head {
-  align-items: center;
-}
-
 .upstream-filterbar {
   display: flex;
   align-items: center;
@@ -409,6 +405,19 @@ header {
 .upstream-filterbar .ss-trigger {
   height: 34px;
   min-height: 34px;
+}
+
+.upstream-actions {
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  margin-top: 0;
+}
+
+.upstream-action-buttons {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 
 .card h2,
@@ -4032,11 +4041,12 @@ select.m-select {
   .card {
     padding: 14px 14px;
   }
-  .upstream-card-head {
+  .upstream-actions {
     align-items: stretch;
-    flex-direction: column;
+    flex-wrap: wrap;
   }
   .upstream-filterbar {
+    flex: 1 1 100%;
     width: 100%;
     margin-left: 0;
   }
@@ -4183,6 +4193,15 @@ select.m-select {
 }
 
 @media (max-width: 560px) {
+  .upstream-actions {
+    flex-direction: column;
+  }
+  .upstream-action-buttons {
+    width: 100%;
+  }
+  .upstream-action-buttons .btn {
+    flex: 1;
+  }
   .upstream-filterbar {
     align-items: stretch;
     flex-direction: column;

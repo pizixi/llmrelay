@@ -50,19 +50,10 @@
 </div>
 
 <div class="card">
-<div class="card-head upstream-card-head">
+<div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>多上游配置</h2>
 <div class="card-desc">配置上游端点、协议类型与模型白名单</div>
-</div>
-<div class="upstream-filterbar">
-<label class="upstream-keyword-search">
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-<input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()">
-</label>
-<select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()">
-<option value="">全部模型</option>
-</select>
 </div>
 </div>
 <div class="table-scroll">
@@ -71,9 +62,20 @@
 <tbody></tbody>
 </table>
 </div>
-<div class="actions">
+<div class="actions upstream-actions">
+<div class="upstream-action-buttons">
 <button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button>
 <button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button>
+</div>
+<div class="upstream-filterbar" aria-label="筛选上游">
+<label class="upstream-keyword-search">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+<input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()">
+</label>
+<select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()">
+<option value="">全部模型</option>
+</select>
+</div>
 </div>
 </div>
 
