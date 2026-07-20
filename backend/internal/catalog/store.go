@@ -55,6 +55,19 @@ func ApplyUpstreamRefresh(name string, effective, catalog []ModelInfo) (int, int
 	return effectiveCount, catalogCount, totalEffective, totalCatalog
 }
 
+// ApplyUpstreamCatalogRefresh updates only the remotely discovered catalog.
+// The effective model list remains driven by the saved custom_models values
+// until an administrator confirms and saves a synchronization proposal.
+func ApplyUpstreamCatalogRefresh(name string, catalog []ModelInfo) (int, int) {
+	modelMu.Lock()
+	upstreamModelCatalogCache = ReplaceModelsForUpstream(upstreamModelCatalogCache, name, catalog)
+	upstreamModelCatalogLoaded = true
+	upstreamCount := CountModelsForUpstream(upstreamModelCatalogCache, name)
+	totalCatalog := len(upstreamModelCatalogCache)
+	modelMu.Unlock()
+	return upstreamCount, totalCatalog
+}
+
 func ApplyEffective(models []ModelInfo) {
 	modelMu.Lock()
 	modelsCache = append([]ModelInfo(nil), models...)

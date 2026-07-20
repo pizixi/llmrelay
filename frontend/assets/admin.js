@@ -101,6 +101,7 @@ let aliasData = {},
   selectedAliasKey = "",
   modelListByUpstream = {},
   upstreamData = {},
+  savedUpstreamModelsByUpstream = {},
   upstreamOrder = [],
   defaultUpstream = "",
   socks5Data = [],
@@ -346,6 +347,89 @@ function applyModelList(cfg, mergeUpstreamName) {
   if (Object.keys(next).length) modelListByUpstream = next;
 }
 
+function upstreamModelsSnapshot(source) {
+  const snapshot = {};
+  Object.keys(source || {}).forEach((name) => {
+    const upstream = source[name] || {};
+    snapshot[name] = Array.from(
+      new Set(
+        (Array.isArray(upstream.custom_models) ? upstream.custom_models : [])
+          .map((model) => String(model || "").trim())
+          .filter(Boolean),
+      ),
+    );
+  });
+  return snapshot;
+}
+
+function rememberSavedUpstreamModels() {
+  savedUpstreamModelsByUpstream = upstreamModelsSnapshot(upstreamData);
+}
+
+function removedUpstreamModelsSinceSave() {
+  const removed = {};
+  Object.keys(savedUpstreamModelsByUpstream || {}).forEach((upstreamName) => {
+    if (!upstreamData[upstreamName]) return;
+    const current = new Set(
+      Array.isArray(upstreamData[upstreamName].custom_models)
+        ? upstreamData[upstreamName].custom_models
+        : [],
+    );
+    const missing = (savedUpstreamModelsByUpstream[upstreamName] || []).filter(
+      (model) => !current.has(model),
+    );
+    if (missing.length) removed[upstreamName] = new Set(missing);
+  });
+  return removed;
+}
+
+function upstreamModelAliasDeleteImpact(removedByUpstream) {
+  const aliases = [];
+  let targetCount = 0;
+  Object.keys(aliasData || {}).forEach((aliasName) => {
+    const entry = aliasData[aliasName] || {};
+    const targets = normalizeAliasTargets(entry.targets || []);
+    const removedTargets = targets.filter((target) => {
+      const models = removedByUpstream[target.upstream];
+      return models && models.has(target.target_model);
+    });
+    if (!removedTargets.length) return;
+    const removedIdentities = new Set(
+      removedTargets.map((target) =>
+        aliasTargetIdentity(target.upstream, target.target_model),
+      ),
+    );
+    const remainingTargets = targets.filter(
+      (target) =>
+        !removedIdentities.has(
+          aliasTargetIdentity(target.upstream, target.target_model),
+        ),
+    );
+    targetCount += removedTargets.length;
+    aliases.push({
+      aliasName: aliasName,
+      removedTargets: removedTargets,
+      remainingTargets: remainingTargets,
+      removeAlias: remainingTargets.length === 0,
+    });
+  });
+  return {
+    aliases: aliases,
+    targetCount: targetCount,
+    removedAliasCount: aliases.filter((item) => item.removeAlias).length,
+  };
+}
+
+function reconcileRemovedUpstreamModelMappings() {
+  const removedByUpstream = removedUpstreamModelsSinceSave();
+  const impact = upstreamModelAliasDeleteImpact(removedByUpstream);
+  if (!impact.targetCount) return impact;
+  const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
+  renderAliasTable();
+  if (selectedAliasRemoved) showSelectedEffortMap();
+  return impact;
+}
+
 async function loadConfig() {
   const sy = window.scrollY;
   ssClose();
@@ -353,6 +437,7 @@ async function loadConfig() {
     const cfg = await apiJSON("/api/config");
     aliasData = cfg.model_alias || {};
     normalizeUpstreamData(cfg);
+    rememberSavedUpstreamModels();
     normalizeAliasData();
     globalEffortData = { ...(cfg.reasoning_effort_map || {}) };
     selectedAliasKey = "";
@@ -385,6 +470,7 @@ async function loadConfig() {
 async function saveConfigSilent(options) {
   collectUpstreams();
   collectAliases();
+  const cleanup = reconcileRemovedUpstreamModelMappings();
   collectEfforts();
   collectSocks5();
   collectWebSearchConfig();
@@ -405,6 +491,8 @@ async function saveConfigSilent(options) {
     body: JSON.stringify(cfg),
   });
   if (!r.ok) throw new Error(await r.text());
+  rememberSavedUpstreamModels();
+  return cleanup;
 }
 
 async function refreshModelList(upstreamName) {
@@ -2970,6 +3058,554 @@ async function syncModels(btn) {
   if (el) openCustomModelsEditor(el);
 }
 
+function modelAliasesForUpstreamModel(upstreamName, model) {
+  const aliases = [];
+  Object.keys(aliasData || {}).forEach((aliasName) => {
+    const targets = normalizeAliasTargets(aliasData[aliasName]?.targets || []);
+    if (
+      targets.some(
+        (target) =>
+          target.upstream === upstreamName && target.target_model === model,
+      )
+    ) {
+      aliases.push(aliasName);
+    }
+  });
+  return aliases.sort((a, b) => a.localeCompare(b));
+}
+
+function buildAllModelSyncPlan(payload) {
+  const results = Array.isArray(payload?.upstreams) ? payload.upstreams : [];
+  const resultByUpstream = {};
+  results.forEach((result) => {
+    const name = String(result?.upstream || "").trim();
+    if (name) resultByUpstream[name] = result || {};
+  });
+  return orderedUpstreamNames().map((upstreamName) => {
+    const result = resultByUpstream[upstreamName] || {
+      upstream: upstreamName,
+      error: "同步接口未返回该上游的结果",
+    };
+    const configured = Array.from(
+      new Set(
+        (Array.isArray(upstreamData[upstreamName]?.custom_models)
+          ? upstreamData[upstreamName].custom_models
+          : []
+        )
+          .map((model) => String(model || "").trim())
+          .filter(Boolean),
+      ),
+    );
+    const discovered = Array.from(
+      new Set(
+        (Array.isArray(result.models) ? result.models : [])
+          .map((model) => String(model || "").trim())
+          .filter(Boolean),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+    const configuredSet = new Set(configured);
+    const discoveredSet = new Set(discovered);
+    const error = String(result.error || "").trim();
+    const emptyCatalog = !error && discovered.length === 0;
+    return {
+      upstream: upstreamName,
+      configured: configured,
+      discovered: discovered,
+      error: error,
+      emptyCatalog: emptyCatalog,
+      additions: error
+        ? []
+        : discovered.filter((model) => !configuredSet.has(model)),
+      missing: error
+        ? []
+        : configured.filter((model) => !discoveredSet.has(model)),
+      deleted: [],
+    };
+  });
+}
+
+function modelSyncPopoverHeaderHtml(phase) {
+  return (
+    '<div class="popover-header model-sync-popover-header"><span class="popover-title">' +
+    ICONS.sync +
+    '<span class="model-popover-heading"><span>同步所有上游模型</span><strong class="model-sync-phase">' +
+    esc(phase || "") +
+    "</strong></span></span>" +
+    '<button type="button" class="btn-icon model-sync-review-close" onclick="closePopover()" title="关闭">' +
+    ICONS.close +
+    "</button></div>"
+  );
+}
+
+function openModelSyncLoading(triggerEl, upstreamCount, onClose) {
+  const pop = openPopover(
+    triggerEl,
+    modelSyncPopoverHeaderHtml("准备同步 " + upstreamCount + " 个渠道") +
+      '<div class="model-search-row model-sync-search-row"><div class="model-search">' +
+      ICONS.search +
+      '<input type="search" placeholder="搜索模型或渠道..." disabled></div></div>' +
+      '<div class="model-list model-sync-list is-syncing"><div class="model-loading-overlay"><span class="model-loading-spinner">' +
+      ICONS.sync +
+      '</span><span class="model-sync-loading-text">正在保存当前配置...</span></div></div>' +
+      '<div class="popover-hint model-sync-loading-hint">弹窗已打开，正在并行读取所有上游模型；同步失败的渠道不会删除任何现有模型。</div>',
+    onClose,
+  );
+  pop.classList.add("model-sync-review-popover", "model-picker-popover");
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-modal", "true");
+  return pop;
+}
+
+function setModelSyncLoadingPhase(pop, phase) {
+  if (!pop) return;
+  const phaseEl = pop.querySelector(".model-sync-phase");
+  if (phaseEl) phaseEl.textContent = phase;
+  const loadingEl = pop.querySelector(".model-sync-loading-text");
+  if (loadingEl) loadingEl.textContent = phase;
+}
+
+function modelSyncAdditionRowHtml(item, model) {
+  const searchValue = (item.upstream + " " + model + " 新增").toLowerCase();
+  return (
+    '<label class="model-check model-sync-row is-addition model-sync-search-item" data-sync-search="' +
+    escAttr(searchValue) +
+    '"><span class="model-check-label"><input type="checkbox" checked data-sync-action="add" data-upstream="' +
+    escAttr(item.upstream) +
+    '" data-model="' +
+    escAttr(model) +
+    '" onchange="updateModelSyncReviewSummary(this)"><span class="alias-target-route-combo model-sync-route"><span class="alias-target-route-upstream" title="' +
+    escAttr(item.upstream) +
+    '">' +
+    esc(item.upstream) +
+    '</span><span class="alias-target-route-arrow" aria-hidden="true">' +
+    ICONS.arrowRight +
+    '</span><span class="alias-target-route-model" title="' +
+    escAttr(model) +
+    '">' +
+    esc(model) +
+    '</span></span><span class="model-sync-status is-addition">新增</span></span></label>'
+  );
+}
+
+function modelSyncDeletedRowHtml(item, detail) {
+  const aliases = Array.isArray(detail.aliases) ? detail.aliases : [];
+  const aliasHint = aliases.length
+    ? '<small>已同步清理映射：' + esc(aliases.join("、")) + "</small>"
+    : "";
+  const searchValue = (
+    item.upstream +
+    " " +
+    detail.model +
+    " 已删除 " +
+    aliases.join(" ")
+  ).toLowerCase();
+  return (
+    '<div class="model-check model-sync-row is-deleted model-sync-search-item" data-sync-search="' +
+    escAttr(searchValue) +
+    '"><div class="model-check-label"><span class="model-sync-row-icon">' +
+    ICONS.trash +
+    '</span><span class="alias-target-upstream" title="渠道 ' +
+    escAttr(item.upstream) +
+    '">' +
+    esc(item.upstream) +
+    '</span><span class="model-sync-model-cell"><span class="model-id" title="' +
+    escAttr(detail.model) +
+    '">' +
+    esc(detail.model) +
+    "</span>" +
+    aliasHint +
+    '</span><span class="model-sync-status is-deleted">已自动删除</span></div></div>'
+  );
+}
+
+function modelSyncMessageHtml(item, type, title, description) {
+  const searchValue = (
+    item.upstream +
+    " " +
+    title +
+    " " +
+    description
+  ).toLowerCase();
+  return (
+    '<div class="model-sync-message ' +
+    type +
+    ' model-sync-search-item" data-sync-search="' +
+    escAttr(searchValue) +
+    '"><span>' +
+    (type === "is-current" ? ICONS.check : ICONS.alert) +
+    "</span><div><strong>" +
+    esc(title) +
+    "</strong><p>" +
+    esc(description) +
+    "</p></div></div>"
+  );
+}
+
+function modelSyncChannelHtml(item) {
+  const additions = item.additions || [];
+  const deleted = item.deleted || [];
+  let rows = additions
+    .map((model) => modelSyncAdditionRowHtml(item, model))
+    .join("");
+  rows += deleted
+    .map((detail) => modelSyncDeletedRowHtml(item, detail))
+    .join("");
+  if (item.error) {
+    rows += modelSyncMessageHtml(
+      item,
+      "is-error",
+      "同步失败，已保留现有模型",
+      item.error,
+    );
+  } else if (item.emptyCatalog && deleted.length) {
+    rows += modelSyncMessageHtml(
+      item,
+      "is-warning",
+      "上游返回空模型列表",
+      "本渠道同步成功，原有模型均已按结果删除。",
+    );
+  } else if (!additions.length && !deleted.length) {
+    rows += modelSyncMessageHtml(
+      item,
+      "is-current",
+      "无需修改",
+      "当前配置与上游返回的模型一致。",
+    );
+  }
+  const changeText = item.error
+    ? "同步失败"
+    : "新增 " + additions.length + " · 已删除 " + deleted.length;
+  const channelSearch = (item.upstream + " " + changeText).toLowerCase();
+  return (
+    '<section class="model-sync-channel" data-sync-channel="' +
+    escAttr(item.upstream) +
+    '" data-sync-deleted-count="' +
+    deleted.length +
+    '" data-sync-search="' +
+    escAttr(channelSearch) +
+    '"><div class="model-sync-channel-header"><div class="model-sync-channel-title"><span class="alias-target-upstream" title="渠道 ' +
+    escAttr(item.upstream) +
+    '">' +
+    esc(item.upstream) +
+    '</span><span class="model-sync-channel-count" data-sync-channel-count="' +
+    escAttr(item.upstream) +
+    '">' +
+    changeText +
+    "</span></div>" +
+    (additions.length
+      ? '<div class="model-sync-channel-actions"><button type="button" class="model-sync-channel-tool" onclick="setModelSyncChannelSelection(this,true)">全选新增</button><button type="button" class="model-sync-channel-tool" onclick="setModelSyncChannelSelection(this,false)">取消全选</button></div>'
+      : "") +
+    '</div><div class="model-sync-channel-models">' +
+    rows +
+    "</div></section>"
+  );
+}
+
+function updateModelSyncReviewSummary(source) {
+  const pop = source?.closest?.(".model-sync-review-popover") || activePopover;
+  if (!pop) return;
+  const selectedAdditions = pop.querySelectorAll(
+    '[data-sync-action="add"]:checked',
+  ).length;
+  const totalAdditions = pop.querySelectorAll('[data-sync-action="add"]').length;
+  const summary = pop.querySelector(".model-sync-selection-summary");
+  if (summary) {
+    summary.innerHTML =
+      "已选择 <strong>" +
+      selectedAdditions +
+      "</strong> / " +
+      totalAdditions +
+      " 个新增模型";
+  }
+  pop.querySelectorAll(".model-sync-channel").forEach((section) => {
+    const channel = section.dataset.syncChannel || "";
+    const total = section.querySelectorAll('[data-sync-action="add"]').length;
+    const selected = section.querySelectorAll(
+      '[data-sync-action="add"]:checked',
+    ).length;
+    const count = section.querySelector("[data-sync-channel-count]");
+    const deleted = Number(section.dataset.syncDeletedCount || 0);
+    if (count && total)
+      count.textContent =
+        "新增 " +
+        selected +
+        "/" +
+        total +
+        " 已选" +
+        (deleted ? " · 已删除 " + deleted : "");
+    if (count && !total && !count.dataset.originalText)
+      count.dataset.originalText = count.textContent;
+    if (count && !total && count.dataset.originalText)
+      count.textContent = count.dataset.originalText;
+    if (count) count.dataset.channel = channel;
+  });
+  const applyButton = pop.querySelector(".model-sync-apply");
+  if (applyButton) applyButton.disabled = selectedAdditions === 0;
+}
+
+function setModelSyncChannelSelection(button, checked) {
+  const section = button.closest(".model-sync-channel");
+  const pop = button.closest(".model-sync-review-popover");
+  if (!section || !pop) return;
+  section.querySelectorAll('[data-sync-action="add"]').forEach((input) => {
+    input.checked = checked;
+  });
+  updateModelSyncReviewSummary(pop);
+}
+
+function filterModelSyncReview(input) {
+  const pop = input.closest(".model-sync-review-popover");
+  if (!pop) return;
+  const term = String(input.value || "").trim().toLowerCase();
+  let visibleSections = 0;
+  pop.querySelectorAll(".model-sync-channel").forEach((section) => {
+    const channelMatch = (section.dataset.syncSearch || "").includes(term);
+    let visibleItems = 0;
+    section.querySelectorAll(".model-sync-search-item").forEach((row) => {
+      const visible = !term || channelMatch || (row.dataset.syncSearch || "").includes(term);
+      row.hidden = !visible;
+      if (visible) visibleItems++;
+    });
+    section.hidden = !!term && visibleItems === 0;
+    if (!section.hidden) visibleSections++;
+  });
+  const empty = pop.querySelector(".model-sync-filter-empty");
+  if (empty) empty.hidden = visibleSections > 0;
+}
+
+function renderModelSyncReview(pop, plan, payload, cleanup) {
+  const additionCount = plan.reduce(
+    (total, item) => total + item.additions.length,
+    0,
+  );
+  const deletedCount = plan.reduce(
+    (total, item) => total + item.deleted.length,
+    0,
+  );
+  const failedCount = Number(payload?.failed || 0);
+  const mappingText = cleanup?.targetCount
+    ? "；同步清理 " +
+      cleanup.targetCount +
+      " 个映射目标" +
+      (cleanup.removedAliasCount
+        ? "，删除 " + cleanup.removedAliasCount + " 个空别名"
+        : "")
+    : "";
+  pop.innerHTML =
+    modelSyncPopoverHeaderHtml(
+      "成功 " + Number(payload?.succeeded || 0) + " · 失败 " + failedCount,
+    ) +
+    '<div class="model-search-row model-sync-search-row"><div class="model-search">' +
+    ICONS.search +
+    '<input type="search" placeholder="搜索模型或渠道..." oninput="filterModelSyncReview(this)"></div><span class="model-sync-selection-summary"></span></div>' +
+    '<div class="model-sync-result-summary"><span class="is-addition">待新增 <strong>' +
+    additionCount +
+    '</strong></span><span class="is-deleted">已自动删除 <strong>' +
+    deletedCount +
+    '</strong></span><span class="' +
+    (failedCount ? "is-error" : "") +
+    '">同步失败 <strong>' +
+    failedCount +
+    "</strong></span></div>" +
+    '<div class="model-list model-sync-list">' +
+    plan.map(modelSyncChannelHtml).join("") +
+    '<div class="model-sync-filter-empty" hidden>' +
+    ICONS.search +
+    "<span>没有匹配的模型或渠道</span></div></div>" +
+    '<div class="model-sync-review-footer"><p><span>' +
+    ICONS.alert +
+    "</span>成功渠道中上游已不存在的模型已自动删除，失败渠道保持不变" +
+    mappingText +
+    '。</p><div><button type="button" class="btn btn-default" onclick="closePopover()">关闭</button><button type="button" class="btn btn-success model-sync-apply" onclick="applyModelSyncReview(this)">' +
+    ICONS.save +
+    "<span>保存所选新增</span></button></div></div>";
+  pop._modelSyncPlan = plan;
+  updateModelSyncReviewSummary(pop);
+  setTimeout(() => pop.querySelector(".model-search input")?.focus(), 0);
+}
+
+function cloneAdminState(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+async function applySynchronizedModelDeletions(plan) {
+  const removedByUpstream = {};
+  const deletedDetails = {};
+  plan.forEach((item) => {
+    if (item.error || !item.missing.length) return;
+    removedByUpstream[item.upstream] = new Set(item.missing);
+    deletedDetails[item.upstream] = item.missing.map((model) => ({
+      model: model,
+      aliases: modelAliasesForUpstreamModel(item.upstream, model),
+    }));
+  });
+  const deletedCount = Object.values(deletedDetails).reduce(
+    (total, models) => total + models.length,
+    0,
+  );
+  if (!deletedCount) {
+    return { targetCount: 0, removedAliasCount: 0, aliases: [] };
+  }
+
+  const beforeUpstreams = cloneAdminState(upstreamData);
+  const beforeAliases = cloneAdminState(aliasData);
+  const beforeSelectedAlias = selectedAliasKey;
+  Object.keys(removedByUpstream).forEach((upstreamName) => {
+    const removed = removedByUpstream[upstreamName];
+    const current = Array.isArray(upstreamData[upstreamName]?.custom_models)
+      ? upstreamData[upstreamName].custom_models
+      : [];
+    upstreamData[upstreamName] = {
+      ...upstreamData[upstreamName],
+      custom_models: current.filter((model) => !removed.has(model)),
+    };
+  });
+  const impact = upstreamModelAliasDeleteImpact(removedByUpstream);
+  const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
+  renderUpstreamTable();
+  renderAliasTable();
+  if (selectedAliasRemoved) showSelectedEffortMap();
+  renderUpstreamModelFilter();
+  filterUpstreamRows();
+
+  try {
+    await saveConfigSilent({ skipModelSync: true });
+    plan.forEach((item) => {
+      item.deleted = deletedDetails[item.upstream] || [];
+      item.missing = [];
+    });
+    return impact;
+  } catch (e) {
+    upstreamData = beforeUpstreams;
+    aliasData = beforeAliases;
+    selectedAliasKey = beforeSelectedAlias;
+    renderUpstreamTable();
+    renderAliasTable();
+    showSelectedEffortMap();
+    renderUpstreamModelFilter();
+    filterUpstreamRows();
+    throw e;
+  }
+}
+
+async function applyModelSyncReview(button) {
+  const pop = button.closest(".model-sync-review-popover");
+  if (!pop) return;
+  const changes = Array.from(
+    pop.querySelectorAll('[data-sync-action="add"]:checked'),
+  ).map((input) => ({
+    upstream: input.dataset.upstream,
+    model: input.dataset.model,
+  }));
+  if (!changes.length) return;
+
+  const beforeUpstreams = cloneAdminState(upstreamData);
+  const modelsByUpstream = upstreamModelsSnapshot(upstreamData);
+  changes.forEach((change) => {
+    const models = new Set(modelsByUpstream[change.upstream] || []);
+    models.add(change.model);
+    modelsByUpstream[change.upstream] = Array.from(models);
+  });
+
+  Object.keys(modelsByUpstream).forEach((name) => {
+    if (!upstreamData[name]) return;
+    upstreamData[name] = {
+      ...upstreamData[name],
+      custom_models: modelsByUpstream[name].sort((a, b) => a.localeCompare(b)),
+    };
+  });
+  renderUpstreamTable();
+  renderUpstreamModelFilter();
+  filterUpstreamRows();
+
+  button.disabled = true;
+  button.classList.add("is-loading");
+  try {
+    await saveConfigSilent({ skipModelSync: true });
+    closePopover();
+    showToast(
+      "已保存 " + changes.length + " 个新增上游模型",
+      "success",
+    );
+    loadConfig();
+  } catch (e) {
+    upstreamData = beforeUpstreams;
+    renderUpstreamTable();
+    renderUpstreamModelFilter();
+    filterUpstreamRows();
+    if (String(e.message || "").indexOf("登录已失效") === -1)
+      showToast("同步结果保存失败：" + e.message, "error");
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+  }
+}
+
+async function syncAllUpstreamModels(button) {
+  if (!button || button.disabled) return;
+  collectUpstreams();
+  if (!Object.keys(upstreamData).length) {
+    showToast("请先添加并保存至少一个上游", "error");
+    return;
+  }
+  const aliasError = validateAliasRows();
+  if (aliasError) {
+    showToast(aliasError.message, "error");
+    aliasError.element?.scrollIntoView({ behavior: "smooth", block: "center" });
+    aliasError.element?.focus?.();
+    return;
+  }
+
+  const controller = new AbortController();
+  const pop = openModelSyncLoading(
+    button,
+    Object.keys(upstreamData).length,
+    () => controller.abort(),
+  );
+  const originalHTML = button.innerHTML;
+  button.disabled = true;
+  button.classList.add("is-loading");
+  button.innerHTML = ICONS.sync + "<span>正在同步...</span>";
+  try {
+    setModelSyncLoadingPhase(pop, "正在保存当前配置...");
+    await saveConfigSilent({ skipModelSync: true });
+    if (activePopover !== pop) return;
+    setModelSyncLoadingPhase(pop, "正在并行读取所有上游模型...");
+    const payload = await apiJSON("/api/sync-models", {
+      method: "POST",
+      signal: controller.signal,
+    });
+    if (activePopover !== pop) return;
+    const plan = buildAllModelSyncPlan(payload);
+    plan.forEach((item) => {
+      if (!item.error) modelListByUpstream[item.upstream] = item.discovered;
+    });
+    setModelSyncLoadingPhase(pop, "正在自动清理上游已删除的模型...");
+    const cleanup = await applySynchronizedModelDeletions(plan);
+    if (activePopover !== pop) return;
+    renderUpstreamModelFilter();
+    filterUpstreamRows();
+    renderModelSyncReview(pop, plan, payload, cleanup);
+  } catch (e) {
+    if (e?.name === "AbortError") return;
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    if (activePopover === pop) {
+      pop.innerHTML =
+        modelSyncPopoverHeaderHtml("同步中断") +
+        '<div class="model-sync-fatal">' +
+        ICONS.alert +
+        "<div><strong>同步所有上游模型失败</strong><p>" +
+        esc(e.message || "未知错误") +
+        '</p></div></div><div class="model-sync-review-footer"><p>现有模型配置保持在最近一次成功保存的状态。</p><div><button type="button" class="btn btn-default" onclick="closePopover()">关闭</button></div></div>';
+    }
+    showToast("同步所有上游模型失败：" + e.message, "error");
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+    button.innerHTML = originalHTML;
+  }
+}
+
 /* ===== 别名表格 ===== */
 function modelsForUpstream(name) {
   const resolved = (name || defaultUpstream || "").trim();
@@ -4162,6 +4798,7 @@ async function saveConfig(section) {
     return;
   }
   collectAliases();
+  const cleanup = reconcileRemovedUpstreamModelMappings();
   collectEfforts();
   collectSocks5();
   collectWebSearchConfig();
@@ -4191,7 +4828,16 @@ async function saveConfig(section) {
       body: JSON.stringify(cfg),
     });
     if (!r.ok) throw new Error(await r.text());
-    showToast(label + "已保存", "success");
+    rememberSavedUpstreamModels();
+    const cleanupSuffix = cleanup.targetCount
+      ? "，已清理 " +
+        cleanup.targetCount +
+        " 个关联映射目标" +
+        (cleanup.removedAliasCount
+          ? "并删除 " + cleanup.removedAliasCount + " 个空别名"
+          : "")
+      : "";
+    showToast(label + "已保存" + cleanupSuffix, "success");
     loadConfig();
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;

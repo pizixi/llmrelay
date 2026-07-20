@@ -7,8 +7,10 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -72,6 +74,109 @@ func ReloadHandler(w http.ResponseWriter, r *http.Request) {
 		"models":          effectiveCount,
 		"upstream_models": catalogCount,
 		"upstreams":       getConfiguredUpstreamCount(),
+	})
+}
+
+type adminUpstreamModelSyncResult struct {
+	Upstream string   `json:"upstream"`
+	Models   []string `json:"models"`
+	Error    string   `json:"error,omitempty"`
+}
+
+func configuredUpstreamNames(cfg AppConfig) []string {
+	names := make([]string, 0, len(cfg.Upstreams))
+	seen := make(map[string]struct{}, len(cfg.Upstreams))
+	for _, rawName := range cfg.UpstreamOrder {
+		name := strings.TrimSpace(rawName)
+		if name == "" || cfg.Upstreams[name] == nil {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	missing := make([]string, 0, len(cfg.Upstreams)-len(names))
+	for name, upstream := range cfg.Upstreams {
+		if upstream == nil {
+			continue
+		}
+		if _, exists := seen[name]; !exists {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return append(names, missing...)
+}
+
+func uniqueSortedModelIDs(models []ModelInfo) []string {
+	seen := make(map[string]struct{}, len(models))
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// AdminSyncModelsHandler fetches every upstream's real model catalog and
+// returns independent results. It deliberately does not modify custom_models;
+// the admin page presents the differences for confirmation before saving.
+func AdminSyncModelsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := currentConfig()
+	names := configuredUpstreamNames(cfg)
+	results := make([]adminUpstreamModelSyncResult, len(names))
+	var wait sync.WaitGroup
+	for index, name := range names {
+		wait.Add(1)
+		go func(index int, name string) {
+			defer wait.Done()
+			models, err := fetchModelsForUpstream(name, false)
+			result := adminUpstreamModelSyncResult{Upstream: name, Models: []string{}}
+			if err != nil {
+				result.Error = err.Error()
+				results[index] = result
+				return
+			}
+			result.Models = uniqueSortedModelIDs(models)
+			applyUpstreamCatalogRefresh(name, models)
+			results[index] = result
+		}(index, name)
+	}
+	wait.Wait()
+
+	succeeded := 0
+	failed := 0
+	for _, result := range results {
+		if result.Error == "" {
+			succeeded++
+		} else {
+			failed++
+		}
+	}
+	status := "ok"
+	if failed > 0 {
+		status = "partial"
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]any{
+		"status":    status,
+		"succeeded": succeeded,
+		"failed":    failed,
+		"upstreams": results,
 	})
 }
 
@@ -267,6 +372,8 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
 			return
 		}
+		previous := currentConfig()
+		cleanup := reconcileRemovedUpstreamModels(previous, &cfg)
 		if err := validateConfig(&cfg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -284,7 +391,10 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("配置已更新：别名=%d，推理强度映射=%d，上游=%d，默认上游=%s", len(cfg.ModelAlias), len(cfg.ReasoningEffortMap), len(cfg.Upstreams), cfg.DefaultUpstream)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":                "ok",
+			"model_mapping_cleanup": cleanup,
+		})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}

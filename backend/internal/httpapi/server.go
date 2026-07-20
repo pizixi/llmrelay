@@ -22,6 +22,7 @@ func NewHandler() http.Handler {
 	mux.HandleFunc("/api/config", middleware.Admin(admin.AdminConfigHandler))
 	mux.HandleFunc("/api/stats", middleware.Admin(admin.AdminStatsHandler))
 	mux.HandleFunc("/api/reload", middleware.Admin(admin.ReloadHandler))
+	mux.HandleFunc("/api/sync-models", middleware.Admin(admin.AdminSyncModelsHandler))
 	mux.HandleFunc("/api/test-model", middleware.Admin(admin.AdminTestModelHandler))
 	mux.HandleFunc("/api/searxng/instances", middleware.Admin(websearch.SearxngInstancesHandler))
 	mux.Handle("/assets/", admin.FrontendAssetsHandler())

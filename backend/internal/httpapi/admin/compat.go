@@ -20,6 +20,7 @@ import (
 
 type AppConfig = domain.AppConfig
 type ModelInfo = domain.ModelInfo
+type ModelMappingCleanup = config.ModelMappingCleanup
 type UpstreamConfig = domain.UpstreamConfig
 type UpstreamType = domain.UpstreamType
 type TokenStatsData = stats.TokenStatsData
@@ -86,6 +87,10 @@ func normalizeConfig(value *AppConfig) { config.NormalizeConfig(value) }
 
 func validateConfig(value *AppConfig) error { return config.ValidateConfig(value) }
 
+func reconcileRemovedUpstreamModels(previous AppConfig, next *AppConfig) ModelMappingCleanup {
+	return config.ReconcileRemovedUpstreamModels(previous, next)
+}
+
 func saveConfig(path string, value AppConfig) error { return config.SaveConfig(path, value) }
 
 func applyConfig(value AppConfig) { config.ApplyConfig(value) }
@@ -96,6 +101,10 @@ func configPath() string { return config.Path() }
 
 func reconfigureCatalog(upstreams map[string]*UpstreamConfig) {
 	catalogpkg.Reconfigure(upstreams)
+}
+
+func applyUpstreamCatalogRefresh(name string, models []ModelInfo) (int, int) {
+	return catalogpkg.ApplyUpstreamCatalogRefresh(name, models)
 }
 
 func statsSnapshot() TokenStatsData { return stats.Snapshot() }
