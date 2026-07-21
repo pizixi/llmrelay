@@ -38,6 +38,8 @@ const ICONS = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
   arrowRight:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>',
+  chevron:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
   sparkles:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.25 3.75L17 8l-3.75 1.25L12 13l-1.25-3.75L7 8l3.75-1.25L12 3z"/><path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z"/><path d="M5 13l.65 1.85L7.5 15.5l-1.85.65L5 18l-.65-1.85-1.85-.65 1.85-.65L5 13z"/></svg>',
   alert:
@@ -3167,7 +3169,7 @@ function setModelSyncLoadingPhase(pop, phase) {
 function modelSyncAdditionRowHtml(item, model) {
   const searchValue = (item.upstream + " " + model + " 新增").toLowerCase();
   return (
-    '<label class="model-check model-sync-row is-addition model-sync-search-item" data-sync-search="' +
+    '<label class="model-check model-sync-row is-addition model-sync-search-item" data-sync-kind="addition" data-sync-search="' +
     escAttr(searchValue) +
     '"><span class="model-check-label"><input type="checkbox" checked data-sync-action="add" data-upstream="' +
     escAttr(item.upstream) +
@@ -3200,7 +3202,7 @@ function modelSyncDeletedRowHtml(item, detail) {
     aliases.join(" ")
   ).toLowerCase();
   return (
-    '<div class="model-check model-sync-row is-deleted model-sync-search-item" data-sync-search="' +
+    '<div class="model-check model-sync-row is-deleted model-sync-search-item" data-sync-kind="deleted" data-sync-search="' +
     escAttr(searchValue) +
     '"><div class="model-check-label"><span class="model-sync-row-icon">' +
     ICONS.trash +
@@ -3226,10 +3228,14 @@ function modelSyncMessageHtml(item, type, title, description) {
     " " +
     description
   ).toLowerCase();
+  const kind =
+    type === "is-error" ? "error" : type === "is-warning" ? "deleted" : "noop";
   return (
     '<div class="model-sync-message ' +
     type +
-    ' model-sync-search-item" data-sync-search="' +
+    ' model-sync-search-item" data-sync-kind="' +
+    kind +
+    '" data-sync-search="' +
     escAttr(searchValue) +
     '"><span>' +
     (type === "is-current" ? ICONS.check : ICONS.alert) +
@@ -3239,6 +3245,29 @@ function modelSyncMessageHtml(item, type, title, description) {
     esc(description) +
     "</p></div></div>"
   );
+}
+
+function modelSyncChannelStat(item, additions, deleted) {
+  if (item.error) return { text: "同步失败", cls: "is-error" };
+  if (item.emptyCatalog && deleted.length)
+    return { text: "已清空 " + deleted.length, cls: "is-warning" };
+  const add = additions.length;
+  const del = deleted.length;
+  if (!add && !del) return { text: "无需修改", cls: "is-noop" };
+  return { text: "新增 " + add + " · 删除 " + del, cls: "is-addition" };
+}
+
+function modelSyncChannelAvatarColor(name) {
+  const palette = [
+    "var(--accent)",
+    "var(--green)",
+    "var(--orange)",
+    "var(--blue)",
+    "var(--red)",
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return palette[Math.abs(hash) % palette.length];
 }
 
 function modelSyncChannelHtml(item) {
@@ -3272,33 +3301,60 @@ function modelSyncChannelHtml(item) {
       "当前配置与上游返回的模型一致。",
     );
   }
-  const changeText = item.error
-    ? "同步失败"
-    : "新增 " + additions.length + " · 已删除 " + deleted.length;
-  const channelSearch = (item.upstream + " " + changeText).toLowerCase();
+  const stat = modelSyncChannelStat(item, additions, deleted);
+  const avatarLetter = String(item.upstream || "?").trim().charAt(0) || "?";
+  const channelSearch = (item.upstream + " " + stat.text).toLowerCase();
   return (
-    '<section class="model-sync-channel" data-sync-channel="' +
+    '<section class="model-sync-channel is-collapsed" data-sync-channel="' +
     escAttr(item.upstream) +
     '" data-sync-deleted-count="' +
     deleted.length +
     '" data-sync-search="' +
     escAttr(channelSearch) +
-    '"><div class="model-sync-channel-header"><div class="model-sync-channel-title"><span class="alias-target-upstream" title="渠道 ' +
+    '"><div class="model-sync-channel-top"><button type="button" class="model-sync-channel-header" onclick="toggleModelSyncChannel(this)" aria-expanded="false"><span class="model-sync-channel-caret" aria-hidden="true">' +
+    ICONS.chevron +
+    '</span><span class="model-sync-channel-avatar" style="--avatar-color: ' +
+    escAttr(modelSyncChannelAvatarColor(String(item.upstream || ""))) +
+    '">' +
+    esc(avatarLetter) +
+    '</span><span class="model-sync-channel-title"><span class="model-sync-channel-name" title="渠道 ' +
     escAttr(item.upstream) +
     '">' +
     esc(item.upstream) +
-    '</span><span class="model-sync-channel-count" data-sync-channel-count="' +
+    '</span><span class="model-sync-channel-count ' +
+    stat.cls +
+    '" data-sync-channel-count="' +
     escAttr(item.upstream) +
     '">' +
-    changeText +
-    "</span></div>" +
+    stat.text +
+    "</span></span></button>" +
+    '<div class="model-sync-channel-side">' +
     (additions.length
-      ? '<div class="model-sync-channel-actions"><button type="button" class="model-sync-channel-tool" onclick="setModelSyncChannelSelection(this,true)">全选新增</button><button type="button" class="model-sync-channel-tool" onclick="setModelSyncChannelSelection(this,false)">取消全选</button></div>'
+      ? '<span class="model-sync-channel-actions"><button type="button" class="model-sync-channel-tool" onclick="setModelSyncChannelSelection(this,true)">全选新增</button><button type="button" class="model-sync-channel-tool" onclick="setModelSyncChannelSelection(this,false)">取消全选</button></span>'
       : "") +
-    '</div><div class="model-sync-channel-models">' +
+    '<button type="button" class="model-sync-channel-collapse" onclick="toggleModelSyncChannel(this)" title="折叠 / 展开" aria-expanded="false" aria-label="折叠 / 展开渠道">' +
+    ICONS.chevron +
+    "</button></div></div>" +
+    '<div class="model-sync-channel-models" hidden>' +
     rows +
     "</div></section>"
   );
+}
+
+function toggleModelSyncChannel(button) {
+  const section =
+    button?.closest?.(".model-sync-channel") || button?.closest?.("section");
+  if (!section) return;
+  const collapsed = section.classList.toggle("is-collapsed");
+  const models = section.querySelector(".model-sync-channel-models");
+  if (models) models.hidden = collapsed;
+  const headers = section.querySelectorAll(
+    ".model-sync-channel-header, .model-sync-channel-collapse",
+  );
+  headers.forEach((el) =>
+    el.setAttribute("aria-expanded", collapsed ? "false" : "true"),
+  );
+  section._userToggled = true;
 }
 
 function updateModelSyncReviewSummary(source) {
@@ -3353,24 +3409,62 @@ function setModelSyncChannelSelection(button, checked) {
   updateModelSyncReviewSummary(pop);
 }
 
-function filterModelSyncReview(input) {
-  const pop = input.closest(".model-sync-review-popover");
+function applyModelSyncListFilter(pop) {
   if (!pop) return;
-  const term = String(input.value || "").trim().toLowerCase();
+  const activeKind = pop._modelSyncKind || "addition";
+  const searchInput = pop.querySelector(".model-search input");
+  const term = String(searchInput?.value || "").trim().toLowerCase();
+  const filtering = !!(term || (activeKind && activeKind !== "addition"));
+  const isChannelScopedKind = activeKind === "all";
+  pop
+    .querySelectorAll(".model-sync-result-summary [data-sync-kind]")
+    .forEach((btn) => {
+      btn.classList.toggle("is-active", btn.dataset.syncKind === activeKind);
+      btn.setAttribute("aria-pressed", btn.dataset.syncKind === activeKind);
+    });
   let visibleSections = 0;
   pop.querySelectorAll(".model-sync-channel").forEach((section) => {
-    const channelMatch = (section.dataset.syncSearch || "").includes(term);
+    const channelMatch = !term || (section.dataset.syncSearch || "").includes(term);
     let visibleItems = 0;
     section.querySelectorAll(".model-sync-search-item").forEach((row) => {
-      const visible = !term || channelMatch || (row.dataset.syncSearch || "").includes(term);
+      const rowKind = row.dataset.syncKind || "addition";
+      const kindVisible = activeKind === "all" || rowKind === activeKind;
+      const searchVisible = !term || channelMatch || (row.dataset.syncSearch || "").includes(term);
+      const visible = kindVisible && searchVisible;
       row.hidden = !visible;
       if (visible) visibleItems++;
     });
-    section.hidden = !!term && visibleItems === 0;
-    if (!section.hidden) visibleSections++;
+    section.hidden = visibleItems === 0;
+    if (!section.hidden) {
+      visibleSections++;
+      if (filtering && !section._userToggled) {
+        section.classList.remove("is-collapsed");
+        const models = section.querySelector(".model-sync-channel-models");
+        if (models) models.hidden = false;
+        section
+          .querySelectorAll(".model-sync-channel-header, .model-sync-channel-collapse")
+          .forEach((el) => el.setAttribute("aria-expanded", "true"));
+      }
+    }
   });
   const empty = pop.querySelector(".model-sync-filter-empty");
   if (empty) empty.hidden = visibleSections > 0;
+}
+
+function filterModelSyncReview(input) {
+  const pop = input?.closest?.(".model-sync-review-popover") || activePopover;
+  if (!pop) return;
+  applyModelSyncListFilter(pop);
+}
+
+function filterModelSyncKind(button) {
+  const pop = button?.closest?.(".model-sync-review-popover") || activePopover;
+  if (!pop || button.disabled) return;
+  pop._modelSyncKind = button.dataset.syncKind || "addition";
+  applyModelSyncListFilter(pop);
+  updateModelSyncReviewSummary(pop);
+  const searchInput = pop.querySelector(".model-search input");
+  if (searchInput) searchInput.focus();
 }
 
 function renderModelSyncReview(pop, plan, payload, cleanup) {
@@ -3382,6 +3476,12 @@ function renderModelSyncReview(pop, plan, payload, cleanup) {
     (total, item) => total + item.deleted.length,
     0,
   );
+  const noopCount = plan.reduce((total, item) => {
+    if (item.error) return total;
+    if (item.emptyCatalog && item.deleted.length) return total;
+    if (item.additions.length || item.deleted.length) return total;
+    return total + 1;
+  }, 0);
   const failedCount = Number(payload?.failed || 0);
   const mappingText = cleanup?.targetCount
     ? "；同步清理 " +
@@ -3398,15 +3498,23 @@ function renderModelSyncReview(pop, plan, payload, cleanup) {
     '<div class="model-search-row model-sync-search-row"><div class="model-search">' +
     ICONS.search +
     '<input type="search" placeholder="搜索模型或渠道..." oninput="filterModelSyncReview(this)"></div><span class="model-sync-selection-summary"></span></div>' +
-    '<div class="model-sync-result-summary"><span class="is-addition">待新增 <strong>' +
+    '<div class="model-sync-result-summary"><button type="button" class="is-addition is-active" data-sync-kind="addition" aria-pressed="true" onclick="filterModelSyncKind(this)">待新增 <strong>' +
     additionCount +
-    '</strong></span><span class="is-deleted">已自动删除 <strong>' +
+    '</strong></button><button type="button" class="is-deleted" data-sync-kind="deleted" aria-pressed="false"' +
+    (deletedCount ? "" : " disabled") +
+    ' onclick="filterModelSyncKind(this)">已自动删除 <strong>' +
     deletedCount +
-    '</strong></span><span class="' +
-    (failedCount ? "is-error" : "") +
-    '">同步失败 <strong>' +
+    '</strong></button><button type="button" class="' +
+    (failedCount ? "is-error" : "is-error") +
+    '" data-sync-kind="error" aria-pressed="false"' +
+    (failedCount ? "" : " disabled") +
+    ' onclick="filterModelSyncKind(this)">同步失败 <strong>' +
     failedCount +
-    "</strong></span></div>" +
+    '</strong></button><button type="button" class="is-noop" data-sync-kind="noop" aria-pressed="false"' +
+    (noopCount ? "" : " disabled") +
+    ' onclick="filterModelSyncKind(this)">无需修改 <strong>' +
+    noopCount +
+    "</strong></button></div>" +
     '<div class="model-list model-sync-list">' +
     plan.map(modelSyncChannelHtml).join("") +
     '<div class="model-sync-filter-empty" hidden>' +
@@ -3420,7 +3528,9 @@ function renderModelSyncReview(pop, plan, payload, cleanup) {
     ICONS.save +
     "<span>保存所选新增</span></button></div></div>";
   pop._modelSyncPlan = plan;
+  pop._modelSyncKind = "addition";
   updateModelSyncReviewSummary(pop);
+  applyModelSyncListFilter(pop);
   setTimeout(() => pop.querySelector(".model-search input")?.focus(), 0);
 }
 
@@ -4106,10 +4216,9 @@ function addAliasTargetOption(button) {
   renderAliasTargetSelectedList(pop, targets);
   const input = pop.querySelector(".alias-target-search input");
   if (input) {
-    input.value = "";
     filterAliasTargetOptions(input);
+    requestAnimationFrame(() => input.focus());
   }
-  closeAliasTargetOptions(pop);
 }
 
 function removeAliasTarget(button) {
