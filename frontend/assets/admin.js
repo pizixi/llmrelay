@@ -1378,15 +1378,68 @@ async function delUpstream(btn) {
   if (selectedAliasRemoved) showSelectedEffortMap();
 }
 
+function upstreamNameFromBaseURL(baseURL) {
+  const raw = String(baseURL || "").trim();
+  let hostname = "";
+  let port = "";
+  try {
+    const parsed = new URL(raw);
+    hostname = parsed.hostname;
+    port = parsed.port;
+  } catch (e) {
+    try {
+      const parsed = new URL("https://" + raw.replace(/^\/+/, ""));
+      hostname = parsed.hostname;
+      port = parsed.port;
+    } catch (ignored) {}
+  }
+
+  const domain = String(hostname || "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/[^a-z0-9.\u00a0-\uffff-]+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .replace(/-{2,}/g, "-");
+  const address = [domain || "upstream", port].filter(Boolean).join("-");
+  return address + "-upstream";
+}
+
+function uniqueUpstreamName(baseURL, usedNames) {
+  const baseName = upstreamNameFromBaseURL(baseURL);
+  let name = baseName;
+  let suffix = 2;
+  while (usedNames.has(name)) {
+    name = baseName + "-" + suffix;
+    suffix += 1;
+  }
+  return name;
+}
+
 function collectUpstreams() {
   const r = {};
   const order = [];
-  document.querySelectorAll("#upstreamTable tbody tr").forEach((tr) => {
+  const rows = Array.from(
+    document.querySelectorAll("#upstreamTable tbody tr"),
+  );
+  const usedNames = new Set(
+    rows
+      .map((tr) =>
+        String(tr.querySelector('[data-field="name"]')?.value || "").trim(),
+      )
+      .filter(Boolean),
+  );
+  rows.forEach((tr) => {
     const nameEl = tr.querySelector('[data-field="name"]');
-    const name = nameEl ? nameEl.value.trim() : "";
     const baseURLEl = tr.querySelector('[data-field="base_url"]');
     const baseURL = baseURLEl ? baseURLEl.value.trim() : "";
-    if (!name || !baseURL) return;
+    if (!baseURL) return;
+    let name = nameEl ? nameEl.value.trim() : "";
+    if (!name) {
+      name = uniqueUpstreamName(baseURL, usedNames);
+      usedNames.add(name);
+      if (nameEl) nameEl.value = name;
+      tr.dataset.upstreamRow = name;
+    }
     const apiKeyEl = tr.querySelector('[data-field="api_key"]');
     const apiKey = apiKeyEl ? (apiKeyEl.dataset.value || "").trim() : "";
     const apiTypeEl = tr.querySelector('[data-field="api_type"]');
