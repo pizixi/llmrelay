@@ -4007,7 +4007,7 @@ function buildAliasTargetSelectedRows(targets) {
         "</span></span>" +
         '<label class="alias-target-weight"><span>权重</span><input type="number" min="0" max="1000000" step="1" value="' +
         target.weight +
-        '" oninput="sanitizeAliasTargetWeightInput(this);updateAliasTargetEditorState(this)" onblur="commitAliasTargetWeightInput(this)"></label>' +
+        '" oninput="updateAliasTargetEditorState(this, false)" onkeydown="handleAliasTargetWeightKeydown(event)" onblur="commitAliasTargetWeightInput(this)"></label>' +
         '<span class="alias-target-percent">0%</span>' +
         '<button type="button" class="btn-icon btn-icon-danger" onclick="removeAliasTarget(this)" title="删除此上游模型" aria-label="删除 ' +
         escAttr(target.upstream + " / " + target.target_model) +
@@ -4044,7 +4044,7 @@ function buildAliasTargetsPopoverHtml(targets) {
     ICONS.search +
     '<input type="search" role="combobox" aria-expanded="false" aria-controls="aliasTargetOptions" aria-autocomplete="list" autocomplete="off" placeholder="搜索上游名称或模型 ID" onfocus="openAliasTargetOptions(this)" onclick="openAliasTargetOptions(this)" oninput="filterAliasTargetOptions(this)" onkeydown="handleAliasTargetSearchKeydown(event)"></label>' +
     '<div class="alias-target-options" id="aliasTargetOptions" role="listbox" hidden></div></div>' +
-    '<div class="alias-target-selected-head"><span>已添加模型</span><span>按权重降序 · 权重 0 不参与轮询</span></div>' +
+    '<div class="alias-target-selected-head"><span>已添加模型</span><span>权重修改后按 Enter 或失焦保存 · 按权重降序</span></div>' +
     '<div class="alias-target-selected-list">' +
     buildAliasTargetSelectedRows(targets) +
     "</div>"
@@ -4073,10 +4073,7 @@ function openAliasTargetsEditor(el) {
   pop.classList.add("alias-target-popover");
   pop._aliasTargetCandidates = aliasTargetCandidates(targets);
   const searchInput = pop.querySelector(".alias-target-search input");
-  if (searchInput && pop._aliasTargetCandidates.length) {
-    searchInput.placeholder =
-      "搜索 " + pop._aliasTargetCandidates.length + " 个上游模型";
-  }
+  if (searchInput) searchInput.placeholder = "搜索未添加的上游名称或模型 ID";
   pop.addEventListener("mousedown", (event) => {
     if (!event.target.closest(".alias-target-picker")) {
       closeAliasTargetOptions(pop);
@@ -4116,7 +4113,19 @@ function renderAliasTargetOptions(pop, query) {
   const candidates = Array.isArray(pop._aliasTargetCandidates)
     ? pop._aliasTargetCandidates
     : [];
-  const ranked = candidates
+  const selected = readAliasTargetsFromPopover(pop);
+  const selectedSet = new Set(
+    selected.map((target) =>
+      aliasTargetIdentity(target.upstream, target.target_model),
+    ),
+  );
+  const availableCandidates = candidates.filter(
+    (candidate) =>
+      !selectedSet.has(
+        aliasTargetIdentity(candidate.upstream, candidate.target_model),
+      ),
+  );
+  const ranked = availableCandidates
     .map((candidate, index) => ({
       candidate: candidate,
       index: index,
@@ -4129,19 +4138,20 @@ function renderAliasTargetOptions(pop, query) {
     .filter((item) => Number.isFinite(item.score))
     .sort((a, b) => a.score - b.score || a.index - b.index);
   const visible = ranked.map((item) => item.candidate);
-  const selected = readAliasTargetsFromPopover(pop);
   const resultHtml = visible.length
     ? buildAliasTargetOptionsHtml(visible, selected)
-    : candidates.length
+    : availableCandidates.length
       ? '<div class="alias-target-filter-empty">没有匹配的上游模型</div>'
-      : '<div class="alias-target-options-empty">暂无可用模型，请先在多上游配置中同步或添加模型</div>';
+      : candidates.length
+        ? '<div class="alias-target-options-empty">所有可用上游模型均已添加</div>'
+        : '<div class="alias-target-options-empty">暂无可用模型，请先在多上游配置中同步或添加模型</div>';
   options.innerHTML =
     '<div class="alias-target-options-list">' +
     resultHtml +
     '</div><div class="alias-target-results-summary" role="status" aria-live="polite">搜索结果 <strong>' +
     ranked.length +
     "</strong> 条，共 <strong>" +
-    candidates.length +
+    availableCandidates.length +
     "</strong> 条</div>";
   options.querySelector(".alias-target-options-list")?.scrollTo({ top: 0 });
   pop._aliasTargetKeysActiveOpt = null;
@@ -4292,6 +4302,13 @@ function sanitizeAliasTargetWeightInput(input) {
   );
 }
 
+function handleAliasTargetWeightKeydown(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  event.stopPropagation();
+  commitAliasTargetWeightInput(event.currentTarget || event.target);
+}
+
 function commitAliasTargetWeightInput(input) {
   if (!input) return;
   if (input.value === "") input.value = "1";
@@ -4322,12 +4339,12 @@ function sortAliasTargetSelectedRowsByWeight(pop) {
     .forEach((item) => list.appendChild(item.row));
 }
 
-function updateAliasTargetEditorState(source) {
+function updateAliasTargetEditorState(source, sortRows) {
   const pop = source?.classList?.contains("alias-target-popover")
     ? source
     : source?.closest?.(".alias-target-popover");
   if (!pop) return;
-  sortAliasTargetSelectedRowsByWeight(pop);
+  if (sortRows !== false) sortAliasTargetSelectedRowsByWeight(pop);
   const targets = readAliasTargetsFromPopover(pop);
   const selected = new Set(
     targets.map((target) =>
