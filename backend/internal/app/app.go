@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,32 +32,17 @@ func defaultAPIAccessKey() string {
 func Run(assets embed.FS) {
 	port := "8000"
 	databasePath := "llmrelay.db"
-	legacyConfigFlag := ""
 	adminPassword := "123456"
 	apiAccessKey := defaultAPIAccessKey()
 	debugMode := false
 	debugLogBodies := false
 	flag.StringVar(&port, "port", port, "服务端口")
 	flag.StringVar(&databasePath, "db", databasePath, "SQLite 数据库路径")
-	flag.StringVar(&legacyConfigFlag, "config", legacyConfigFlag, "兼容旧版 JSON 配置路径（仅首次启动时导入）")
 	flag.StringVar(&adminPassword, "password", adminPassword, "管理面板密码（留空则不启用登录验证）")
 	flag.StringVar(&apiAccessKey, "api-key", apiAccessKey, "对外 /v1 API 密钥（也可用 LLMGATEWAYGO_API_KEY；留空保持兼容）")
 	flag.BoolVar(&debugMode, "debug", false, "启用调试日志")
 	flag.BoolVar(&debugLogBodies, "debug-log-bodies", false, "在调试日志中记录请求和响应正文（可能包含敏感信息）")
 	flag.Parse()
-	if legacyConfigFlag != "" && !strings.EqualFold(filepath.Ext(legacyConfigFlag), ".json") {
-		// 兼容旧版把 -config 直接指向持久化文件的启动脚本。
-		databasePath = legacyConfigFlag
-		legacyConfigFlag = ""
-	}
-
-	legacyConfigPath := legacyConfigFlag
-	if legacyConfigPath == "" {
-		legacyConfigPath = filepath.Join(filepath.Dir(databasePath), "config.json")
-	}
-	if err := config.MigrateLegacyJSON(databasePath, legacyConfigPath); err != nil {
-		log.Printf("警告: 导入旧配置失败: %v", err)
-	}
 	config.SetPath(databasePath)
 	cfg, err := config.LoadConfig(databasePath)
 	if err != nil {

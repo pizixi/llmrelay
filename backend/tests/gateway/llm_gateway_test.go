@@ -1426,21 +1426,12 @@ func TestUpstreamRequestCancellationStopsInFlightCall(t *testing.T) {
 	}
 }
 
-func TestConfigLoadFailureDoesNotOverwriteAndSavesReplaceCleanly(t *testing.T) {
+func TestConfigDatabaseRejectsJSONAndReplacesNormalizedConfigCleanly(t *testing.T) {
 	tempDir := t.TempDir()
-	path := filepath.Join(tempDir, "config.json")
-	malformed := []byte(`{"upstreams":`)
-	if err := os.WriteFile(path, malformed, 0600); err != nil {
-		t.Fatal(err)
+	path := filepath.Join(tempDir, "llmrelay.db")
+	if _, err := loadConfig(filepath.Join(tempDir, "config.json")); err == nil {
+		t.Fatal("loadConfig accepted a JSON configuration path")
 	}
-	if _, err := loadConfig(path); err == nil {
-		t.Fatal("loadConfig accepted malformed JSON")
-	}
-	unchanged, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireTestEqual(t, "malformed config remains unchanged", unchanged, malformed)
 
 	first := AppConfig{
 		Upstreams:       map[string]*UpstreamConfig{"one": {BaseURL: "https://one.example/v1", APIType: UpstreamOpenAI}},
@@ -1469,8 +1460,8 @@ func TestConfigLoadFailureDoesNotOverwriteAndSavesReplaceCleanly(t *testing.T) {
 		t.Fatalf("loaded stale config: %#v", loaded)
 	}
 	requireTestEqual(t, "persisted upstream order", loaded.UpstreamOrder, []string{"two", "three"})
-	if matches, _ := filepath.Glob(filepath.Join(tempDir, ".config-*.tmp")); len(matches) != 0 {
-		t.Fatalf("temporary config files remain: %#v", matches)
+	if _, err := os.Stat(filepath.Join(tempDir, "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("JSON configuration file was created: %v", err)
 	}
 }
 

@@ -323,6 +323,21 @@ func sqliteSnapshot() TokenStatsData {
 	}
 }
 
+// usageAPIKeySource uses the managed API key table when it is available. The
+// name stored on usage_records remains a snapshot for records created before
+// a managed key existed, or after that key was deleted; otherwise a rename of
+// an API key is reflected immediately in the usage page and its filters.
+func usageAPIKeySource(db *sql.DB) (from, nameExpression string) {
+	var exists int
+	if err := db.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'
+	)`).Scan(&exists); err != nil || exists == 0 {
+		return "usage_records", "usage_records.api_key_name"
+	}
+	return "usage_records LEFT JOIN api_keys ON api_keys.id = usage_records.api_key_id",
+		"COALESCE(NULLIF(TRIM(api_keys.name), ''), usage_records.api_key_name)"
+}
+
 func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 	page := UsagePage{Items: []UsageRecord{}, KeyNames: []string{}}
 	if query.Limit <= 0 || query.Limit > 500 {
@@ -336,35 +351,37 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 	if err != nil {
 		return page, err
 	}
+	from, apiKeyNameExpression := usageAPIKeySource(db)
 	conditions := []string{"1 = 1"}
 	args := []any{}
 	if value := strings.TrimSpace(query.Model); value != "" {
-		conditions = append(conditions, "request_model = ?")
+		conditions = append(conditions, "usage_records.request_model = ?")
 		args = append(args, value)
 	}
 	if value := strings.TrimSpace(query.Upstream); value != "" {
-		conditions = append(conditions, "upstream_name = ?")
+		conditions = append(conditions, "usage_records.upstream_name = ?")
 		args = append(args, value)
 	}
 	if value := strings.TrimSpace(query.APIKeyName); value != "" {
-		conditions = append(conditions, "api_key_name = ?")
+		conditions = append(conditions, apiKeyNameExpression+" = ?")
 		args = append(args, value)
 	}
 	if value := strings.TrimSpace(query.Date); value != "" {
-		conditions = append(conditions, "called_date = ?")
+		conditions = append(conditions, "usage_records.called_date = ?")
 		args = append(args, value)
 	}
 	where := strings.Join(conditions, " AND ")
-	if err := db.QueryRow("SELECT COUNT(*) FROM usage_records WHERE "+where, args...).Scan(&page.Total); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM "+from+" WHERE "+where, args...).Scan(&page.Total); err != nil {
 		return page, err
 	}
 	if err := db.QueryRow(`SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(prompt_tokens), 0),
 		COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
-		FROM usage_records WHERE `+where, args...).Scan(&page.Summary.RequestCount, &page.Summary.PromptTokens,
+		FROM `+from+` WHERE `+where, args...).Scan(&page.Summary.RequestCount, &page.Summary.PromptTokens,
 		&page.Summary.CompletionTokens, &page.Summary.TotalTokens); err != nil {
 		return page, err
 	}
-	keyRows, err := db.Query("SELECT DISTINCT api_key_name FROM usage_records WHERE TRIM(api_key_name) != '' ORDER BY api_key_name")
+	keyRows, err := db.Query("SELECT DISTINCT " + apiKeyNameExpression + " FROM " + from +
+		" WHERE TRIM(" + apiKeyNameExpression + ") != '' ORDER BY " + apiKeyNameExpression)
 	if err != nil {
 		return page, err
 	}
@@ -384,9 +401,9 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 		return page, err
 	}
 	args = append(args, query.Limit, query.Offset)
-	rows, err := db.Query(`SELECT id, request_model, upstream_name, upstream_model, called_at,
-		api_key_id, api_key_name, prompt_tokens, completion_tokens, total_tokens, request_count, first_byte_ms, duration_ms
-		FROM usage_records WHERE `+where+` ORDER BY called_at DESC, id DESC LIMIT ? OFFSET ?`, args...)
+	rows, err := db.Query(`SELECT usage_records.id, usage_records.request_model, usage_records.upstream_name, usage_records.upstream_model, usage_records.called_at,
+		usage_records.api_key_id, `+apiKeyNameExpression+`, usage_records.prompt_tokens, usage_records.completion_tokens, usage_records.total_tokens, usage_records.request_count, usage_records.first_byte_ms, usage_records.duration_ms
+		FROM `+from+` WHERE `+where+` ORDER BY usage_records.called_at DESC, usage_records.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return page, err
 	}

@@ -18,6 +18,7 @@ backend/
 
     config/
       config.go                       # 配置读取、规范化、保存与运行时状态
+      sqlite.go                       # 关系化配置表、事务写入与旧 SQLite 记录的一次性迁移
       store.go                        # 配置状态访问
       compat.go                       # 迁移后的内部依赖适配
     auth/                             # 管理会话和对外 API 鉴权

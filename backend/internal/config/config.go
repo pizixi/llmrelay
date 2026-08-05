@@ -1,10 +1,7 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,46 +12,24 @@ import (
 // ======================== 配置 ========================
 
 var (
-	port       string
 	configPath = "llmrelay.db"
 	modelAlias = map[string]ModelAlias{}
 
 	reasoningEffortMap  = map[string]string{}
 	webSearchCfg        WebSearchConfig
-	debugMode           bool
-	debugLogBodies      bool
-	apiAccessKey        string
 	apiKeys             []APIKey
 	upstreamOrder       []string
 	configMu            sync.RWMutex
-	configFileMu        sync.Mutex
-	configUpdateMu      sync.Mutex
 	aliasTargetCounters sync.Map
 )
 
 // ======================== 配置管理 ========================
 
 func LoadConfig(path string) (AppConfig, error) {
-	if storage.IsSQLitePath(path) {
-		return loadSQLiteConfig(path)
+	if !storage.IsSQLitePath(path) {
+		return AppConfig{}, fmt.Errorf("configuration must be stored in SQLite; JSON config files are no longer supported")
 	}
-	var cfg AppConfig
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return cfg, fmt.Errorf("read config: %w", err)
-		}
-		NormalizeConfig(&cfg)
-		return cfg, nil
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("parse config: %w", err)
-	}
-	if err := ValidateConfig(&cfg); err != nil {
-		return cfg, fmt.Errorf("validate config: %w", err)
-	}
-	NormalizeConfig(&cfg)
-	return cfg, nil
+	return loadSQLiteConfig(path)
 }
 
 func ValidateConfig(cfg *AppConfig) error {
@@ -64,6 +39,7 @@ func ValidateConfig(cfg *AppConfig) error {
 	seenAPIKeyIDs := make(map[string]struct{}, len(cfg.APIKeys))
 	seenAPIKeys := make(map[string]struct{}, len(cfg.APIKeys))
 	seenAPIKeyNames := make(map[string]struct{}, len(cfg.APIKeys))
+	seenUpstreamIDs := make(map[int64]string, len(cfg.Upstreams))
 	for _, apiKey := range cfg.APIKeys {
 		key := strings.TrimSpace(apiKey.Key)
 		if key == "" {
@@ -101,6 +77,15 @@ func ValidateConfig(cfg *AppConfig) error {
 		}
 		if upstream == nil || strings.TrimSpace(upstream.BaseURL) == "" {
 			return fmt.Errorf("upstream %q must have base_url", name)
+		}
+		if upstream.ID < 0 {
+			return fmt.Errorf("upstream %q has invalid id %d", name, upstream.ID)
+		}
+		if upstream.ID > 0 {
+			if previousName, exists := seenUpstreamIDs[upstream.ID]; exists {
+				return fmt.Errorf("duplicate upstream id %d for %q and %q", upstream.ID, previousName, name)
+			}
+			seenUpstreamIDs[upstream.ID] = name
 		}
 		if !validType(upstream.APIType) {
 			return fmt.Errorf("upstream %q has unsupported api_type %q", name, upstream.APIType)
@@ -326,56 +311,10 @@ func NormalizeSocks5Config(cfg *AppConfig) {
 }
 
 func SaveConfig(path string, cfg AppConfig) error {
-	if storage.IsSQLitePath(path) {
-		return saveSQLiteConfig(path, cfg)
+	if !storage.IsSQLitePath(path) {
+		return fmt.Errorf("configuration must be stored in SQLite; JSON config files are no longer supported")
 	}
-	configFileMu.Lock()
-	defer configFileMu.Unlock()
-	NormalizeConfig(&cfg)
-	cfg.Upstream = nil
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, ".config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	removeTemp := func() {
-		temp.Close()
-		os.Remove(tempPath)
-	}
-	if err := temp.Chmod(0600); err != nil {
-		removeTemp()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		removeTemp()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		removeTemp()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		os.Remove(tempPath)
-		return err
-	}
-	if err := os.Rename(tempPath, path); err == nil {
-		return nil
-	}
-	// Windows 降级方案；写入操作由 configFileMu 串行化。
-	if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
-		os.Remove(tempPath)
-		return removeErr
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		os.Remove(tempPath)
-		return err
-	}
-	return nil
+	return saveSQLiteConfig(path, cfg)
 }
 
 func ApplyConfig(cfg AppConfig) {

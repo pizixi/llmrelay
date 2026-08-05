@@ -189,6 +189,7 @@ let aliasData = {},
   modelListByUpstream = {},
   upstreamData = {},
   savedUpstreamModelsByUpstream = {},
+  pendingUpstreamRenames = {},
   upstreamOrder = [],
   defaultUpstream = "",
   socks5Data = [],
@@ -458,21 +459,81 @@ function upstreamModelsSnapshot(source) {
 
 function rememberSavedUpstreamModels() {
   savedUpstreamModelsByUpstream = upstreamModelsSnapshot(upstreamData);
+  pendingUpstreamRenames = {};
+  document.querySelectorAll("#upstreamTable tbody tr[data-upstream-row]").forEach(
+    (row) => {
+      const name = String(
+        row.querySelector('[data-field="name"]')?.value || "",
+      ).trim();
+      if (!name) return;
+      row.dataset.upstreamRow = name;
+      row.dataset.upstreamOriginal = name;
+    },
+  );
+}
+
+function resolvedPendingUpstreamName(name) {
+  let current = String(name || "").trim();
+  const seen = new Set();
+  while (current && pendingUpstreamRenames[current] && !seen.has(current)) {
+    seen.add(current);
+    current = String(pendingUpstreamRenames[current] || "").trim();
+  }
+  return current;
+}
+
+function syncPendingUpstreamRenames() {
+  if (!Object.keys(pendingUpstreamRenames).length) return;
+
+  document
+    .querySelectorAll("#aliasTable [data-field=\"targets\"]")
+    .forEach((field) => {
+      const before = parseAliasTargets(field.dataset.targets || "[]");
+      const next = normalizeAliasTargets(
+        before.map((target) => ({
+          ...target,
+          upstream: resolvedPendingUpstreamName(target.upstream),
+        })),
+      );
+      if (JSON.stringify(before) === JSON.stringify(next)) return;
+      field.dataset.targets = JSON.stringify(next);
+      field.title = aliasTargetsTitle(next);
+      field.setAttribute("aria-label", aliasTargetsTitle(next));
+      field.innerHTML =
+        aliasTargetsDisplay(next) +
+        '<span class="field-edit-icon">' +
+        ICONS.layers +
+        "</span>";
+    });
+
+  Object.keys(pendingUpstreamRenames).forEach((oldName) => {
+    const nextName = resolvedPendingUpstreamName(oldName);
+    if (!nextName || oldName === nextName) return;
+    const oldModels = modelListByUpstream[oldName] || [];
+    const nextModels = modelListByUpstream[nextName] || [];
+    if (oldModels.length || nextModels.length) {
+      modelListByUpstream[nextName] = Array.from(
+        new Set(nextModels.concat(oldModels)),
+      ).sort((a, b) => a.localeCompare(b));
+    }
+    delete modelListByUpstream[oldName];
+  });
 }
 
 function removedUpstreamModelsSinceSave() {
   const removed = {};
   Object.keys(savedUpstreamModelsByUpstream || {}).forEach((upstreamName) => {
-    if (!upstreamData[upstreamName]) return;
+    const currentName = resolvedPendingUpstreamName(upstreamName);
+    if (!upstreamData[currentName]) return;
     const current = new Set(
-      Array.isArray(upstreamData[upstreamName].custom_models)
-        ? upstreamData[upstreamName].custom_models
+      Array.isArray(upstreamData[currentName].custom_models)
+        ? upstreamData[currentName].custom_models
         : [],
     );
     const missing = (savedUpstreamModelsByUpstream[upstreamName] || []).filter(
       (model) => !current.has(model),
     );
-    if (missing.length) removed[upstreamName] = new Set(missing);
+    if (missing.length) removed[currentName] = new Set(missing);
   });
   return removed;
 }
@@ -1304,6 +1365,10 @@ function renderUpstreamTable() {
       return (
         '<tr data-upstream-row="' +
         escAttr(name) +
+        '" data-upstream-original="' +
+        escAttr(name) +
+        '" data-upstream-id="' +
+        escAttr(up.id || "") +
         '"' +
         (isDefault ? ' class="upstream-default"' : "") +
         ">" +
@@ -1366,7 +1431,7 @@ function addUpstreamRow() {
   if (tb.querySelector(".empty-hint, .empty-state")) tb.innerHTML = "";
   tb.insertAdjacentHTML(
     "afterbegin",
-    '<tr data-upstream-row="">' +
+    '<tr data-upstream-row="" data-upstream-original="" data-upstream-id="">' +
       '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
       ICONS.grip +
       "</span></td>" +
@@ -1590,17 +1655,22 @@ function confirmConfigDelete(triggerEl, itemType, itemName) {
 }
 
 function upstreamAliasDeleteImpact(upstreamName) {
+  const upstreamNames = new Set(
+    (Array.isArray(upstreamName) ? upstreamName : [upstreamName]).map((name) =>
+      String(name || "").trim(),
+    ),
+  );
   const aliases = [];
   let targetCount = 0;
   Object.keys(aliasData || {}).forEach((aliasName) => {
     const entry = aliasData[aliasName] || {};
     const targets = normalizeAliasTargets(entry.targets || []);
     const removedTargets = targets.filter(
-      (target) => target.upstream === upstreamName,
+      (target) => upstreamNames.has(target.upstream),
     );
     if (!removedTargets.length) return;
     const remainingTargets = targets.filter(
-      (target) => target.upstream !== upstreamName,
+      (target) => !upstreamNames.has(target.upstream),
     );
     targetCount += removedTargets.length;
     aliases.push({
@@ -1686,8 +1756,14 @@ async function delUpstream(btn) {
   const row = btn.closest("tr");
   const ni = row.querySelector('[data-field="name"]');
   const upstreamName = ni?.value?.trim() || "";
+  const originalUpstreamName = String(
+    row.dataset.upstreamOriginal || row.dataset.upstreamRow || "",
+  ).trim();
   collectAliases();
-  const impact = upstreamAliasDeleteImpact(upstreamName);
+  const impact = upstreamAliasDeleteImpact([
+    upstreamName,
+    originalUpstreamName,
+  ]);
   if (!(await upstreamDeleteConfirm(btn, upstreamName, impact))) return;
   const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
   row.remove();
@@ -1762,12 +1838,18 @@ function collectUpstreams() {
     const baseURLEl = tr.querySelector('[data-field="base_url"]');
     const baseURL = baseURLEl ? baseURLEl.value.trim() : "";
     if (!baseURL) return;
+    const originalName = String(
+      tr.dataset.upstreamOriginal || tr.dataset.upstreamRow || "",
+    ).trim();
     let name = nameEl ? nameEl.value.trim() : "";
     if (!name) {
       name = uniqueUpstreamName(baseURL, usedNames);
       usedNames.add(name);
       if (nameEl) nameEl.value = name;
       tr.dataset.upstreamRow = name;
+    }
+    if (originalName && originalName !== name) {
+      pendingUpstreamRenames[originalName] = name;
     }
     const apiKeyEl = tr.querySelector('[data-field="api_key"]');
     const apiKey = apiKeyEl ? (apiKeyEl.dataset.value || "").trim() : "";
@@ -1782,6 +1864,8 @@ function collectUpstreams() {
       api_type: apiType,
       bridge_mode: bridgeMode,
     };
+    const upstreamID = Number.parseInt(tr.dataset.upstreamId || "", 10);
+    if (Number.isSafeInteger(upstreamID) && upstreamID > 0) up.id = upstreamID;
     if (apiKey) up.api_key = apiKey;
     if (customRaw)
       up.custom_models = customRaw
@@ -1792,8 +1876,12 @@ function collectUpstreams() {
     if (!order.includes(name)) order.push(name);
   });
   upstreamData = r;
+  if (pendingUpstreamRenames[defaultUpstream]) {
+    defaultUpstream = resolvedPendingUpstreamName(defaultUpstream);
+  }
   if (!upstreamData[defaultUpstream]) defaultUpstream = order[0] || "";
   upstreamOrder = order.slice().reverse();
+  syncPendingUpstreamRenames();
   return r;
 }
 

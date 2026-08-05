@@ -15,11 +15,6 @@ import (
 )
 
 const schema = `
-CREATE TABLE IF NOT EXISTS app_config (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    data TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 CREATE TABLE IF NOT EXISTS usage_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_model TEXT NOT NULL,
@@ -43,8 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(request_model);
 CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_name);
 `
 
-// IsSQLitePath treats JSON paths as the legacy file format. This keeps the
-// package-level helpers source-compatible with older tests and deployments.
+// IsSQLitePath reports whether a path should use SQLite rather than the
+// remaining legacy JSON format used by token statistics. Configuration itself
+// is SQLite-only; the check lives here because statistics still supports
+// explicitly selected JSON paths in tests and older integrations.
 func IsSQLitePath(path string) bool {
 	return !strings.EqualFold(filepath.Ext(strings.TrimSpace(path)), ".json")
 }

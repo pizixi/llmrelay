@@ -2,7 +2,7 @@ package config
 
 import "llmrelay/backend/internal/netproxy"
 
-// SetPath 设置配置文件路径。
+// SetPath 设置配置数据库路径。
 func SetPath(path string) { configPath = path }
 
 func Path() string { return configPath }

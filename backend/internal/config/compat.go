@@ -94,11 +94,17 @@ func NormalizeSingleUpstream(config *UpstreamConfig) bool {
 	config.ResponsesReasoningFormat = strings.TrimSpace(config.ResponsesReasoningFormat)
 	if len(config.CustomModels) > 0 {
 		cleaned := make([]string, 0, len(config.CustomModels))
+		seen := make(map[string]struct{}, len(config.CustomModels))
 		for _, model := range config.CustomModels {
 			model = strings.TrimSpace(model)
-			if model != "" {
-				cleaned = append(cleaned, model)
+			if model == "" {
+				continue
 			}
+			if _, exists := seen[model]; exists {
+				continue
+			}
+			seen[model] = struct{}{}
+			cleaned = append(cleaned, model)
 		}
 		config.CustomModels = cleaned
 	}

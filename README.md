@@ -102,7 +102,7 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 - strict 模式不执行原生搜索到网关搜索的语义降级。
 - 未启用全局搜索执行器时，原生搜索失败会原样返回，不会静默生成一份没有搜索依据的答案。
 
-旧配置文件中的 `hosted_web_search` 字段会在读取时被忽略，保存后自动移除，无需迁移。
+旧 SQLite 配置记录中的 `hosted_web_search` 字段会在一次性关系化迁移时忽略。
 
 网关回退是独立的受控工具循环：模型先调用内部搜索 function，网关执行搜索、把结果作为 tool message 注入，然后再次调用模型。客户端自己的 function/custom 工具不会由网关执行。流式请求会在搜索和模型闭环完成后输出合法的 Responses SSE 事件；原生上游流式请求仍保持透传。
 
@@ -188,7 +188,7 @@ go run . -password "管理密码" -api-key "对外 API 密钥"
 - API Base URL：<http://localhost:8000/v1>
 - 健康检查：<http://localhost:8000/health>
 
-首次启动会在当前目录生成纯 Go 驱动的 SQLite 数据库 `llmrelay.db`，配置和调用明细、统计数据统一保存在其中。升级旧版本时，如果当前目录存在 `config.json` 或 `stats.json`，首次启动会自动导入并保留原文件不变；也可用 `-config <旧 JSON 路径>` 指定配置导入源，或用 `-db <数据库路径>` 指定 SQLite 文件。
+首次启动会在当前目录生成纯 Go 驱动的 SQLite 数据库 `llmrelay.db`，配置和调用明细、统计数据统一保存在其中。配置已经使用关系表保存：上游、上游密钥、模型白名单、模型别名及目标、推理强度映射、API 密钥、SOCKS5、Web Search 和全局选择分别存储，并通过外键、唯一约束和排序字段关联。旧 SQLite 数据库中的 `app_config` JSON 记录会在首次加载时事务迁移到这些表，迁移成功后删除旧表；应用不再读取、写入或导入 `config.json`，也不再提供 `-config` 参数。数据库路径通过 `-db <数据库路径>` 指定。旧版 `stats.json` 仅作为统计数据的独立一次性导入来源。
 
 管理后台的“API 密钥”页可创建、停用、删除和复制多个对外 API Key。旧版本通过 `-api-key`、`LLMGATEWAYGO_API_KEY` 或兼容环境变量 `LLM2API_API_KEY` 设置的密钥，会在首次启动时自动迁移为“默认密钥”；这些参数仍可用于兼容启动脚本。
 

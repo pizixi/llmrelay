@@ -35,7 +35,23 @@ func TestTrackedUsageCarriesAPIKeyAndFilteredSummary(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 
-	page, err := ListUsageRecords(UsageQuery{Limit: 10, APIKeyName: "生产环境"})
+	db, err := sqliteDB()
+	if err != nil {
+		t.Fatalf("open usage database: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE api_keys (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create api key table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys(id, name) VALUES (?, ?)`, "key-prod", "生产环境"); err != nil {
+		t.Fatalf("insert api key: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE api_keys SET name = ? WHERE id = ?`, "生产环境（已更新）", "key-prod"); err != nil {
+		t.Fatalf("rename api key: %v", err)
+	}
+	page, err := ListUsageRecords(UsageQuery{Limit: 10, APIKeyName: "生产环境（已更新）"})
 	if err != nil {
 		t.Fatalf("list usage: %v", err)
 	}
@@ -43,7 +59,7 @@ func TestTrackedUsageCarriesAPIKeyAndFilteredSummary(t *testing.T) {
 		t.Fatalf("unexpected page: %#v", page)
 	}
 	item := page.Items[0]
-	if item.APIKeyID != "key-prod" || item.APIKeyName != "生产环境" {
+	if item.APIKeyID != "key-prod" || item.APIKeyName != "生产环境（已更新）" {
 		t.Fatalf("api key identity = %#v", item)
 	}
 	if page.Summary.RequestCount != 1 || page.Summary.PromptTokens != 11 || page.Summary.CompletionTokens != 7 || page.Summary.TotalTokens != 18 {

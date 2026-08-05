@@ -23,6 +23,10 @@ const (
 )
 
 type UpstreamConfig struct {
+	// ID is the stable relational identity of this upstream. The display name
+	// is editable, so model alias targets must not depend on it to detect a
+	// rename.
+	ID                       int64        `json:"id,omitempty"`
 	BaseURL                  string       `json:"base_url"`
 	APIKey                   string       `json:"api_key"`
 	APIType                  UpstreamType `json:"api_type"`

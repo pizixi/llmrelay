@@ -142,3 +142,144 @@ func TestReconcileRemovedUpstreamModelsDeletesAliasWhenExplicitListBecomesEmpty(
 		t.Fatal("alias with no remaining target was not deleted")
 	}
 }
+
+func TestReconcileRemovedUpstreamModelsMigratesRenamedUpstreamByID(t *testing.T) {
+	previous := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {ID: 41, BaseURL: "https://primary.example/v1", CustomModels: []string{"model-a", "model-b"}},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {
+				WithReasoning:      true,
+				ReasoningEffortMap: map[string]string{"high": "max"},
+				Targets: []ModelAliasTarget{{
+					Upstream: "primary", TargetModel: "model-a", Weight: 7,
+				}},
+			},
+		},
+	}
+	next := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"main": {ID: 41, BaseURL: "https://primary.example/v1", CustomModels: []string{"model-b"}},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {
+				WithReasoning:      true,
+				ReasoningEffortMap: map[string]string{"high": "max"},
+				Targets: []ModelAliasTarget{{
+					Upstream: "primary", TargetModel: "model-a", Weight: 7,
+				}},
+			},
+		},
+	}
+
+	cleanup := ReconcileRemovedUpstreamModels(previous, &next)
+
+	if cleanup.RemovedTargets != 1 || cleanup.RemovedAliases != 1 {
+		t.Fatalf("cleanup = %#v, want renamed target to be checked against the new upstream", cleanup)
+	}
+	if _, exists := next.ModelAlias["chat"]; exists {
+		t.Fatal("alias with its only removed model target was not deleted")
+	}
+}
+
+func TestReconcileRemovedUpstreamModelsPreservesRenamedTargetByID(t *testing.T) {
+	previous := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {ID: 42, BaseURL: "https://primary.example/v1", CustomModels: []string{"model-a"}},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{{
+				Upstream: "primary", TargetModel: "model-a", Weight: 3,
+			}}},
+		},
+	}
+	next := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"main": {ID: 42, BaseURL: "https://primary.example/v1", CustomModels: []string{"model-a"}},
+		},
+		UpstreamOrder:   []string{"primary"},
+		DefaultUpstream: "primary",
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{{
+				Upstream: "primary", TargetModel: "model-a", Weight: 3,
+			}}},
+		},
+	}
+
+	cleanup := ReconcileRemovedUpstreamModels(previous, &next)
+
+	if cleanup.RemovedTargets != 0 || cleanup.RemovedAliases != 0 {
+		t.Fatalf("cleanup = %#v, rename should not remove the mapping", cleanup)
+	}
+	if next.DefaultUpstream != "main" || len(next.UpstreamOrder) != 1 || next.UpstreamOrder[0] != "main" {
+		t.Fatalf("upstream references were not migrated: default=%q order=%#v", next.DefaultUpstream, next.UpstreamOrder)
+	}
+	targets := next.ModelAlias["chat"].Targets
+	if len(targets) != 1 || targets[0].Upstream != "main" || targets[0].Weight != 3 {
+		t.Fatalf("renamed targets = %#v", targets)
+	}
+}
+
+func TestReconcileRemovedUpstreamModelsInfersUniqueRenameWithoutID(t *testing.T) {
+	previous := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", APIType: UpstreamOpenAI},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{{
+				Upstream: "primary", TargetModel: "model-a", Weight: 1,
+			}}},
+		},
+	}
+	next := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"main": {BaseURL: "https://primary.example/v1", APIType: UpstreamOpenAI},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{{
+				Upstream: "primary", TargetModel: "model-a", Weight: 1,
+			}}},
+		},
+	}
+
+	cleanup := ReconcileRemovedUpstreamModels(previous, &next)
+
+	if cleanup.RemovedTargets != 0 {
+		t.Fatalf("cleanup = %#v, unique legacy rename should be preserved", cleanup)
+	}
+	if got := next.ModelAlias["chat"].Targets[0].Upstream; got != "main" {
+		t.Fatalf("renamed upstream = %q, want main", got)
+	}
+}
+
+func TestReconcileRemovedUpstreamModelsDoesNotGuessAmbiguousRename(t *testing.T) {
+	previous := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://same.example/v1", APIType: UpstreamOpenAI},
+			"backup":  {BaseURL: "https://same.example/v1", APIType: UpstreamOpenAI},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{{
+				Upstream: "primary", TargetModel: "model-a", Weight: 1,
+			}}},
+		},
+	}
+	next := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"main":    {BaseURL: "https://same.example/v1", APIType: UpstreamOpenAI},
+			"backup2": {BaseURL: "https://same.example/v1", APIType: UpstreamOpenAI},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{{
+				Upstream: "primary", TargetModel: "model-a", Weight: 1,
+			}}},
+		},
+	}
+
+	cleanup := ReconcileRemovedUpstreamModels(previous, &next)
+
+	if cleanup.RemovedTargets != 1 {
+		t.Fatalf("cleanup = %#v, ambiguous rename should remain a deletion", cleanup)
+	}
+}
