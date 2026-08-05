@@ -5807,6 +5807,56 @@ async function loadStats() {
 
 let usageTotal = 0;
 
+function getUsageTotalPages() {
+  return Math.max(1, Math.ceil(usageTotal / USAGE_PAGE_SIZE));
+}
+
+function updateUsagePagination() {
+  const totalPages = getUsageTotalPages();
+  const currentPage = usageTotal
+    ? Math.min(Math.floor(usagePageOffset / USAGE_PAGE_SIZE) + 1, totalPages)
+    : 1;
+  const pageInput = document.getElementById("usagePageInput");
+  const totalPagesElement = document.getElementById("usageTotalPages");
+  const pageIndicator = document.getElementById("usagePageIndicator");
+  if (pageInput) {
+    pageInput.value = String(currentPage);
+    pageInput.max = String(totalPages);
+  }
+  if (totalPagesElement) totalPagesElement.textContent = String(totalPages);
+  if (pageIndicator) pageIndicator.setAttribute("aria-label", "第 " + currentPage + " 页，共 " + totalPages + " 页");
+  const prev = document.getElementById("usagePrev");
+  const next = document.getElementById("usageNext");
+  if (prev) prev.disabled = usagePageOffset <= 0;
+  if (next) next.disabled = !usageTotal || currentPage >= totalPages;
+}
+
+function jumpToUsagePage() {
+  const pageInput = document.getElementById("usagePageInput");
+  if (!pageInput) return;
+  const totalPages = getUsageTotalPages();
+  const requestedPage = Number.parseInt(pageInput.value, 10);
+  if (!Number.isFinite(requestedPage)) {
+    updateUsagePagination();
+    return;
+  }
+  const targetPage = Math.min(Math.max(requestedPage, 1), totalPages);
+  const nextOffset = (targetPage - 1) * USAGE_PAGE_SIZE;
+  pageInput.value = String(targetPage);
+  if (nextOffset === usagePageOffset) {
+    updateUsagePagination();
+    return;
+  }
+  loadUsageRecords(nextOffset);
+}
+
+function handleUsagePageInputKeydown(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  jumpToUsagePage();
+  event.currentTarget.blur();
+}
+
 function formatUsageTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value || "-";
@@ -5870,8 +5920,7 @@ async function loadUsageRecords(offset) {
     const start = usageTotal ? usagePageOffset + 1 : 0;
     const end = Math.min(usagePageOffset + items.length, usageTotal);
     document.getElementById("usageSummary").textContent = "共 " + fmt(usageTotal) + " 条 · " + fmt(start) + "–" + fmt(end);
-    document.getElementById("usagePrev").disabled = usagePageOffset <= 0;
-    document.getElementById("usageNext").disabled = usagePageOffset + USAGE_PAGE_SIZE >= usageTotal;
+    updateUsagePagination();
   } catch (e) {
     if (loadSequence !== usageLoadSequence) return;
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
@@ -5880,6 +5929,7 @@ async function loadUsageRecords(offset) {
     document.getElementById("usageSummaryPrompt").textContent = "0";
     document.getElementById("usageSummaryCompletion").textContent = "0";
     document.getElementById("usageSummaryTotal").textContent = "0";
+    updateUsagePagination();
   }
 }
 

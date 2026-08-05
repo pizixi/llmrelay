@@ -6159,38 +6159,45 @@ header {
 
 .usage-filter-summary {
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
-  justify-content: space-between;
   gap: 18px;
-  min-height: 62px;
-  margin-top: 10px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.usage-filter-summary-heading {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .usage-filter-summary-title {
-  flex: 0 0 auto;
-  color: var(--text-sec);
+  color: var(--text);
   font-size: 13px;
   font-weight: 650;
   white-space: nowrap;
 }
 
 .usage-filter-summary-items {
-  display: grid;
+  display: flex;
   flex: 1 1 auto;
-  grid-template-columns: repeat(4, minmax(100px, 1fr));
-  gap: 8px;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
 }
 
 .usage-filter-summary-items span {
   display: flex;
   min-width: 0;
   align-items: baseline;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
   color: var(--text-ter);
   font-size: 12px;
@@ -6270,18 +6277,106 @@ header {
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
-  min-height: 40px;
-  padding-top: 8px;
+  gap: 20px;
+  min-height: 62px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--surface-2) 0%, var(--surface) 72%);
+  box-shadow: var(--shadow-xs);
   color: var(--text-ter);
   font-size: 12.5px;
 }
 
-.usage-pagination > div {
+.usage-page-range {
+  flex: 0 0 auto;
+  color: var(--text-ter);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-pagination-actions {
   display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.usage-page-controls {
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
-.usage-pagination .btn-icon {
+.usage-page-indicator {
+  display: inline-flex;
+  min-width: 108px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-ter);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-page-indicator b {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.usage-page-indicator .usage-page-total {
+  color: var(--accent);
+}
+
+.usage-page-input {
+  width: 32px;
+  height: 24px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border-strong);
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 24px;
+  text-align: center;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  -moz-appearance: textfield;
+}
+
+.usage-page-input::-webkit-inner-spin-button,
+.usage-page-input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.usage-page-input:focus {
+  border-bottom-color: var(--accent);
+  box-shadow: 0 2px 0 var(--accent-dim-strong);
+}
+
+.usage-page-indicator em {
+  color: var(--text-ter);
+  font-style: normal;
+}
+
+.usage-page-divider {
+  color: var(--text-faint);
+}
+
+.usage-page-controls .btn-icon {
   font-family: var(--font);
   font-size: 22px;
   line-height: 1;
@@ -6417,17 +6512,19 @@ header {
   }
 
   .usage-filter-summary {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 8px;
+    gap: 12px;
   }
 
   .usage-filter-summary-items {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
   }
 
   .usage-filter-summary-items span {
     justify-content: flex-start;
+  }
+
+  .usage-filter-summary-heading {
+    gap: 1px;
   }
 
   .upstream-filterbar {
@@ -6445,6 +6542,28 @@ header {
 
   .routing-section {
     flex: 0 0 auto;
+  }
+
+  .usage-pagination {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .usage-filter-summary {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .usage-filter-summary-items {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .usage-pagination-actions {
+    justify-content: space-between;
   }
 
   .routing-section > .table-scroll {
