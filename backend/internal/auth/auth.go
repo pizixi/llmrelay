@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"llmrelay/backend/internal/domain"
 )
 
 // ======================== 管理面板认证 ========================
@@ -53,10 +55,6 @@ func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func RequireAPIAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if apiAccessKey == "" {
-			next(w, r)
-			return
-		}
 		provided := strings.TrimSpace(r.Header.Get("x-api-key"))
 		if provided == "" {
 			authorization := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -64,8 +62,13 @@ func RequireAPIAuth(next http.HandlerFunc) http.HandlerFunc {
 				provided = strings.TrimSpace(authorization[7:])
 			}
 		}
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(apiAccessKey)) == 1 {
+		identity, configured := matchAPIKey(provided)
+		if !configured {
 			next(w, r)
+			return
+		}
+		if identity.ID != "" {
+			next(w, r.WithContext(WithAPIKey(r.Context(), identity)))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -83,12 +86,48 @@ func RequireAPIAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func matchAPIKey(provided string) (APIKeyIdentity, bool) {
+	apiKeysMu.RLock()
+	legacy := apiAccessKey
+	managed := append([]domain.APIKey(nil), apiKeys...)
+	apiKeysMu.RUnlock()
+	configured := len(managed) > 0 || strings.TrimSpace(legacy) != ""
+	for _, value := range managed {
+		if value.Disabled || strings.TrimSpace(value.Key) == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(value.Key)) == 1 {
+			return APIKeyIdentity{ID: value.ID, Name: value.Name}, configured
+		}
+	}
+	if strings.TrimSpace(legacy) != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(legacy)) == 1 {
+		return APIKeyIdentity{ID: "legacy-default", Name: "默认密钥"}, configured
+	}
+	return APIKeyIdentity{}, configured
+}
+
 func GenerateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func GenerateAPIKey() (string, error) {
+	token, err := GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	return "sk-relay-" + token, nil
+}
+
+func GenerateAPIKeyID() (string, error) {
+	token, err := GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	return "key_" + token[:16], nil
 }
 
 func LoginHandler(w http.ResponseWriter, r *http.Request) {

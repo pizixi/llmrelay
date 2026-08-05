@@ -2,6 +2,10 @@
 config.json
 stats.json
 
+# SQLite runtime database and sidecar files
+*.db
+*.db-*
+
 # 本地构建产物
 /llmrelay
 /llmgatewaygo

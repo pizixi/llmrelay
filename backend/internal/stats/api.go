@@ -22,6 +22,9 @@ func getFloat(values map[string]any, keys ...string) (float64, bool) {
 
 // Snapshot 返回统计数据的深拷贝。
 func Snapshot() TokenStatsData {
+	if usingSQLite() {
+		return sqliteSnapshot()
+	}
 	tokenStatsMu.Lock()
 	defer tokenStatsMu.Unlock()
 	return cloneData(tokenStats)
@@ -29,6 +32,9 @@ func Snapshot() TokenStatsData {
 
 // Reset 清空累计和当日统计。
 func Reset() {
+	if resetSQLiteStats() {
+		return
+	}
 	today := GetToday()
 	tokenStatsMu.Lock()
 	tokenStats = &TokenStatsData{Models: map[string]*ModelStats{}, Daily: &DailyStats{Date: today, Models: map[string]*ModelStats{}}}
@@ -38,7 +44,10 @@ func Reset() {
 }
 
 // SetPath 配置统计持久化文件，主要由应用启动和测试环境调用。
-func SetPath(path string) { tokenStatsPath = path }
+func SetPath(path string) {
+	closeSQLiteStats()
+	tokenStatsPath = path
+}
 
 func Path() string { return tokenStatsPath }
 

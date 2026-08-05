@@ -170,6 +170,7 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 	apiKey, apiKeyIndex, apiKeys := SelectUpstreamAPIKey(upstreamName, upstream)
 	retryDelay := 1 * time.Second
 	attemptLimit := UpstreamAttemptLimit(upstream, len(apiKeys))
+	rateLimitRetriesByExit := make(map[string]int)
 	for attempt := 0; attempt < attemptLimit; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -226,6 +227,13 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 				log.Printf("[上游重试响应体] %s", TruncatePreview(string(errBody), 1024))
 			}
 			if resp.StatusCode == http.StatusTooManyRequests {
+				if rateLimitRetriesByExit[exitLabel] >= max429RetriesPerExit {
+					if !preserveRaw {
+						errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
+					}
+					return errBody, resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained rate limited on exit %s after %d retries", exitLabel, max429RetriesPerExit)
+				}
+				rateLimitRetriesByExit[exitLabel]++
 				RotateSocks5OnRateLimit()
 			}
 			if attempt+1 >= attemptLimit {
@@ -274,6 +282,7 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 	apiKey, apiKeyIndex, apiKeys := SelectUpstreamAPIKey(upstreamName, upstream)
 	retryDelay := 1 * time.Second
 	attemptLimit := UpstreamAttemptLimit(upstream, len(apiKeys))
+	rateLimitRetriesByExit := make(map[string]int)
 	for attempt := 0; attempt < attemptLimit; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -324,6 +333,13 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 				log.Printf("[上游重试响应体] %s", TruncatePreview(string(errBody), 1024))
 			}
 			if resp.StatusCode == http.StatusTooManyRequests {
+				if rateLimitRetriesByExit[exitLabel] >= max429RetriesPerExit {
+					if !preserveRaw {
+						errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
+					}
+					return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained rate limited on exit %s after %d retries", exitLabel, max429RetriesPerExit)
+				}
+				rateLimitRetriesByExit[exitLabel]++
 				RotateSocks5OnRateLimit()
 			}
 			if attempt+1 >= attemptLimit {

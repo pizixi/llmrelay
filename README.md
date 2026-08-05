@@ -162,7 +162,8 @@ backend/
     upstream/                    上游调用、重试、透传和错误映射
     netproxy/                    HTTP 客户端与 SOCKS5 出口管理
     websearch/                   搜索 Provider 与 hosted-search 工具循环
-    stats/                       请求量与 Token 统计
+    stats/                       请求明细与多维 Token 统计
+    storage/                     纯 Go SQLite 数据库初始化
     sse/                         SSE 输出基础设施
     httpapi/{public,admin,middleware}/
                                  路由注册、管理 API 与中间件
@@ -187,9 +188,9 @@ go run . -password "管理密码" -api-key "对外 API 密钥"
 - API Base URL：<http://localhost:8000/v1>
 - 健康检查：<http://localhost:8000/health>
 
-首次启动会在当前目录生成 `config.json`。统计数据保存在 `stats.json`。
+首次启动会在当前目录生成纯 Go 驱动的 SQLite 数据库 `llmrelay.db`，配置和调用明细、统计数据统一保存在其中。升级旧版本时，如果当前目录存在 `config.json` 或 `stats.json`，首次启动会自动导入并保留原文件不变；也可用 `-config <旧 JSON 路径>` 指定配置导入源，或用 `-db <数据库路径>` 指定 SQLite 文件。
 
-对外 API Key 也可通过 `LLMGATEWAYGO_API_KEY` 或兼容环境变量 `LLM2API_API_KEY` 设置。
+管理后台的“API 密钥”页可创建、停用、删除和复制多个对外 API Key。旧版本通过 `-api-key`、`LLMGATEWAYGO_API_KEY` 或兼容环境变量 `LLM2API_API_KEY` 设置的密钥，会在首次启动时自动迁移为“默认密钥”；这些参数仍可用于兼容启动脚本。
 
 
 ## 发布
@@ -213,7 +214,7 @@ Release 产物包含：
 
 ## 安全建议
 
-默认管理密码是 `123456`，对外 API 默认不启用鉴权。公网部署前应显式设置安全的 `-password` 和 `-api-key`，并通过 HTTPS 反向代理访问。
+默认管理密码是 `123456`，没有创建 API 密钥时对外 API 不启用鉴权。公网部署前应显式设置安全的 `-password`，并在管理后台创建 API 密钥后通过 HTTPS 反向代理访问。
 
 管理后台会话与 `/v1` API Key 是两套独立鉴权：登录管理后台不会自动获得 `/v1` API Key 权限。
 

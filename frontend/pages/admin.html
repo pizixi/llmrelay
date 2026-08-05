@@ -22,14 +22,26 @@
 <div class="logo-sub">通用 LLM 代理网关</div>
 </div>
 </div>
+<div class="header-toolbar">
+<nav class="header-tabs" role="tablist" aria-label="管理功能">
+<button class="header-tab is-active" id="tab-trigger-stats" type="button" role="tab" aria-selected="true" aria-controls="tab-stats" tabindex="0" data-tab="stats" data-icon="chart">用量统计</button>
+<button class="header-tab" id="tab-trigger-usage" type="button" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1" data-tab="usage" data-icon="inbox">使用记录</button>
+<button class="header-tab" id="tab-trigger-api-keys" type="button" role="tab" aria-selected="false" aria-controls="tab-api-keys" tabindex="-1" data-tab="api-keys" data-icon="key">API 密钥</button>
+<button class="header-tab" id="tab-trigger-upstreams" type="button" role="tab" aria-selected="false" aria-controls="tab-upstreams" tabindex="-1" data-tab="upstreams" data-icon="server">上游配置</button>
+<button class="header-tab" id="tab-trigger-models" type="button" role="tab" aria-selected="false" aria-controls="tab-models" tabindex="-1" data-tab="models" data-icon="layers">模型路由</button>
+<button class="header-tab" id="tab-trigger-search" type="button" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1" data-tab="search" data-icon="search">Web Search</button>
+<button class="header-tab" id="tab-trigger-proxy" type="button" role="tab" aria-selected="false" aria-controls="tab-proxy" tabindex="-1" data-tab="proxy" data-icon="key">SOCKS5</button>
+</nav>
 <div class="header-actions">
 <span class="header-chip">Admin</span>
 <button class="theme-toggle" onclick="toggleTheme()" title="切换主题"></button>
-<form method="post" action="/logout" style="margin:0"><button class="btn-logout" type="submit" data-icon="logout" title="退出登录">退出</button></form>
+<form method="post" action="/logout" style="margin:0"><button class="btn-logout" type="submit" data-icon="logout" title="退出登录"><span class="btn-label">退出</span></button></form>
+</div>
 </div>
 </header>
 
-<div class="card">
+<main class="tab-panels">
+<section class="card tab-panel is-active" id="tab-stats" role="tabpanel" aria-labelledby="tab-trigger-stats" data-tab-panel="stats">
 <div class="stats-header">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Token 统计</h2>
@@ -38,6 +50,7 @@
 <div class="btns">
 <button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>
 <button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>
+<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="loadStats()"><option value="model">按模型</option><option value="upstream">按上游</option><option value="model_upstream">模型 × 上游</option><option value="day">按日期</option></select>
 <span id="resetStatus" style="font-size:13.5px;color:var(--text-ter)"></span>
 </div>
 </div>
@@ -47,13 +60,49 @@
 <div class="skeleton-card"></div><div class="skeleton-card"></div>
 </div>
 </div>
-</div>
+</section>
 
-<div class="card">
+<section class="card tab-panel" id="tab-usage" role="tabpanel" aria-labelledby="tab-trigger-usage" data-tab-panel="usage" hidden>
+<div class="card-head usage-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>使用记录</h2>
+<div class="card-desc">每次成功调用的密钥、模型、上游、时间、耗时与输入输出用量</div>
+</div>
+<div class="usage-toolbar">
+<input id="usageDateFilter" class="usage-date-input" type="date" aria-label="按日期筛选" onchange="loadUsageRecords(0)">
+<select id="usageModelFilter" class="m-select" aria-label="按请求模型筛选" onchange="loadUsageRecords(0)"><option value="">全部模型</option></select>
+<select id="usageUpstreamFilter" class="m-select" aria-label="按上游筛选" onchange="loadUsageRecords(0)"><option value="">全部上游</option></select>
+<select id="usageAPIKeyFilter" class="m-select" aria-label="按密钥名称筛选" onchange="loadUsageRecords(0)"><option value="">全部密钥</option></select>
+<button class="btn btn-default" data-icon="refresh" onclick="loadUsageRecords()">刷新</button>
+</div>
+</div>
+<div class="usage-table-scroll"><table class="tbl usage-table" id="usageTable"><thead><tr><th>调用时间</th><th>密钥名称</th><th>请求模型</th><th>上游</th><th>上游模型</th><th class="num-cell">首字时间</th><th class="num-cell">总耗时</th><th class="num-cell">输入</th><th class="num-cell">输出</th><th class="num-cell">合计</th></tr></thead><tbody><tr><td colspan="10"><div class="empty-state"><div class="empty-state-title">正在加载使用记录</div></div></td></tr></tbody></table></div>
+<div class="usage-filter-summary" id="usageFilterSummary" aria-live="polite"><div class="usage-filter-summary-title">当前筛选汇总</div><div class="usage-filter-summary-items"><span><b id="usageSummaryRequests">0</b><em>请求</em></span><span><b id="usageSummaryPrompt">0</b><em>输入 Token</em></span><span><b id="usageSummaryCompletion">0</b><em>输出 Token</em></span><span><b id="usageSummaryTotal">0</b><em>合计 Token</em></span></div></div>
+<div class="usage-pagination"><span id="usageSummary"></span><div><button class="btn-icon" id="usagePrev" type="button" title="上一页" aria-label="上一页" onclick="changeUsagePage(-1)">&#x2039;</button><button class="btn-icon" id="usageNext" type="button" title="下一页" aria-label="下一页" onclick="changeUsagePage(1)">&#x203A;</button></div></div>
+</section>
+
+<section class="card tab-panel" id="tab-api-keys" role="tabpanel" aria-labelledby="tab-trigger-api-keys" data-tab-panel="api-keys" hidden>
+<div class="card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>API 密钥</h2>
+<div class="card-desc">创建用于调用网关 <code>/v1</code> 接口的密钥；密钥只保存在本地配置中。</div>
+</div>
+<div class="card-head-actions"><button class="btn btn-primary" data-icon="plus" onclick="createAPIKey()">创建密钥</button><button class="btn btn-default" data-icon="refresh" onclick="loadAPIKeys()">刷新</button></div>
+</div>
+<div class="api-key-notice"><span class="api-key-notice-icon">&#9888;</span><span>请在安全环境中复制和保存密钥。删除或停用后，使用该密钥的客户端将无法继续访问。</span></div>
+<div class="table-scroll api-key-table-scroll"><table class="tbl api-key-table" id="apiKeyTable"><thead><tr><th>名称</th><th>API 密钥</th><th>状态</th><th>创建时间</th><th class="col-action"></th></tr></thead><tbody><tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">正在加载 API 密钥</div></div></td></tr></tbody></table></div>
+</section>
+
+<section class="card tab-panel" id="tab-upstreams" role="tabpanel" aria-labelledby="tab-trigger-upstreams" data-tab-panel="upstreams" hidden>
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>多上游配置</h2>
 <div class="card-desc">配置上游端点、协议类型与模型白名单</div>
+</div>
+<div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
+<label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()"></label>
+<select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
+<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)">同步模型</button>
 </div>
 </div>
 <div class="table-scroll">
@@ -62,31 +111,21 @@
 <tbody></tbody>
 </table>
 </div>
-<div class="actions upstream-actions">
-<div class="upstream-action-buttons">
-<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button>
-<button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button>
-<button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)">同步模型</button>
-</div>
-<div class="upstream-filterbar" aria-label="筛选上游">
-<label class="upstream-keyword-search">
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-<input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()">
-</label>
-<select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()">
-<option value="">全部模型</option>
-</select>
-</div>
-</div>
-</div>
+</section>
 
-<div class="config-grid">
-<div class="card">
+<section class="card tab-panel" id="tab-models" role="tabpanel" aria-labelledby="tab-trigger-models" data-tab-panel="models" hidden>
 <div class="card-head">
 <div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>模型映射</h2>
-<div class="card-desc">将请求模型按权重路由到一个或多个上游模型</div>
+<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>模型路由</h2>
+<div class="card-desc">维护请求模型的上游路由，并配置所选模型的推理力度映射</div>
 </div>
+</div>
+<div class="model-routing-grid">
+<section class="routing-section routing-models">
+<div class="routing-section-head">
+<h3 class="routing-section-title">模型映射</h3>
+<div class="routing-section-desc">将请求模型按权重路由到一个或多个上游模型</div>
+<div class="routing-section-actions"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
 <div class="table-scroll">
 <table class="tbl" id="aliasTable">
@@ -94,18 +133,12 @@
 <tbody></tbody>
 </table>
 </div>
-<div class="actions">
-<button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button>
-<button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button>
-</div>
-</div>
-
-<div class="card">
-<div class="card-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--orange)"></span><span id="effortMapTitle">推理力度映射（全局）</span></h2>
-<div class="card-desc">映射客户端 reasoning effort 到上游取值</div>
-</div>
+</section>
+<section class="routing-section routing-effort">
+<div class="routing-section-head">
+<h3 class="routing-section-title"><span id="effortMapTitle">推理力度映射（全局）</span></h3>
+<div class="routing-section-desc">映射客户端 reasoning effort 到上游取值</div>
+<div class="routing-section-actions"><button class="btn btn-primary" data-icon="plus" onclick="addEffortRow()">添加映射</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
 <div class="table-scroll">
 <table class="tbl" id="effortTable">
@@ -113,25 +146,23 @@
 <tbody></tbody>
 </table>
 </div>
-<div class="actions">
-<button class="btn btn-primary" data-icon="plus" onclick="addEffortRow()">添加映射</button>
-<button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button>
+</section>
 </div>
-</div>
+</section>
 
-<div class="card full-row">
+<section class="card tab-panel" id="tab-search" role="tabpanel" aria-labelledby="tab-trigger-search" data-tab-panel="search" hidden>
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Hosted Web Search 自动回退</h2>
 <div class="card-desc card-desc-single">所有上游均先尝试原生搜索；明确不支持时自动使用这里配置的全局搜索服务。</div>
 </div>
-<label class="head-switch" id="webSearchEnabledGroup" title="启用网关搜索回退">
+<div class="card-head-actions"><label class="head-switch" id="webSearchEnabledGroup" title="启用网关搜索回退">
 <span class="head-switch-text">启用网关搜索回退</span>
 <span class="switch">
 <input id="webSearchEnabled" type="checkbox" onchange="syncWebSearchForm()">
 <span class="switch-slider"></span>
 </span>
-</label>
+</label><button class="btn btn-success" data-icon="save" onclick="saveConfig('Web Search 配置')">保存 Web Search</button></div>
 </div>
 <div class="web-search-grid">
 <div class="form-group"><label>Provider</label><select id="webSearchProvider" class="m-select" onchange="syncWebSearchForm()"><option value="searxng">SearXNG</option><option value="duckduckgo">DuckDuckGo（公共）</option><option value="tavily">Tavily</option></select></div>
@@ -145,15 +176,15 @@
 <div class="form-group"><label>结果上限（字节）</label><input id="webSearchMaxBytes" type="number" min="1024" max="1048576" value="65536"></div>
 <div class="form-group web-search-wide" id="webSearchAPIKeyGroup"><label>API Key <span class="hint">仅 Tavily 需要；支持 env:环境变量名</span></label><input id="webSearchAPIKey" type="password" placeholder="Tavily key 或 env:TAVILY_API_KEY"></div>
 </div>
-<div class="actions"><button class="btn btn-success" data-icon="save" onclick="saveConfig('Web Search 配置')">保存 Web Search</button></div>
-</div>
+</section>
 
-<div class="card full-row">
+<section class="card tab-panel" id="tab-proxy" role="tabpanel" aria-labelledby="tab-trigger-proxy" data-tab-panel="proxy" hidden>
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>SOCKS5 代理</h2>
 <div class="card-desc">出口代理、轮询与限流切换</div>
 </div>
+<div class="card-head-actions proxy-head-actions"><div class="compact-select-row"><label for="activeSocks5">启用代理</label><select id="activeSocks5" class="m-select"><option value="">直连（不使用代理）</option></select></div><button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
 <div class="table-scroll">
 <table class="tbl" id="socks5Table">
@@ -161,18 +192,8 @@
 <tbody></tbody>
 </table>
 </div>
-<div class="form-group compact-select-row">
-<label>启用代理</label>
-<select id="activeSocks5" class="m-select">
-<option value="">直连（不使用代理）</option>
-</select>
-</div>
-<div class="actions">
-<button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button>
-<button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button>
-</div>
-</div>
-</div>
+</section>
+</main>
 </div>
 <div id="toast"></div>
 <script src="/assets/marked.min.js"></script>

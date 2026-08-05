@@ -269,7 +269,7 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		copyFilteredResponseHeaders(w.Header(), loopResult.Header)
-		usageStats := newRequestUsageAccumulator(requestedModel)
+		usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, claudeReq.Model)
 		var usageResponse map[string]any
 		if json.Unmarshal(loopResult.Body, &usageResponse) == nil {
 			if usage, ok := usageResponse["usage"].(map[string]any); ok {
@@ -340,7 +340,7 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer upResp.Close()
 		copyFilteredResponseHeaders(w.Header(), upHeader)
-		dispatchClientStream(w, WireAnthropic, decision, upstream, upResp, claudeReq.Model, clientStreamOptions{UsageModel: requestedModel})
+		dispatchClientStream(w, WireAnthropic, decision, upstream, upResp, claudeReq.Model, clientStreamOptions{UsageModel: requestedModel, UpstreamName: upstreamName, UpstreamModel: claudeReq.Model, RequestContext: r.Context()})
 		return
 	}
 
@@ -414,7 +414,7 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	usageStats := newRequestUsageAccumulator(requestedModel)
+	usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, claudeReq.Model)
 	var usageResp2 map[string]any
 	if json.Unmarshal(respBody, &usageResp2) == nil {
 		if u, ok := usageResp2["usage"].(map[string]any); ok {

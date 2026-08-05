@@ -113,7 +113,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer upResp.Close()
 		copyFilteredResponseHeaders(w.Header(), upHeader)
-		dispatchClientStream(w, WireChat, decision, upstream, upResp, req.Model, clientStreamOptions{UsageModel: requestedModel})
+		dispatchClientStream(w, WireChat, decision, upstream, upResp, req.Model, clientStreamOptions{UsageModel: requestedModel, UpstreamName: upstreamName, UpstreamModel: req.Model, RequestContext: r.Context()})
 		return
 	}
 
@@ -141,7 +141,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 			outBody = convertedResp
 		}
 	}
-	usageStats := newRequestUsageAccumulator(requestedModel)
+	usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, req.Model)
 	var usageResp2 map[string]any
 	if json.Unmarshal(respBody, &usageResp2) == nil {
 		if u, ok := usageResp2["usage"].(map[string]any); ok {

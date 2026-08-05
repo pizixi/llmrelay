@@ -20,6 +20,7 @@ import (
 
 type AppConfig = domain.AppConfig
 type ModelInfo = domain.ModelInfo
+type APIKey = domain.APIKey
 type ModelMappingCleanup = config.ModelMappingCleanup
 type UpstreamConfig = domain.UpstreamConfig
 type UpstreamType = domain.UpstreamType

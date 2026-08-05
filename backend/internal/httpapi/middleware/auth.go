@@ -5,8 +5,11 @@ import (
 	"net/http"
 
 	"llmrelay/backend/internal/auth"
+	"llmrelay/backend/internal/stats"
 )
 
 func Admin(next http.HandlerFunc) http.HandlerFunc { return auth.RequireAuth(next) }
 
-func API(next http.HandlerFunc) http.HandlerFunc { return auth.RequireAPIAuth(next) }
+func API(next http.HandlerFunc) http.HandlerFunc {
+	return auth.RequireAPIAuth(stats.TrackRequest(next))
+}

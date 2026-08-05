@@ -313,7 +313,7 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		copyFilteredResponseHeaders(w.Header(), loopResult.Header)
-		usageStats := newRequestUsageAccumulator(requestedModel)
+		usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, chatReq.Model)
 		var usageResponse map[string]any
 		if json.Unmarshal(loopResult.Body, &usageResponse) == nil {
 			if usage, ok := usageResponse["usage"].(map[string]any); ok {
@@ -417,7 +417,7 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		copyFilteredResponseHeaders(w.Header(), upHeader)
 
 		dispatchClientStream(w, WireResponses, decision, upstream, upResp, chatReq.Model, clientStreamOptions{
-			UsageModel: requestedModel, Request: r, Tools: respReq.Tools, ToolChoice: respReq.ToolChoice,
+			UsageModel: requestedModel, UpstreamName: upstreamName, UpstreamModel: chatReq.Model, Request: r, RequestContext: r.Context(), Tools: respReq.Tools, ToolChoice: respReq.ToolChoice,
 			ParallelToolCalls: respReq.ParallelToolCalls, ToolNameMappings: toolNameMappings,
 			ResponseEcho: responseEcho, BridgeWarnings: bridgeWarnings,
 		})
@@ -519,7 +519,7 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	usageStats := newRequestUsageAccumulator(requestedModel)
+	usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, chatReq.Model)
 	var usageResp2 map[string]any
 	if json.Unmarshal(respBody, &usageResp2) == nil {
 		if u, ok := usageResp2["usage"].(map[string]any); ok {

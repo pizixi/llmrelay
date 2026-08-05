@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const max429RetriesPerExit = 3
+
 var (
 	upstreamKeyCursorMu sync.Mutex
 	upstreamKeyCursor   = map[string]int{}

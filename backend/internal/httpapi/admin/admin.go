@@ -14,7 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"llmrelay/backend/internal/auth"
 	catalogpkg "llmrelay/backend/internal/catalog"
+	"llmrelay/backend/internal/stats"
 )
 
 // ======================== Admin 管理页面 ========================
@@ -373,6 +375,11 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		previous := currentConfig()
+		if cfg.APIKeys == nil {
+			// The general configuration form predates managed API keys and does
+			// not submit them. Keep keys owned by /api/api-keys intact.
+			cfg.APIKeys = previous.APIKeys
+		}
 		cleanup := reconcileRemovedUpstreamModels(previous, &cfg)
 		if err := validateConfig(&cfg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -386,6 +393,7 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		applyConfig(cfg)
+		auth.SetAPIKeys(cfg.APIKeys)
 		reconfigureCatalog(cfg.Upstreams)
 		if debugMode {
 			log.Printf("配置已更新：别名=%d，推理强度映射=%d，上游=%d，默认上游=%s", len(cfg.ModelAlias), len(cfg.ReasoningEffortMap), len(cfg.Upstreams), cfg.DefaultUpstream)
@@ -395,6 +403,174 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"status":                "ok",
 			"model_mapping_cleanup": cleanup,
 		})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type adminAPIKeyRequest struct {
+	Name     string `json:"name"`
+	Disabled *bool  `json:"disabled"`
+}
+
+func apiKeyIDFromPath(r *http.Request) string {
+	if r.URL.Path == "/api/api-keys" || r.URL.Path == "/api/keys" {
+		return ""
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/api-keys/")
+	if path == r.URL.Path {
+		path = strings.TrimPrefix(r.URL.Path, "/api/keys/")
+	}
+	return strings.Trim(path, "/ ")
+}
+
+func saveAPIKeysConfig(cfg AppConfig) error {
+	if err := validateConfig(&cfg); err != nil {
+		return err
+	}
+	normalizeConfig(&cfg)
+	if err := saveConfig(configPath(), cfg); err != nil {
+		return err
+	}
+	applyConfig(cfg)
+	auth.SetAPIKeys(cfg.APIKeys)
+	return nil
+}
+
+func AdminAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg := currentConfig()
+		keys := cfg.APIKeys
+		if keys == nil {
+			keys = []APIKey{}
+		}
+		writeAdminJSON(w, http.StatusOK, map[string]any{"keys": keys})
+		return
+	case http.MethodPost:
+		configUpdateMu.Lock()
+		defer configUpdateMu.Unlock()
+		var input adminAPIKeyRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+		if err := decoder.Decode(&input); err != nil {
+			writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+			return
+		}
+		name := strings.TrimSpace(input.Name)
+		if name == "" || utf8.RuneCountInString(name) > 128 {
+			writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "密钥名称不能为空且不能超过 128 个字符"})
+			return
+		}
+		cfg := currentConfig()
+		for _, value := range cfg.APIKeys {
+			if strings.EqualFold(strings.TrimSpace(value.Name), name) {
+				writeAdminJSON(w, http.StatusConflict, map[string]any{"error": "密钥名称已存在"})
+				return
+			}
+		}
+		key, err := auth.GenerateAPIKey()
+		if err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": "生成 API 密钥失败"})
+			return
+		}
+		id, err := auth.GenerateAPIKeyID()
+		if err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": "生成 API 密钥 ID 失败"})
+			return
+		}
+		value := APIKey{ID: id, Name: name, Key: key}
+		if input.Disabled != nil {
+			value.Disabled = *input.Disabled
+		}
+		cfg.APIKeys = append(cfg.APIKeys, value)
+		if err := saveAPIKeysConfig(cfg); err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeAdminJSON(w, http.StatusCreated, map[string]any{"key": value})
+		return
+	case http.MethodPatch, http.MethodPut:
+		configUpdateMu.Lock()
+		defer configUpdateMu.Unlock()
+		id := apiKeyIDFromPath(r)
+		if id == "" {
+			writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "api key id is required"})
+			return
+		}
+		var input adminAPIKeyRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+		if err := decoder.Decode(&input); err != nil {
+			writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+			return
+		}
+		cfg := currentConfig()
+		index := -1
+		for candidate, value := range cfg.APIKeys {
+			if value.ID == id {
+				index = candidate
+				break
+			}
+		}
+		if index < 0 {
+			writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "api key not found"})
+			return
+		}
+		value := cfg.APIKeys[index]
+		if input.Name != "" {
+			name := strings.TrimSpace(input.Name)
+			if name == "" || utf8.RuneCountInString(name) > 128 {
+				writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "密钥名称不能为空且不能超过 128 个字符"})
+				return
+			}
+			for candidate, other := range cfg.APIKeys {
+				if candidate != index && strings.EqualFold(strings.TrimSpace(other.Name), name) {
+					writeAdminJSON(w, http.StatusConflict, map[string]any{"error": "密钥名称已存在"})
+					return
+				}
+			}
+			value.Name = name
+		}
+		if input.Disabled != nil {
+			value.Disabled = *input.Disabled
+		}
+		cfg.APIKeys[index] = value
+		if err := saveAPIKeysConfig(cfg); err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeAdminJSON(w, http.StatusOK, map[string]any{"key": value})
+		return
+	case http.MethodDelete:
+		configUpdateMu.Lock()
+		defer configUpdateMu.Unlock()
+		id := apiKeyIDFromPath(r)
+		if id == "" {
+			writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "api key id is required"})
+			return
+		}
+		cfg := currentConfig()
+		keys := make([]APIKey, 0, len(cfg.APIKeys))
+		var removed APIKey
+		found := false
+		for _, value := range cfg.APIKeys {
+			if value.ID == id {
+				removed = value
+				found = true
+				continue
+			}
+			keys = append(keys, value)
+		}
+		if !found {
+			writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "api key not found"})
+			return
+		}
+		cfg.APIKeys = keys
+		if err := saveAPIKeysConfig(cfg); err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeAdminJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": removed.ID})
+		return
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -417,6 +593,37 @@ func AdminStatsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func AdminUsageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	page, err := stats.ListUsageRecords(stats.UsageQuery{
+		Limit:      limit,
+		Offset:     offset,
+		Model:      r.URL.Query().Get("model"),
+		Upstream:   r.URL.Query().Get("upstream"),
+		APIKeyName: firstQueryValue(r, "key_name", "api_key_name"),
+		Date:       r.URL.Query().Get("date"),
+	})
+	if err != nil {
+		writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeAdminJSON(w, http.StatusOK, page)
+}
+
+func firstQueryValue(r *http.Request, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(r.URL.Query().Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func FrontendAssetsHandler() http.Handler {

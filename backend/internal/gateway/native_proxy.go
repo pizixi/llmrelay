@@ -61,13 +61,14 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 		}
 		setSSEHeaders(w.Header())
 		w.WriteHeader(status)
+		usageRoute := usageIdentityForContext(ctx, usageModel, request.UpstreamName, request.Model)
 		switch request.Client {
 		case WireAnthropic:
-			_ = proxyAnthropicPassthroughStream(w, body, usageModel)
+			_ = proxyAnthropicPassthroughStream(w, body, usageRoute)
 		case WireResponses:
-			_ = proxyResponsesPassthroughStream(w, body, usageModel)
+			_ = proxyResponsesPassthroughStream(w, body, usageRoute)
 		default:
-			_ = proxyChatPassthroughStream(w, body, usageModel)
+			_ = proxyChatPassthroughStream(w, body, usageRoute)
 		}
 		return
 	}
@@ -81,7 +82,7 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	if status >= 200 && status < 300 {
-		usageStats := newRequestUsageAccumulator(usageModel)
+		usageStats := newRequestUsageAccumulatorForContext(ctx, usageModel, request.UpstreamName, request.Model)
 		var decoded map[string]any
 		if json.Unmarshal(body, &decoded) == nil {
 			if usage, ok := decoded["usage"].(map[string]any); ok {

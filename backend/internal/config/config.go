@@ -8,13 +8,15 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"llmrelay/backend/internal/storage"
 )
 
 // ======================== 配置 ========================
 
 var (
 	port       string
-	configPath = "config.json"
+	configPath = "llmrelay.db"
 	modelAlias = map[string]ModelAlias{}
 
 	reasoningEffortMap  = map[string]string{}
@@ -22,6 +24,7 @@ var (
 	debugMode           bool
 	debugLogBodies      bool
 	apiAccessKey        string
+	apiKeys             []APIKey
 	upstreamOrder       []string
 	configMu            sync.RWMutex
 	configFileMu        sync.Mutex
@@ -32,6 +35,9 @@ var (
 // ======================== 配置管理 ========================
 
 func LoadConfig(path string) (AppConfig, error) {
+	if storage.IsSQLitePath(path) {
+		return loadSQLiteConfig(path)
+	}
 	var cfg AppConfig
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -54,6 +60,32 @@ func LoadConfig(path string) (AppConfig, error) {
 func ValidateConfig(cfg *AppConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
+	}
+	seenAPIKeyIDs := make(map[string]struct{}, len(cfg.APIKeys))
+	seenAPIKeys := make(map[string]struct{}, len(cfg.APIKeys))
+	seenAPIKeyNames := make(map[string]struct{}, len(cfg.APIKeys))
+	for _, apiKey := range cfg.APIKeys {
+		key := strings.TrimSpace(apiKey.Key)
+		if key == "" {
+			return fmt.Errorf("api key must not be empty")
+		}
+		if id := strings.TrimSpace(apiKey.ID); id != "" {
+			if _, exists := seenAPIKeyIDs[id]; exists {
+				return fmt.Errorf("duplicate api key id %q", id)
+			}
+			seenAPIKeyIDs[id] = struct{}{}
+		}
+		if _, exists := seenAPIKeys[key]; exists {
+			return fmt.Errorf("duplicate api key")
+		}
+		seenAPIKeys[key] = struct{}{}
+		if name := strings.TrimSpace(apiKey.Name); name != "" {
+			nameKey := strings.ToLower(name)
+			if _, exists := seenAPIKeyNames[nameKey]; exists {
+				return fmt.Errorf("duplicate api key name %q", name)
+			}
+			seenAPIKeyNames[nameKey] = struct{}{}
+		}
 	}
 	validType := func(apiType UpstreamType) bool {
 		return apiType == "" || apiType == UpstreamOpenAI || apiType == UpstreamAnthropic || apiType == UpstreamResponses
@@ -135,6 +167,7 @@ func ValidateConfig(cfg *AppConfig) error {
 }
 
 func NormalizeConfig(cfg *AppConfig) {
+	cfg.APIKeys = NormalizeAPIKeys(cfg.APIKeys)
 	if cfg.ModelAlias == nil {
 		cfg.ModelAlias = map[string]ModelAlias{}
 	}
@@ -293,6 +326,9 @@ func NormalizeSocks5Config(cfg *AppConfig) {
 }
 
 func SaveConfig(path string, cfg AppConfig) error {
+	if storage.IsSQLitePath(path) {
+		return saveSQLiteConfig(path, cfg)
+	}
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
 	NormalizeConfig(&cfg)
@@ -355,6 +391,7 @@ func ApplyConfig(cfg AppConfig) {
 			return true
 		})
 	}
+	apiKeys = CloneAPIKeys(cfg.APIKeys)
 
 	if cfg.ReasoningEffortMap != nil {
 		reasoningEffortMap = cfg.ReasoningEffortMap

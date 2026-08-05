@@ -55,11 +55,23 @@ type Socks5Proxy struct {
 	Name     string `json:"name,omitempty"`
 }
 
+// APIKey is a client credential accepted by the public /v1 endpoints.
+// The clear-text key is intentionally kept in the local configuration so an
+// authenticated administrator can copy it from the API key management page.
+type APIKey struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Key       string `json:"key"`
+	Disabled  bool   `json:"disabled,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
 type AppConfig struct {
 	ModelAlias map[string]ModelAlias `json:"model_alias"`
 
 	ReasoningEffortMap map[string]string          `json:"reasoning_effort_map"`
 	WebSearch          WebSearchConfig            `json:"web_search,omitempty"`
+	APIKeys            []APIKey                   `json:"api_keys,omitempty"`
 	Socks5Proxies      []Socks5Proxy              `json:"socks5_proxies,omitempty"`
 	ActiveSocks5       string                     `json:"active_socks5,omitempty"`
 	Upstream           *UpstreamConfig            `json:"upstream,omitempty"`

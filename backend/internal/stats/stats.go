@@ -1,12 +1,15 @@
 package stats
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"llmrelay/backend/internal/storage"
 )
 
 // ======================== Token 统计 ========================
@@ -26,15 +29,20 @@ type DailyStats struct {
 }
 
 type TokenStatsData struct {
-	TotalRequests int64                  `json:"total_requests"`
-	Models        map[string]*ModelStats `json:"models"`
-	Daily         *DailyStats            `json:"daily,omitempty"`
+	TotalRequests       int64                  `json:"total_requests"`
+	Models              map[string]*ModelStats `json:"models"`
+	Daily               *DailyStats            `json:"daily,omitempty"`
+	Upstreams           map[string]*ModelStats `json:"upstreams,omitempty"`
+	DailyUpstreams      map[string]*ModelStats `json:"daily_upstreams,omitempty"`
+	ModelUpstreams      []BreakdownStats       `json:"model_upstreams,omitempty"`
+	DailyModelUpstreams []BreakdownStats       `json:"daily_model_upstreams,omitempty"`
+	Days                []BreakdownStats       `json:"days,omitempty"`
 }
 
 var (
 	tokenStats     = &TokenStatsData{Models: map[string]*ModelStats{}, Daily: nil}
 	tokenStatsMu   sync.Mutex
-	tokenStatsPath = "stats.json"
+	tokenStatsPath = "llmrelay.db"
 	statsDate      string // 当前统计日期 YYYY-MM-DD
 	statsSaveMu    sync.Mutex
 	statsSaveOnce  sync.Once
@@ -66,6 +74,12 @@ func CheckAndResetDailyStats() {
 }
 
 func LoadTokenStats() {
+	if storage.IsSQLitePath(tokenStatsPath) {
+		if err := loadSQLiteStats(tokenStatsPath); err != nil {
+			log.Printf("加载 SQLite 统计失败: %v", err)
+		}
+		return
+	}
 	data, err := os.ReadFile(tokenStatsPath)
 	if err != nil {
 		CheckAndResetDailyStats()
@@ -93,6 +107,9 @@ func LoadTokenStats() {
 }
 
 func SaveTokenStats() {
+	if usingSQLite() {
+		return
+	}
 	statsSaveMu.Lock()
 	defer statsSaveMu.Unlock()
 	tokenStatsMu.Lock()
@@ -147,6 +164,9 @@ func SaveTokenStats() {
 }
 
 func ScheduleTokenStatsSave() {
+	if usingSQLite() {
+		return
+	}
 	statsSaveOnce.Do(func() {
 		go func() {
 			for range statsSaveCh {
@@ -178,6 +198,23 @@ func ScheduleTokenStatsSave() {
 }
 
 func RecordTokenUsage(model string, promptTokens, completionTokens, totalTokens int64) {
+	RecordUsage(model, "", "", promptTokens, completionTokens, totalTokens)
+}
+
+// RecordUsage persists one completed gateway call together with its route.
+func RecordUsage(model, upstreamName, upstreamModel string, promptTokens, completionTokens, totalTokens int64) {
+	RecordUsageWithTiming(model, upstreamName, upstreamModel, promptTokens, completionTokens, totalTokens, time.Now(), 0, 0)
+}
+
+// RecordUsageWithTiming persists a completed call and its user-visible latency.
+func RecordUsageWithTiming(model, upstreamName, upstreamModel string, promptTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64) {
+	recordUsageWithAPIKey(model, upstreamName, upstreamModel, promptTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS, "", "")
+}
+
+func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64, apiKeyID, apiKeyName string) {
+	if recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName, promptTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS) {
+		return
+	}
 	CheckAndResetDailyStats()
 	tokenStatsMu.Lock()
 	tokenStats.TotalRequests++
@@ -212,13 +249,31 @@ func RecordTokenUsage(model string, promptTokens, completionTokens, totalTokens 
 // 因此最终提交每个计数器观测到的最大值。
 type RequestUsageAccumulator struct {
 	model            string
+	upstreamName     string
+	upstreamModel    string
 	promptTokens     int64
 	completionTokens int64
 	totalTokens      int64
+	timing           *RequestTiming
 }
 
-func NewRequestUsageAccumulator(model string) *RequestUsageAccumulator {
-	return &RequestUsageAccumulator{model: model}
+func NewRequestUsageAccumulator(model string, route ...string) *RequestUsageAccumulator {
+	model, upstreamName, upstreamModel, timing := decodeUsageIdentity(model)
+	if len(route) > 0 {
+		upstreamName = route[0]
+	}
+	if len(route) > 1 {
+		upstreamModel = route[1]
+	}
+	return &RequestUsageAccumulator{model: model, upstreamName: upstreamName, upstreamModel: upstreamModel, timing: timing}
+}
+
+func NewRequestUsageAccumulatorForContext(ctx context.Context, model string, route ...string) *RequestUsageAccumulator {
+	accumulator := NewRequestUsageAccumulator(model, route...)
+	if timing := requestTimingFromContext(ctx); timing != nil {
+		accumulator.timing = timing
+	}
+	return accumulator
 }
 
 func (a *RequestUsageAccumulator) ObserveMap(usage map[string]any) {
@@ -246,5 +301,17 @@ func (a *RequestUsageAccumulator) Commit() {
 	if combined := a.promptTokens + a.completionTokens; combined > a.totalTokens {
 		a.totalTokens = combined
 	}
-	RecordTokenUsage(a.model, a.promptTokens, a.completionTokens, a.totalTokens)
+	sample := usageSample{
+		model:            a.model,
+		upstreamName:     a.upstreamName,
+		upstreamModel:    a.upstreamModel,
+		promptTokens:     a.promptTokens,
+		completionTokens: a.completionTokens,
+		totalTokens:      a.totalTokens,
+	}
+	if a.timing != nil {
+		a.timing.addUsage(sample)
+		return
+	}
+	recordUsageSample(sample, time.Now(), 0, 0)
 }

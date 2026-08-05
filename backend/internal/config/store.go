@@ -14,6 +14,7 @@ func Snapshot() AppConfig {
 		ModelAlias:         make(map[string]ModelAlias, len(modelAlias)),
 		ReasoningEffortMap: CloneStringMap(reasoningEffortMap),
 		WebSearch:          webSearchCfg,
+		APIKeys:            CloneAPIKeys(apiKeys),
 		Upstreams:          make(map[string]*UpstreamConfig, len(upstreamCfgs)),
 		UpstreamOrder:      append([]string(nil), upstreamOrder...),
 		DefaultUpstream:    defaultUpstreamName,

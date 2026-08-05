@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,8 +190,20 @@ type requestUsageAccumulator struct {
 	inner *stats.RequestUsageAccumulator
 }
 
-func newRequestUsageAccumulator(model string) *requestUsageAccumulator {
-	return &requestUsageAccumulator{inner: stats.NewRequestUsageAccumulator(model)}
+func newRequestUsageAccumulator(model string, route ...string) *requestUsageAccumulator {
+	return &requestUsageAccumulator{inner: stats.NewRequestUsageAccumulator(model, route...)}
+}
+
+func newRequestUsageAccumulatorForContext(ctx context.Context, model string, route ...string) *requestUsageAccumulator {
+	return &requestUsageAccumulator{inner: stats.NewRequestUsageAccumulatorForContext(ctx, model, route...)}
+}
+
+func usageIdentity(model, upstreamName, upstreamModel string) string {
+	return stats.UsageIdentity(model, upstreamName, upstreamModel)
+}
+
+func usageIdentityForContext(ctx context.Context, model, upstreamName, upstreamModel string) string {
+	return stats.UsageIdentityForContext(ctx, model, upstreamName, upstreamModel)
 }
 
 func (a *requestUsageAccumulator) observeMap(usage map[string]any) {

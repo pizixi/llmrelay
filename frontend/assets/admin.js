@@ -96,6 +96,91 @@ function injectButtonIcons() {
   });
 }
 
+/* ===== 标题栏标签页 ===== */
+const ADMIN_TAB_STORAGE_KEY = "llmrelay.admin.activeTab";
+
+function scrollAdminTabIntoView(tab, smooth) {
+  const tabList = tab && tab.closest(".header-tabs");
+  if (!tabList) return;
+  const listRect = tabList.getBoundingClientRect();
+  const tabRect = tab.getBoundingClientRect();
+  const visibleLeft = listRect.left + 10;
+  const visibleRight = listRect.right - 24;
+  let nextLeft = tabList.scrollLeft;
+  if (tabRect.left < visibleLeft) {
+    nextLeft += tabRect.left - visibleLeft;
+  } else if (tabRect.right > visibleRight) {
+    nextLeft += tabRect.right - visibleRight;
+  } else {
+    return;
+  }
+  tabList.scrollTo({ left: nextLeft, behavior: smooth ? "smooth" : "auto" });
+}
+
+function activateAdminTab(tabName, options) {
+  const tabs = Array.from(document.querySelectorAll(".header-tab[data-tab]"));
+  const panels = Array.from(document.querySelectorAll(".tab-panel[data-tab-panel]"));
+  const selected = tabs.find((tab) => tab.dataset.tab === tabName) || tabs[0];
+  if (!selected) return;
+
+  const activeName = selected.dataset.tab;
+  tabs.forEach((tab) => {
+    const active = tab === selected;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  panels.forEach((panel) => {
+    const active = panel.dataset.tabPanel === activeName;
+    panel.hidden = !active;
+    panel.classList.toggle("is-active", active);
+  });
+	if (activeName === "usage" && typeof loadUsageRecords === "function") {
+		loadUsageRecords();
+	}
+
+  try {
+    localStorage.setItem(ADMIN_TAB_STORAGE_KEY, activeName);
+  } catch (e) {}
+  if (!options || options.updateURL !== false) {
+    history.replaceState(null, "", "#" + activeName);
+  }
+  requestAnimationFrame(() => scrollAdminTabIntoView(selected, Boolean(options && options.focus)));
+  if (options && options.focus) selected.focus();
+}
+
+function initAdminTabs() {
+  const tabs = Array.from(document.querySelectorAll(".header-tab[data-tab]"));
+  if (!tabs.length) return;
+
+  const validNames = new Set(tabs.map((tab) => tab.dataset.tab));
+  const hashName = window.location.hash.replace(/^#/, "");
+  let savedName = "";
+  try {
+    savedName = localStorage.getItem(ADMIN_TAB_STORAGE_KEY) || "";
+  } catch (e) {}
+  const initialName = validNames.has(hashName)
+    ? hashName
+    : validNames.has(savedName)
+      ? savedName
+      : tabs[0].dataset.tab;
+  activateAdminTab(initialName, { updateURL: Boolean(hashName) });
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => activateAdminTab(tab.dataset.tab));
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateAdminTab(tabs[nextIndex].dataset.tab, { focus: true });
+    });
+  });
+}
+
 /* ===== 全局状态 ===== */
 let aliasData = {},
   effortData = {},
@@ -108,7 +193,12 @@ let aliasData = {},
   defaultUpstream = "",
   socks5Data = [],
   webSearchData = {},
-  searxngInstances = [];
+  searxngInstances = [],
+  apiKeysData = [];
+
+let usagePageOffset = 0;
+const USAGE_PAGE_SIZE = 50;
+let usageLoadSequence = 0;
 
 /* ===== 登录态处理 ===== */
 function redirectToLogin() {
@@ -230,7 +320,9 @@ function openPopover(triggerEl, contentHtml, onClose) {
 function reloadConfig() {
   const sy = window.scrollY;
   loadConfig();
+  loadAPIKeys();
   loadStats();
+  loadUsageRecords();
   showToast("页面数据已刷新", "success");
   setTimeout(() => window.scrollTo(0, sy), 100);
 }
@@ -466,6 +558,241 @@ async function loadConfig() {
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     showToast("失败: " + e.message, "error");
+  }
+}
+
+/* ===== API 密钥 ===== */
+function apiKeyShortValue(value) {
+  const key = String(value || "");
+  if (!key) return "-";
+  if (key.length <= 18) return key;
+  return key.slice(0, 11) + "..." + key.slice(-4);
+}
+
+function formatAPIKeyDate(value) {
+  if (!value) return "-";
+  return formatUsageTime(value);
+}
+
+function renderAPIKeys() {
+  const tbody = document.querySelector("#apiKeyTable tbody");
+  if (!tbody) return;
+  if (!apiKeysData.length) {
+    tbody.innerHTML = emptyRowHtml(
+      5,
+      ICONS.key,
+      "暂无 API 密钥",
+      "创建一个密钥后，客户端即可使用它调用网关接口",
+    );
+    return;
+  }
+  tbody.innerHTML = apiKeysData
+    .map((item) => {
+      const id = String(item.id || "");
+      const disabled = !!item.disabled;
+      const statusClass = disabled ? "is-disabled" : "is-enabled";
+      const statusText = disabled ? "已停用" : "已启用";
+      return (
+        "<tr>" +
+        '<td><div class="api-key-name">' +
+        esc(item.name || "未命名密钥") +
+        "</div></td>" +
+        '<td><div class="api-key-value"><code title="点击复制完整密钥">' +
+        esc(apiKeyShortValue(item.key)) +
+        '</code><button class="btn-icon btn-icon-success" type="button" title="复制 API 密钥" aria-label="复制 API 密钥" onclick="copyAPIKey(\'' +
+        escAttr(id) +
+        "')\">" +
+        ICONS.copy +
+        "</button></div></td>" +
+        '<td><button class="api-key-status ' +
+        statusClass +
+        '" type="button" title="点击' +
+        (disabled ? "启用" : "停用") +
+        '" onclick="toggleAPIKey(\'' +
+        escAttr(id) +
+        "'," +
+        (!disabled ? "true" : "false") +
+        ')"><i></i>' +
+        statusText +
+        "</button></td>" +
+        '<td class="api-key-date">' +
+        esc(formatAPIKeyDate(item.created_at)) +
+        "</td>" +
+        '<td><div class="api-key-actions"><button class="btn-icon" type="button" title="编辑名称" aria-label="编辑名称" onclick="editAPIKey(\'' +
+        escAttr(id) +
+        "',this)\">" +
+        ICONS.edit +
+        '<\/button><button class="btn-icon btn-icon-danger" type="button" title="删除密钥" aria-label="删除密钥" onclick="deleteAPIKey(\'' +
+        escAttr(id) +
+        "',this)\">" +
+        ICONS.trash +
+        "</button></div></td>" +
+        "</tr>"
+      );
+    })
+    .join("");
+}
+
+function refreshAPIKeyFilter() {
+  setUsageFilterOptions(
+    "usageAPIKeyFilter",
+    apiKeysData.map((item) => item.name || ""),
+    "全部密钥",
+  );
+  ssSyncLabel(document.getElementById("usageAPIKeyFilter"));
+}
+
+async function loadAPIKeys() {
+  try {
+    const data = await apiJSON("/api/api-keys");
+    apiKeysData = Array.isArray(data.keys) ? data.keys : [];
+    renderAPIKeys();
+    refreshAPIKeyFilter();
+  } catch (e) {
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    const tbody = document.querySelector("#apiKeyTable tbody");
+    if (tbody) tbody.innerHTML = emptyRowHtml(5, ICONS.alert, "加载失败", e.message || "请稍后重试");
+  }
+}
+
+function apiKeyByID(id) {
+  return apiKeysData.find((item) => String(item.id || "") === String(id || ""));
+}
+
+async function copyAPIKey(id) {
+  const item = apiKeyByID(id);
+  if (!item || !item.key) {
+    showToast("密钥内容不可用", "error");
+    return;
+  }
+  const copied = await copyText(item.key);
+  showToast(copied ? "API 密钥已复制" : "复制失败，请手动复制", copied ? "success" : "error");
+}
+
+function apiKeyEditorHtml(title, name, submitLabel) {
+  return (
+    '<div class="popover-header"><span class="popover-title">' +
+    ICONS.key +
+    esc(title) +
+    '</span><button type="button" class="btn-icon" title="关闭" aria-label="关闭" onclick="closePopover()">' +
+    ICONS.close +
+    "</button></div>" +
+    '<label class="popover-label" for="apiKeyNameInput">密钥名称</label>' +
+    '<input id="apiKeyNameInput" class="popover-input" type="text" maxlength="128" placeholder="例如：生产环境" value="' +
+    escAttr(name || "") +
+    '">' +
+    '<div class="popover-hint">名称用于在使用记录中识别和筛选该密钥。</div>' +
+    '<div class="danger-confirm-actions api-key-editor-actions"><button type="button" class="btn api-key-editor-cancel" onclick="closePopover()">取消</button><button type="button" class="btn btn-primary api-key-editor-submit">' +
+    esc(submitLabel || "保存") +
+    "</button></div>"
+  );
+}
+
+function createAPIKey() {
+  const trigger = document.querySelector("#tab-api-keys .btn-primary");
+  let pop;
+  pop = openPopover(trigger, apiKeyEditorHtml("创建 API 密钥", "", "创建并保存"));
+  pop.classList.add("api-key-editor-popover");
+  const submit = pop.querySelector(".api-key-editor-submit");
+  submit?.addEventListener("click", async () => {
+    const name = pop.querySelector("#apiKeyNameInput")?.value.trim() || "";
+    if (!name) {
+      showToast("请输入密钥名称", "error");
+      pop.querySelector("#apiKeyNameInput")?.focus();
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const response = await apiFetch("/api/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      closePopover();
+      await loadAPIKeys();
+      showToast("API 密钥已创建，可点击复制", "success");
+    } catch (e) {
+      if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+      showToast("创建失败: " + e.message, "error");
+      submit.disabled = false;
+    }
+  });
+  setTimeout(() => pop.querySelector("#apiKeyNameInput")?.focus(), 0);
+}
+
+function editAPIKey(id, trigger) {
+  const item = apiKeyByID(id);
+  if (!item) return;
+  let pop;
+  pop = openPopover(trigger, apiKeyEditorHtml("编辑 API 密钥名称", item.name, "保存"));
+  pop.classList.add("api-key-editor-popover");
+  pop.querySelector(".api-key-editor-submit")?.addEventListener("click", async () => {
+    const submit = pop.querySelector(".api-key-editor-submit");
+    const name = pop.querySelector("#apiKeyNameInput")?.value.trim() || "";
+    if (!name) {
+      showToast("请输入密钥名称", "error");
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const response = await apiFetch("/api/api-keys/" + encodeURIComponent(id), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      closePopover();
+      await loadAPIKeys();
+      showToast("密钥名称已更新", "success");
+    } catch (e) {
+      if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+      showToast("保存失败: " + e.message, "error");
+      submit.disabled = false;
+    }
+  });
+  setTimeout(() => {
+    const input = pop.querySelector("#apiKeyNameInput");
+    input?.focus();
+    input?.select();
+  }, 0);
+}
+
+async function toggleAPIKey(id, disabled) {
+  try {
+    const response = await apiFetch("/api/api-keys/" + encodeURIComponent(id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: !!disabled }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    await loadAPIKeys();
+    showToast(disabled ? "密钥已停用" : "密钥已启用", "success");
+  } catch (e) {
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    showToast("更新密钥状态失败: " + e.message, "error");
+  }
+}
+
+async function deleteAPIKey(id, trigger) {
+  const item = apiKeyByID(id);
+  if (!item) return;
+  const confirmed = await showDangerConfirm(trigger, {
+    title: "确认删除 API 密钥？",
+    subject: item.name || "未命名密钥",
+    description: "删除后，使用该密钥的客户端将立即无法访问网关。",
+    note: "删除操作不可撤销；如只是临时停用，建议使用状态按钮。",
+    confirmLabel: "确认删除",
+  });
+  if (!confirmed) return;
+  try {
+    const response = await apiFetch("/api/api-keys/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!response.ok) throw new Error(await response.text());
+    await loadAPIKeys();
+    showToast("API 密钥已删除", "success");
+  } catch (e) {
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    showToast("删除失败: " + e.message, "error");
   }
 }
 
@@ -957,7 +1284,9 @@ function filterUpstreamRows() {
 
 function renderUpstreamTable() {
   const tb = document.querySelector("#upstreamTable tbody");
-  const ks = orderedUpstreamNames();
+  // The persisted order remains the routing priority; the admin list presents
+  // the most recently added/dragged item first for quicker editing.
+  const ks = orderedUpstreamNames().slice().reverse();
   if (!ks.length) {
     tb.innerHTML = emptyRowHtml(
       8,
@@ -1036,7 +1365,7 @@ function addUpstreamRow() {
   const tb = document.querySelector("#upstreamTable tbody");
   if (tb.querySelector(".empty-hint, .empty-state")) tb.innerHTML = "";
   tb.insertAdjacentHTML(
-    "beforeend",
+    "afterbegin",
     '<tr data-upstream-row="">' +
       '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
       ICONS.grip +
@@ -1463,8 +1792,8 @@ function collectUpstreams() {
     if (!order.includes(name)) order.push(name);
   });
   upstreamData = r;
-  upstreamOrder = order;
-  if (!upstreamData[defaultUpstream]) defaultUpstream = upstreamOrder[0] || "";
+  if (!upstreamData[defaultUpstream]) defaultUpstream = order[0] || "";
+  upstreamOrder = order.slice().reverse();
   return r;
 }
 
@@ -5174,12 +5503,13 @@ function modelStatCells(m) {
 }
 
 function statsTableHtml(rowsHtml, dateLabel) {
+  const dimensionLabel = arguments.length > 2 ? arguments[2] : "模型";
   const todayTitle = dateLabel ? "今日用量 · " + esc(dateLabel) : "今日用量";
   return (
     '<div class="stats-table-wrap"><table class="tbl" id="statsTable">' +
     "<thead>" +
     "<tr>" +
-    '<th rowspan="2" class="stats-model-col">模型</th>' +
+    '<th rowspan="2" class="stats-model-col">' + esc(dimensionLabel) + "</th>" +
     '<th colspan="4" class="stats-group-head">' +
     todayTitle +
     "</th>" +
@@ -5194,6 +5524,31 @@ function statsTableHtml(rowsHtml, dateLabel) {
     rowsHtml +
     "</tbody></table></div>"
   );
+}
+
+function statsRowMap(rows) {
+  const result = {};
+  (rows || []).forEach((row) => {
+    const key = (row.model || "") + "\u0000" + (row.upstream || "");
+    result[key] = row;
+  });
+  return result;
+}
+
+function setUsageFilterOptions(id, values, emptyLabel) {
+  const select = document.getElementById(id);
+  if (!select) return;
+  const selected = select.value;
+  const options = Array.from(new Set(values.filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b),
+  );
+  select.innerHTML =
+    '<option value="">' + esc(emptyLabel) + "</option>" +
+    options
+      .map((value) => '<option value="' + escAttr(value) + '">' + esc(value) + "</option>")
+      .join("");
+  select.value = options.includes(selected) ? selected : "";
+	ssSyncLabel(select);
 }
 
 async function resetStats(btn) {
@@ -5227,20 +5582,14 @@ async function loadStats() {
     const d = await apiJSON("/api/stats");
     const ms = d.models || {};
     const dm = d.daily ? d.daily.models || {} : {};
-    const modelSet = new Set([...Object.keys(ms), ...Object.keys(dm)]);
-    const modelKeys = Array.from(modelSet).sort((a, b) => {
-      const at = (ms[a] && ms[a].total_tokens) || 0;
-      const bt = (ms[b] && ms[b].total_tokens) || 0;
-      if (bt !== at) return bt - at;
-      const ad = (dm[a] && dm[a].total_tokens) || 0;
-      const bd = (dm[b] && dm[b].total_tokens) || 0;
-      if (bd !== ad) return bd - ad;
-      return a.localeCompare(b);
-    });
     const totals = sumModelStats(ms, Object.keys(ms));
     const dailyTotals = sumModelStats(dm, Object.keys(dm));
     const hasDaily = !!(d.daily && d.daily.date);
     const dateLabel = hasDaily ? d.daily.date : "";
+    const dimension = document.getElementById("statsDimension")?.value || "model";
+
+    setUsageFilterOptions("usageModelFilter", Object.keys(ms), "全部模型");
+    setUsageFilterOptions("usageUpstreamFilter", Object.keys(d.upstreams || {}), "全部上游");
 
     let h = "";
     h +=
@@ -5277,11 +5626,51 @@ async function loadStats() {
       ) +
       "</div>";
 
-    h +=
-      '<h3 class="stats-heading">模型用量' +
-      (dateLabel ? " · " + esc(dateLabel) : "") +
-      "</h3>";
-    if (!modelKeys.length) {
+    let cumulative = ms;
+    let todayValues = dm;
+    let dimensionLabel = "模型";
+    let heading = "模型用量";
+    const displayLabels = {};
+    if (dimension === "upstream") {
+      cumulative = d.upstreams || {};
+      todayValues = d.daily_upstreams || {};
+      dimensionLabel = "上游";
+      heading = "上游用量";
+    } else if (dimension === "model_upstream") {
+      cumulative = statsRowMap(d.model_upstreams);
+      todayValues = statsRowMap(d.daily_model_upstreams);
+      Object.keys(cumulative).forEach((key) => {
+        const row = cumulative[key] || {};
+        displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
+      });
+      Object.keys(todayValues).forEach((key) => {
+        const row = todayValues[key] || {};
+        if (!displayLabels[key]) displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
+      });
+      dimensionLabel = "模型 / 上游";
+      heading = "模型与上游用量";
+    }
+
+    h += '<h3 class="stats-heading">' + heading + (dateLabel && dimension !== "day" ? " · " + esc(dateLabel) : "") + "</h3>";
+    if (dimension === "day") {
+      const days = d.days || [];
+      if (!days.length) {
+        h += emptyStateHtml(ICONS.chart, "暂无统计数据", "网关处理请求后会在此汇总每日 Token 用量");
+      } else {
+        const rows = days
+          .map((row) => "<tr><td>" + esc(row.date || "-") + "</td>" + modelStatCells(row) + "</tr>")
+          .join("");
+        h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+      }
+      document.getElementById("statsContent").innerHTML = h;
+      return;
+    }
+
+    const keys = Array.from(new Set([...Object.keys(cumulative), ...Object.keys(todayValues)])).sort((a, b) => {
+      const totalDiff = ((cumulative[b] || {}).total_tokens || 0) - ((cumulative[a] || {}).total_tokens || 0);
+      return totalDiff || a.localeCompare(b);
+    });
+    if (!keys.length) {
       h += emptyStateHtml(
         ICONS.chart,
         "暂无统计数据",
@@ -5289,31 +5678,33 @@ async function loadStats() {
       );
     } else {
       let rows = "";
-      for (const k of modelKeys) {
+      for (const k of keys) {
         rows +=
           "<tr><td>" +
-          esc(k) +
+          esc(displayLabels[k] || k) +
           "</td>" +
-          modelStatCells(dm[k]) +
-          modelStatCells(ms[k]) +
+          modelStatCells(todayValues[k]) +
+          modelStatCells(cumulative[k]) +
           "</tr>";
       }
+      const cumulativeTotals = sumModelStats(cumulative, Object.keys(cumulative));
+      const todayDimensionTotals = sumModelStats(todayValues, Object.keys(todayValues));
       rows +=
         '<tr class="stats-total-row"><td>合计</td>' +
         modelStatCells({
-          request_count: dailyTotals.requests,
-          prompt_tokens: dailyTotals.prompt,
-          completion_tokens: dailyTotals.completion,
-          total_tokens: dailyTotals.total,
+          request_count: todayDimensionTotals.requests,
+          prompt_tokens: todayDimensionTotals.prompt,
+          completion_tokens: todayDimensionTotals.completion,
+          total_tokens: todayDimensionTotals.total,
         }) +
         modelStatCells({
-          request_count: totals.requests,
-          prompt_tokens: totals.prompt,
-          completion_tokens: totals.completion,
-          total_tokens: totals.total,
+          request_count: cumulativeTotals.requests,
+          prompt_tokens: cumulativeTotals.prompt,
+          completion_tokens: cumulativeTotals.completion,
+          total_tokens: cumulativeTotals.total,
         }) +
         "</tr>";
-      h += statsTableHtml(rows, dateLabel);
+      h += statsTableHtml(rows, dateLabel, dimensionLabel);
     }
     document.getElementById("statsContent").innerHTML = h;
   } catch (e) {
@@ -5326,14 +5717,102 @@ async function loadStats() {
   }
 }
 
+let usageTotal = 0;
+
+function formatUsageTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || "-";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatUsageDuration(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "-";
+  if (milliseconds < 1000) return Math.round(milliseconds) + " ms";
+  if (milliseconds < 60000) {
+    const digits = milliseconds < 10000 ? 2 : 1;
+    return (milliseconds / 1000).toFixed(digits) + " s";
+  }
+  const minutes = Math.floor(milliseconds / 60000);
+  const seconds = Math.round((milliseconds % 60000) / 1000);
+  return minutes + " m " + seconds + " s";
+}
+
+async function loadUsageRecords(offset) {
+  if (typeof offset === "number") usagePageOffset = Math.max(0, offset);
+  const loadSequence = ++usageLoadSequence;
+  const params = new URLSearchParams({ limit: String(USAGE_PAGE_SIZE), offset: String(usagePageOffset) });
+  const model = document.getElementById("usageModelFilter")?.value || "";
+  const upstream = document.getElementById("usageUpstreamFilter")?.value || "";
+  const apiKeyName = document.getElementById("usageAPIKeyFilter")?.value || "";
+  const date = document.getElementById("usageDateFilter")?.value || "";
+  if (model) params.set("model", model);
+  if (upstream) params.set("upstream", upstream);
+  if (apiKeyName) params.set("key_name", apiKeyName);
+  if (date) params.set("date", date);
+  const tbody = document.querySelector("#usageTable tbody");
+  if (!tbody) return;
+  try {
+    const page = await apiJSON("/api/usage?" + params.toString());
+    if (loadSequence !== usageLoadSequence) return;
+    usageTotal = page.total || 0;
+    const items = page.items || [];
+    if (!items.length) {
+      tbody.innerHTML = emptyRowHtml(10, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
+    } else {
+      tbody.innerHTML = items
+        .map((item) => {
+          const aggregate = (item.request_count || 1) > 1 ? '<span class="usage-aggregate">历史聚合 × ' + fmt(item.request_count) + "</span>" : "";
+          return "<tr><td class=\"usage-time\">" + esc(formatUsageTime(item.called_at)) + aggregate + "</td><td class=\"usage-key-name\">" + esc(item.api_key_name || "未记录") + "</td><td>" + esc(item.request_model || "-") + "</td><td>" + esc(item.upstream_name || "-") + "</td><td>" + esc(item.upstream_model || "-") + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.first_byte_ms)) + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.duration_ms)) + '</td><td class="num-cell">' + fmt(item.prompt_tokens) + '</td><td class="num-cell">' + fmt(item.completion_tokens) + '</td><td class="num-cell usage-total">' + fmt(item.total_tokens) + "</td></tr>";
+        })
+        .join("");
+    }
+    const keyNames = Array.from(
+      new Set([
+        ...apiKeysData.map((item) => item.name || ""),
+        ...(page.key_names || []),
+      ]),
+    ).filter(Boolean);
+    setUsageFilterOptions("usageAPIKeyFilter", keyNames, "全部密钥");
+    const summary = page.summary || {};
+    document.getElementById("usageSummaryRequests").textContent = fmt(summary.request_count);
+    document.getElementById("usageSummaryPrompt").textContent = fmt(summary.prompt_tokens);
+    document.getElementById("usageSummaryCompletion").textContent = fmt(summary.completion_tokens);
+    document.getElementById("usageSummaryTotal").textContent = fmt(summary.total_tokens);
+    const start = usageTotal ? usagePageOffset + 1 : 0;
+    const end = Math.min(usagePageOffset + items.length, usageTotal);
+    document.getElementById("usageSummary").textContent = "共 " + fmt(usageTotal) + " 条 · " + fmt(start) + "–" + fmt(end);
+    document.getElementById("usagePrev").disabled = usagePageOffset <= 0;
+    document.getElementById("usageNext").disabled = usagePageOffset + USAGE_PAGE_SIZE >= usageTotal;
+  } catch (e) {
+    if (loadSequence !== usageLoadSequence) return;
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    tbody.innerHTML = emptyRowHtml(10, ICONS.alert, "加载失败", e.message || "请稍后重试");
+    document.getElementById("usageSummaryRequests").textContent = "0";
+    document.getElementById("usageSummaryPrompt").textContent = "0";
+    document.getElementById("usageSummaryCompletion").textContent = "0";
+    document.getElementById("usageSummaryTotal").textContent = "0";
+  }
+}
+
+function changeUsagePage(direction) {
+  const next = usagePageOffset + direction * USAGE_PAGE_SIZE;
+  if (next < 0 || next >= usageTotal && direction > 0) return;
+  loadUsageRecords(next);
+}
+
 function fmt(n) {
   return (n == null ? 0 : n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /* ===== 初始化 ===== */
-window.onload = function () {
+function initAdminPage() {
+  initAdminTabs();
   ssEnhanceSelect(document.getElementById("upstreamModelFilter"));
   ssEnhanceSelect(document.getElementById("activeSocks5"));
+  ssEnhanceSelect(document.getElementById("usageModelFilter"));
+  ssEnhanceSelect(document.getElementById("usageUpstreamFilter"));
+  ssEnhanceSelect(document.getElementById("usageAPIKeyFilter"));
   initUpstreamDragSort();
   const baseURL = document.getElementById("webSearchBaseURL");
   if (baseURL) {
@@ -5341,9 +5820,23 @@ window.onload = function () {
     baseURL.addEventListener("change", fitWebSearchBaseURLWidth);
   }
   loadConfig();
+  loadAPIKeys();
   loadStats();
-};
-setInterval(loadStats, 5000);
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initAdminPage, { once: true });
+} else {
+  initAdminPage();
+}
+setInterval(function () {
+  loadStats();
+  if (document.querySelector('[data-tab-panel="usage"]')?.classList.contains("is-active")) {
+    loadUsageRecords();
+  }
+}, 5000);
 document.addEventListener("visibilitychange", function () {
-  if (!document.hidden) loadStats();
+  if (!document.hidden) {
+    loadStats();
+    if (document.querySelector('[data-tab-panel="usage"]')?.classList.contains("is-active")) loadUsageRecords();
+  }
 });

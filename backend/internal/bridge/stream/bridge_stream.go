@@ -1,14 +1,20 @@
 package stream
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
+
+	"llmrelay/backend/internal/stats"
 )
 
 // ClientStreamOptions 携带部分流转换器所需的额外状态。
 type ClientStreamOptions struct {
 	UsageModel        string
+	UpstreamName      string
+	UpstreamModel     string
+	RequestContext    context.Context
 	Request           *http.Request
 	Tools             any
 	ToolChoice        any
@@ -32,6 +38,9 @@ func DispatchClientStream(
 	usageModel := opts.UsageModel
 	if usageModel == "" {
 		usageModel = model
+	}
+	if opts.UpstreamName != "" || opts.UpstreamModel != "" {
+		usageModel = stats.UsageIdentityForContext(opts.RequestContext, usageModel, opts.UpstreamName, opts.UpstreamModel)
 	}
 	switch kind {
 	case streamKindChatPassthrough:

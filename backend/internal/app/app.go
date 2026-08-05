@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"llmrelay/backend/internal/auth"
@@ -30,37 +32,66 @@ func defaultAPIAccessKey() string {
 // Run 配置并启动 LLM Relay HTTP 服务。
 func Run(assets embed.FS) {
 	port := "8000"
-	configPath := "config.json"
+	databasePath := "llmrelay.db"
+	legacyConfigFlag := ""
 	adminPassword := "123456"
 	apiAccessKey := defaultAPIAccessKey()
 	debugMode := false
 	debugLogBodies := false
 	flag.StringVar(&port, "port", port, "服务端口")
-	flag.StringVar(&configPath, "config", configPath, "配置文件路径")
+	flag.StringVar(&databasePath, "db", databasePath, "SQLite 数据库路径")
+	flag.StringVar(&legacyConfigFlag, "config", legacyConfigFlag, "兼容旧版 JSON 配置路径（仅首次启动时导入）")
 	flag.StringVar(&adminPassword, "password", adminPassword, "管理面板密码（留空则不启用登录验证）")
 	flag.StringVar(&apiAccessKey, "api-key", apiAccessKey, "对外 /v1 API 密钥（也可用 LLMGATEWAYGO_API_KEY；留空保持兼容）")
 	flag.BoolVar(&debugMode, "debug", false, "启用调试日志")
 	flag.BoolVar(&debugLogBodies, "debug-log-bodies", false, "在调试日志中记录请求和响应正文（可能包含敏感信息）")
 	flag.Parse()
-
-	config.SetPath(configPath)
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		log.Fatalf("无法加载配置 %s: %v（原文件未被修改）", configPath, err)
+	if legacyConfigFlag != "" && !strings.EqualFold(filepath.Ext(legacyConfigFlag), ".json") {
+		// 兼容旧版把 -config 直接指向持久化文件的启动脚本。
+		databasePath = legacyConfigFlag
+		legacyConfigFlag = ""
 	}
+
+	legacyConfigPath := legacyConfigFlag
+	if legacyConfigPath == "" {
+		legacyConfigPath = filepath.Join(filepath.Dir(databasePath), "config.json")
+	}
+	if err := config.MigrateLegacyJSON(databasePath, legacyConfigPath); err != nil {
+		log.Printf("警告: 导入旧配置失败: %v", err)
+	}
+	config.SetPath(databasePath)
+	cfg, err := config.LoadConfig(databasePath)
+	if err != nil {
+		log.Fatalf("无法加载配置 %s: %v（原文件未被修改）", databasePath, err)
+	}
+	legacyAPIKeyMigrated := config.MigrateLegacyAPIKey(&cfg, apiAccessKey)
 	config.ApplyConfig(cfg)
-	if err := config.SaveConfig(configPath, cfg); err != nil {
+	if legacyAPIKeyMigrated {
+		log.Printf("旧版对外 API Key 已迁移到 API 密钥管理")
+	}
+	if err := config.SaveConfig(databasePath, cfg); err != nil {
 		log.Printf("警告: 无法保存配置: %v", err)
 	}
 
 	gateway.SetDebug(debugMode, debugLogBodies)
-	auth.Configure(adminPassword, apiAccessKey)
+	legacyAuthKey := apiAccessKey
+	for _, managedKey := range cfg.APIKeys {
+		if strings.TrimSpace(managedKey.Key) == strings.TrimSpace(apiAccessKey) {
+			// Once the legacy value has been imported, deletion and disabling
+			// must be controlled by the API key page rather than the old flag.
+			legacyAuthKey = ""
+			break
+		}
+	}
+	auth.Configure(adminPassword, legacyAuthKey)
+	auth.SetAPIKeys(cfg.APIKeys)
 	admin.Configure(assets, debugMode)
 	auth.SetLoginRenderer(admin.RenderLoginPage)
+	stats.SetPath(databasePath)
 	stats.LoadTokenStats()
 
 	models := catalog.Initialize()
-	log.Printf("配置已从 %s 加载", configPath)
+	log.Printf("配置已从 SQLite %s 加载", databasePath)
 	log.Printf("已加载 %d 个配置模型", len(models))
 	for _, model := range models {
 		log.Printf("  - %s", model.ID)
@@ -81,10 +112,17 @@ func Run(assets embed.FS) {
 	} else {
 		log.Printf("管理面板: http://localhost:%s/ （无密码）", port)
 	}
-	if apiAccessKey == "" {
+	apiAuthEnabled := strings.TrimSpace(legacyAuthKey) != ""
+	for _, managedKey := range cfg.APIKeys {
+		if !managedKey.Disabled && strings.TrimSpace(managedKey.Key) != "" {
+			apiAuthEnabled = true
+			break
+		}
+	}
+	if !apiAuthEnabled {
 		log.Printf("警告: /v1 API 鉴权未启用；公网部署请设置 -api-key 或 LLMGATEWAYGO_API_KEY")
 	} else {
-		log.Printf("/v1 API: 密钥鉴权已启用")
+		log.Printf("/v1 API: API 密钥鉴权已启用（%d 个密钥）", len(cfg.APIKeys))
 	}
 	log.Printf("===================")
 
