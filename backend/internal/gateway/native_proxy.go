@@ -64,11 +64,14 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 			// Some compatible upstreams return a normal JSON body even when the
 			// request asked for streaming. Preserve that native response instead
 			// of changing its Content-Type to SSE.
-			w.WriteHeader(status)
+			var responseBody []byte
 			if body != nil {
-				defer body.Close()
-				_, _ = io.Copy(w, body)
+				responseBody, _ = io.ReadAll(body)
+				_ = body.Close()
 			}
+			commitNativeResponseUsage(ctx, usageModel, request.UpstreamName, request.Model, responseBody)
+			w.WriteHeader(status)
+			_, _ = w.Write(responseBody)
 			return
 		}
 		setNativeSSEHeaders(w.Header())
@@ -94,17 +97,21 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	if status >= 200 && status < 300 {
-		usageStats := newRequestUsageAccumulatorForContext(ctx, usageModel, request.UpstreamName, request.Model)
-		var decoded map[string]any
-		if json.Unmarshal(body, &decoded) == nil {
-			if usage, ok := decoded["usage"].(map[string]any); ok {
-				usageStats.observeMap(usage)
-			}
-		}
-		usageStats.commit()
+		commitNativeResponseUsage(ctx, usageModel, request.UpstreamName, request.Model, body)
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func commitNativeResponseUsage(ctx context.Context, usageModel, upstreamName, upstreamModel string, body []byte) {
+	usageStats := newRequestUsageAccumulatorForContext(ctx, usageModel, upstreamName, upstreamModel)
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) == nil {
+		if usage, ok := decoded["usage"].(map[string]any); ok {
+			usageStats.observeMap(usage)
+		}
+	}
+	usageStats.commit()
 }
 
 func nativeResponseIsSSE(headers http.Header) bool {

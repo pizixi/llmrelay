@@ -42,23 +42,8 @@
 
 <main class="tab-panels">
 <section class="card tab-panel is-active" id="tab-stats" role="tabpanel" aria-labelledby="tab-trigger-stats" data-tab-panel="stats">
-<div class="stats-header">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Token 统计</h2>
-<div class="card-desc">请求与 Token 用量概览</div>
-</div>
-<div class="btns">
-<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>
-<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>
-<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="loadStats()"><option value="model">按模型</option><option value="upstream">按上游</option><option value="model_upstream">模型 × 上游</option><option value="day">按日期</option></select>
-<span id="resetStatus" style="font-size:13.5px;color:var(--text-ter)"></span>
-</div>
-</div>
 <div id="statsContent" class="stats-content">
-<div class="skeleton-grid">
-<div class="skeleton-card"></div><div class="skeleton-card"></div>
-<div class="skeleton-card"></div><div class="skeleton-card"></div>
-</div>
+<div class="stats-heatmap-skeleton" aria-hidden="true"></div>
 </div>
 </section>
 

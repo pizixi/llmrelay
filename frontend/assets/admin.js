@@ -5538,31 +5538,417 @@ function emptyRowHtml(colspan, icon, title, desc) {
 
 function statsSkeletonHtml() {
   return (
-    '<div class="skeleton-grid">' +
-    '<div class="skeleton-card"></div><div class="skeleton-card"></div>' +
-    '<div class="skeleton-card"></div><div class="skeleton-card"></div>' +
+    '<div class="stats-top-grid stats-top-grid-skeleton" aria-hidden="true">' +
+    '<div class="stats-overview-skeleton"></div>' +
+    '<div class="stats-heatmap-skeleton"></div>' +
+    '</div>'
+  );
+}
+
+const STATS_HEATMAP_DAY_COUNT = 365;
+const STATS_HEATMAP_DAY_MS = 24 * 60 * 60 * 1000;
+
+function statsDateFromKey(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (
+    date.getFullYear() !== Number(match[1]) ||
+    date.getMonth() !== Number(match[2]) - 1 ||
+    date.getDate() !== Number(match[3])
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function statsDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return year + "-" + month + "-" + day;
+}
+
+function shiftStatsDate(date, days) {
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function formatStatsDate(date) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }).format(date);
+}
+
+function statsHeatmapRow(row) {
+  const requests = Math.max(0, Number(row && row.request_count) || 0);
+  const prompt = Math.max(0, Number(row && row.prompt_tokens) || 0);
+  const completion = Math.max(0, Number(row && row.completion_tokens) || 0);
+  const reportedTotal = Math.max(0, Number(row && row.total_tokens) || 0);
+  const total = Math.max(reportedTotal, prompt + completion);
+  return {
+    requests,
+    prompt,
+    completion,
+    total,
+    intensity: total || requests,
+  };
+}
+
+function statsHeatmapLevel(value, scale) {
+  if (!value || !scale.length) return 0;
+  const rank = scale.reduce((count, item) => count + (item <= value ? 1 : 0), 0);
+  return Math.min(4, Math.max(1, Math.ceil((rank / scale.length) * 4)));
+}
+
+function statsHeatmapCellLabel(date, value) {
+  return (
+    formatStatsDate(date) +
+    "，调用 " +
+    fmt(value.requests) +
+    " 次，输入 " +
+    fmt(value.prompt) +
+    " Token，输出 " +
+    fmt(value.completion) +
+    " Token"
+  );
+}
+
+function statsHeatmapSummaryHtml(summary) {
+  return (
+    '<div class="stats-heatmap-summary" aria-label="最近一年汇总">' +
+    '<span><b>' + fmt(summary.requests) + '</b><em>调用</em></span>' +
+    '<span><b>' + fmt(summary.prompt) + '</b><em>输入</em></span>' +
+    '<span><b>' + fmt(summary.completion) + '</b><em>输出</em></span>' +
     "</div>"
   );
 }
 
-function kpiCardHtml(kind, label, value, sub, icon) {
+function statsDayMap(days) {
+  const values = new Map();
+  (days || []).forEach((row) => {
+    const date = statsDateFromKey(row && row.date);
+    if (date) values.set(statsDateKey(date), statsHeatmapRow(row));
+  });
+  return values;
+}
+
+function statsAxisDateLabel(date) {
+  return date.getMonth() + 1 + "/" + date.getDate();
+}
+
+function statsTrendHtml(days, dateLabel) {
+  const endDate = statsDateFromKey(dateLabel) || new Date();
+  const startDate = shiftStatsDate(endDate, -29);
+  const valuesByDate = statsDayMap(days);
+  const points = [];
+  const summary = { requests: 0, total: 0 };
+  for (let index = 0; index < 30; index++) {
+    const date = shiftStatsDate(startDate, index);
+    const value = valuesByDate.get(statsDateKey(date)) || {
+      requests: 0,
+      prompt: 0,
+      completion: 0,
+      total: 0,
+      intensity: 0,
+    };
+    points.push({ date, value });
+    summary.requests += value.requests;
+    summary.total += value.total;
+  }
+  const scale = points
+    .map((point) => point.value.intensity)
+    .filter((value) => value > 0)
+    .sort((a, b) => a - b);
+  const maxValue = Math.max(1, ...points.map((point) => point.value.intensity));
+  const bars = points
+    .map((point) => {
+      const value = point.value;
+      const height = value.intensity
+        ? Math.max(8, Math.round((value.intensity / maxValue) * 100))
+        : 3;
+      const label = statsHeatmapCellLabel(point.date, value);
+      return (
+        '<span class="stats-trend-bar-wrap" title="' +
+        escAttr(label) +
+        '"><i class="stats-trend-bar level-' +
+        statsHeatmapLevel(value.intensity, scale) +
+        '" style="--bar-height:' +
+        height +
+        '%"></i></span>'
+      );
+    })
+    .join("");
   return (
-    '<div class="kpi-card kpi-' +
-    kind +
-    '">' +
-    '<div class="kpi-meta">' +
-    '<div class="kpi-label">' +
-    icon +
-    "<span>" +
-    esc(label) +
-    "</span></div>" +
-    (sub ? '<div class="kpi-sub">' + esc(sub) + "</div>" : "") +
+    '<section class="stats-chart-module stats-trend-module" aria-label="近 30 日用量趋势">' +
+    '<div class="stats-chart-head"><div><h3>近 30 日趋势</h3><p>按每日 Token 总量</p></div>' +
+    '<div class="stats-chart-metric"><b>' +
+    fmt(summary.total) +
+    '</b><span>Token</span><em>' +
+    fmt(summary.requests) +
+    " 次调用</em></div></div>" +
+    '<div class="stats-trend-chart" role="img" aria-label="近 30 日每日 Token 用量柱状图">' +
+    bars +
     "</div>" +
-    '<div class="kpi-value">' +
-    esc(value) +
-    "</div>" +
+    '<div class="stats-chart-axis"><span>' +
+    statsAxisDateLabel(startDate) +
+    "</span><span>今天</span></div>" +
+    "</section>"
+  );
+}
+
+function statsOverviewHtml(days, dateLabel) {
+  return statsTrendHtml(days, dateLabel);
+}
+
+function statsControlsHtml(dimension) {
+  const selected = (value) => (value === dimension ? " selected" : "");
+  return (
+    '<div class="stats-heading-actions" aria-label="统计操作">' +
+    '<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>' +
+    '<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>' +
+    '<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="loadStats()">' +
+    '<option value="model"' + selected("model") + ">按模型</option>" +
+    '<option value="upstream"' + selected("upstream") + ">按上游</option>" +
+    '<option value="model_upstream"' + selected("model_upstream") + ">模型 × 上游</option>" +
+    '<option value="day"' + selected("day") + ">按日期</option>" +
+    "</select>" +
+    '<span id="resetStatus" class="stats-reset-status" aria-live="polite"></span>' +
     "</div>"
   );
+}
+
+function statsHeadingHtml(heading, dateLabel, dimension) {
+  return (
+    '<div class="stats-heading"><h3>' +
+    esc(heading) +
+    (dateLabel && dimension !== "day" ? " · " + esc(dateLabel) : "") +
+    "</h3>" +
+    statsControlsHtml(dimension) +
+    "</div>"
+  );
+}
+
+function statsHeatmapHtml(days, dateLabel) {
+  const valuesByDate = statsDayMap(days);
+
+  const endDate = statsDateFromKey(dateLabel) || new Date();
+  const startDate = shiftStatsDate(endDate, -(STATS_HEATMAP_DAY_COUNT - 1));
+  const gridStart = shiftStatsDate(startDate, -startDate.getDay());
+  const gridEnd = shiftStatsDate(endDate, 6 - endDate.getDay());
+  const gridStartUTC = Date.UTC(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate());
+  const gridEndUTC = Date.UTC(gridEnd.getFullYear(), gridEnd.getMonth(), gridEnd.getDate());
+  const weekCount = Math.floor((gridEndUTC - gridStartUTC) / STATS_HEATMAP_DAY_MS / 7) + 1;
+  const scale = Array.from(valuesByDate.entries())
+    .filter(([key, value]) => {
+      const date = statsDateFromKey(key);
+      return date && date >= startDate && date <= endDate && value.intensity > 0;
+    })
+    .map(([, value]) => value.intensity)
+    .sort((a, b) => a - b);
+  const periodSummary = { requests: 0, prompt: 0, completion: 0 };
+  const monthLabels = [];
+  let lastMonthColumn = 0;
+  let monthCursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+  while (monthCursor <= endDate) {
+    const monthUTC = Date.UTC(monthCursor.getFullYear(), monthCursor.getMonth(), monthCursor.getDate());
+    const monthColumn = Math.max(
+      1,
+      Math.floor((monthUTC - gridStartUTC) / STATS_HEATMAP_DAY_MS / 7) + 1,
+    );
+    if (monthColumn !== lastMonthColumn) {
+      monthLabels.push(
+        '<span class="stats-heatmap-month" style="--month-column:' +
+          monthColumn +
+          '">' +
+          (monthCursor.getMonth() + 1) +
+          "月</span>",
+      );
+      lastMonthColumn = monthColumn;
+    }
+    monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1);
+  }
+
+  let cells = "";
+  for (let week = 0; week < weekCount; week++) {
+    for (let day = 0; day < 7; day++) {
+      const date = shiftStatsDate(gridStart, week * 7 + day);
+      if (date < startDate || date > endDate) {
+        cells += '<span class="stats-heatmap-cell is-outside" aria-hidden="true"></span>';
+        continue;
+      }
+      const value = valuesByDate.get(statsDateKey(date)) || {
+        requests: 0,
+        prompt: 0,
+        completion: 0,
+        total: 0,
+        intensity: 0,
+      };
+      periodSummary.requests += value.requests;
+      periodSummary.prompt += value.prompt;
+      periodSummary.completion += value.completion;
+      const label = statsHeatmapCellLabel(date, value);
+      cells +=
+        '<button class="stats-heatmap-cell level-' +
+        statsHeatmapLevel(value.intensity, scale) +
+        '" type="button" data-stats-day="1" data-date="' +
+        escAttr(statsDateKey(date)) +
+        '" data-requests="' +
+        escAttr(value.requests) +
+        '" data-prompt="' +
+        escAttr(value.prompt) +
+        '" data-completion="' +
+        escAttr(value.completion) +
+        '" aria-label="' +
+        escAttr(label) +
+        '"></button>';
+    }
+  }
+
+  const weekdayLabels = ["", "一", "", "三", "", "五", ""]
+    .map((label) => '<span>' + label + "</span>")
+    .join("");
+  return (
+    '<section class="stats-heatmap" aria-label="每日用量热力图">' +
+    '<div class="stats-heatmap-head">' +
+    '<div class="stats-heatmap-title-group"><h3 class="stats-heatmap-title">每日用量</h3><div class="stats-heatmap-caption">最近一年 · 按每日总量分级</div></div>' +
+    statsHeatmapSummaryHtml(periodSummary) +
+    "</div>" +
+    '<div class="stats-heatmap-scroll">' +
+    '<div class="stats-heatmap-body"><div class="stats-heatmap-track">' +
+    '<div class="stats-heatmap-weekdays" aria-hidden="true">' +
+    weekdayLabels +
+    "</div>" +
+    '<div class="stats-heatmap-chart" style="--heatmap-weeks:' +
+    weekCount +
+    '">' +
+    '<div class="stats-heatmap-months" aria-hidden="true">' +
+    monthLabels.join("") +
+    "</div>" +
+    '<div class="stats-heatmap-grid" role="group" aria-label="最近一年每日 Token 用量">' +
+    cells +
+    "</div>" +
+    "</div>" +
+    "</div>" +
+    "</div>" +
+    "</div>" +
+    '<div class="stats-heatmap-legend"><span>少</span><i class="level-0"></i><i class="level-1"></i><i class="level-2"></i><i class="level-3"></i><i class="level-4"></i><span>多</span></div>' +
+    '<div class="stats-heatmap-tooltip" role="tooltip" hidden></div>' +
+    "</section>"
+  );
+}
+
+function fitStatsHeatmap(root) {
+  const scroll = root.querySelector(".stats-heatmap-scroll");
+  const chart = root.querySelector(".stats-heatmap-chart");
+  const weekdays = root.querySelector(".stats-heatmap-weekdays");
+  const track = root.querySelector(".stats-heatmap-track");
+  if (!scroll || !chart || !weekdays || !track || !scroll.clientWidth) return;
+  const weeks = Number.parseInt(chart.style.getPropertyValue("--heatmap-weeks"), 10);
+  if (!Number.isFinite(weeks) || weeks <= 0) return;
+  const gap = Number.parseFloat(getComputedStyle(root).getPropertyValue("--heat-gap")) || 3;
+  const minCell = Number.parseFloat(getComputedStyle(root).getPropertyValue("--heat-cell-min")) || 10;
+  const maxCell = Number.parseFloat(getComputedStyle(root).getPropertyValue("--heat-cell-max")) || 16;
+  const months = root.querySelector(".stats-heatmap-months");
+  const scrollStyle = getComputedStyle(scroll);
+  const paddingY =
+    (Number.parseFloat(scrollStyle.paddingTop) || 0) +
+    (Number.parseFloat(scrollStyle.paddingBottom) || 0);
+  const monthHeight = months ? months.offsetHeight : 15;
+  const weekdayOffset = Number.parseFloat(getComputedStyle(weekdays).marginTop) || 0;
+  const verticalSpace = Math.max(0, scroll.clientHeight - paddingY);
+  const rowCount = 7;
+  const trackGap = Number.parseFloat(getComputedStyle(track).columnGap) || gap;
+  const available = Math.max(0, scroll.clientWidth - weekdays.offsetWidth - trackGap);
+  const widthFitCell = (available - (weeks - 1) * gap) / weeks;
+  const heightFitCell =
+    (verticalSpace - Math.max(monthHeight, weekdayOffset) - (rowCount - 1) * gap) /
+    rowCount;
+  const fitCell = Math.min(widthFitCell, heightFitCell);
+  // Respect the visual minimum while there is room, then shrink below it on
+  // very narrow screens so the full year remains visible without scrolling.
+  const cell = Math.min(
+    maxCell,
+    fitCell < minCell ? Math.max(1, fitCell) : fitCell,
+  );
+  const chartWidth = weeks * cell + (weeks - 1) * gap;
+  chart.style.width = Math.ceil(chartWidth * 10) / 10 + "px";
+  root.style.setProperty("--heat-cell", Math.round(cell * 10) / 10 + "px");
+}
+
+function bindStatsHeatmap() {
+  const root = document.querySelector(".stats-heatmap");
+  if (!root) return;
+  const tooltip = root.querySelector(".stats-heatmap-tooltip");
+  if (!tooltip) return;
+  fitStatsHeatmap(root);
+  const scroll = root.querySelector(".stats-heatmap-scroll");
+  if (scroll && typeof ResizeObserver === "function") {
+    const observer = new ResizeObserver(() => fitStatsHeatmap(root));
+    observer.observe(scroll);
+  }
+  let activeCell = null;
+
+  const hideTooltip = () => {
+    activeCell = null;
+    tooltip.hidden = true;
+    tooltip.style.visibility = "";
+  };
+
+  const showTooltip = (cell) => {
+    activeCell = cell;
+    const date = statsDateFromKey(cell.dataset.date);
+    if (!date) return;
+    const value = {
+      requests: Number(cell.dataset.requests) || 0,
+      prompt: Number(cell.dataset.prompt) || 0,
+      completion: Number(cell.dataset.completion) || 0,
+    };
+    tooltip.innerHTML =
+      '<div class="stats-heatmap-tooltip-date">' +
+      esc(formatStatsDate(date)) +
+      "</div>" +
+      '<div class="stats-heatmap-tooltip-row"><span>调用</span><b>' +
+      fmt(value.requests) +
+      " 次</b></div>" +
+      '<div class="stats-heatmap-tooltip-row"><span>输入</span><b>' +
+      fmt(value.prompt) +
+      " Token</b></div>" +
+      '<div class="stats-heatmap-tooltip-row"><span>输出</span><b>' +
+      fmt(value.completion) +
+      " Token</b></div>";
+    tooltip.hidden = false;
+    tooltip.style.visibility = "hidden";
+    requestAnimationFrame(() => {
+      if (activeCell !== cell) return;
+      const cellRect = cell.getBoundingClientRect();
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const edge = 10;
+      const gap = 10;
+      const left = Math.min(
+        Math.max(edge, cellRect.left + cellRect.width / 2 - tooltipRect.width / 2),
+        window.innerWidth - tooltipRect.width - edge,
+      );
+      const above = cellRect.top - tooltipRect.height - gap;
+      const top = above >= edge ? above : cellRect.bottom + gap;
+      tooltip.style.left = Math.round(left) + "px";
+      tooltip.style.top = Math.round(Math.max(edge, top)) + "px";
+      tooltip.style.visibility = "visible";
+    });
+  };
+
+  root.querySelectorAll("[data-stats-day]").forEach((cell) => {
+    cell.addEventListener("mouseenter", () => showTooltip(cell));
+    cell.addEventListener("mouseleave", hideTooltip);
+    cell.addEventListener("focus", () => showTooltip(cell));
+    cell.addEventListener("blur", hideTooltip);
+  });
+  const scrollContainer = root.closest(".stats-content");
+  if (scrollContainer) scrollContainer.addEventListener("scroll", hideTooltip, { passive: true });
 }
 
 function sumModelStats(map, keys) {
@@ -5670,13 +6056,12 @@ async function resetStats(btn) {
   try {
     const r = await apiFetch("/api/stats", { method: "DELETE" });
     if (!r.ok) throw new Error(await r.text());
-    document.getElementById("statsContent").innerHTML = emptyStateHtml(
-      ICONS.chart,
-      "暂无统计数据",
-      "有请求经过网关后，这里会显示用量概览",
-    );
-    s.textContent = "已清空";
-    setTimeout(() => (s.textContent = ""), 2000);
+    await loadStats();
+    const nextStatus = document.getElementById("resetStatus");
+    if (nextStatus) {
+      nextStatus.textContent = "已清空";
+      setTimeout(() => (nextStatus.textContent = ""), 2000);
+    }
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     s.textContent = "失败: " + e.message;
@@ -5688,10 +6073,7 @@ async function loadStats() {
     const d = await apiJSON("/api/stats");
     const ms = d.models || {};
     const dm = d.daily ? d.daily.models || {} : {};
-    const totals = sumModelStats(ms, Object.keys(ms));
-    const dailyTotals = sumModelStats(dm, Object.keys(dm));
-    const hasDaily = !!(d.daily && d.daily.date);
-    const dateLabel = hasDaily ? d.daily.date : "";
+    const dateLabel = d.daily && d.daily.date ? d.daily.date : "";
     const dimension = document.getElementById("statsDimension")?.value || "model";
 
     setUsageFilterOptions("usageModelFilter", Object.keys(ms), "全部模型");
@@ -5699,37 +6081,9 @@ async function loadStats() {
 
     let h = "";
     h +=
-      '<div class="kpi-grid">' +
-      kpiCardHtml(
-        "requests",
-        "请求",
-        fmt(totals.requests),
-        hasDaily
-          ? "今日 " + fmt(d.daily.total_requests || dailyTotals.requests)
-          : "",
-        ICONS.chart,
-      ) +
-      kpiCardHtml(
-        "prompt",
-        "输入",
-        fmt(totals.prompt),
-        hasDaily ? "今日 " + fmt(dailyTotals.prompt) : "",
-        ICONS.layers,
-      ) +
-      kpiCardHtml(
-        "completion",
-        "输出",
-        fmt(totals.completion),
-        hasDaily ? "今日 " + fmt(dailyTotals.completion) : "",
-        ICONS.edit,
-      ) +
-      kpiCardHtml(
-        "total",
-        "合计",
-        fmt(totals.total),
-        hasDaily ? dateLabel + " · 今日 " + fmt(dailyTotals.total) : "",
-        ICONS.server,
-      ) +
+      '<div class="stats-top-grid">' +
+      statsOverviewHtml(d.days || [], dateLabel) +
+      statsHeatmapHtml(d.days || [], dateLabel) +
       "</div>";
 
     let cumulative = ms;
@@ -5755,9 +6109,11 @@ async function loadStats() {
       });
       dimensionLabel = "模型 / 上游";
       heading = "模型与上游用量";
+    } else if (dimension === "day") {
+      heading = "每日用量明细";
     }
 
-    h += '<h3 class="stats-heading">' + heading + (dateLabel && dimension !== "day" ? " · " + esc(dateLabel) : "") + "</h3>";
+    h += statsHeadingHtml(heading, dateLabel, dimension);
     if (dimension === "day") {
       const days = d.days || [];
       if (!days.length) {
@@ -5769,6 +6125,9 @@ async function loadStats() {
         h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
       }
       document.getElementById("statsContent").innerHTML = h;
+      injectButtonIcons();
+      ssEnhanceSelect(document.getElementById("statsDimension"));
+      bindStatsHeatmap();
       return;
     }
 
@@ -5813,13 +6172,17 @@ async function loadStats() {
       h += statsTableHtml(rows, dateLabel, dimensionLabel);
     }
     document.getElementById("statsContent").innerHTML = h;
+    injectButtonIcons();
+    ssEnhanceSelect(document.getElementById("statsDimension"));
+    bindStatsHeatmap();
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
-    document.getElementById("statsContent").innerHTML = emptyStateHtml(
-      ICONS.alert,
-      "加载失败",
-      e.message || "请稍后重试",
-    );
+    const currentDimension = document.getElementById("statsDimension")?.value || "model";
+    document.getElementById("statsContent").innerHTML =
+      statsHeadingHtml("加载失败", "", currentDimension) +
+      emptyStateHtml(ICONS.alert, "加载失败", e.message || "请稍后重试");
+    injectButtonIcons();
+    ssEnhanceSelect(document.getElementById("statsDimension"));
   }
 }
 

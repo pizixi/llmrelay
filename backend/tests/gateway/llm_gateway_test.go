@@ -1892,9 +1892,8 @@ func TestChatPassthroughRequestPreservesFutureToolShapes(t *testing.T) {
 	}
 	options := testObject(t, body["stream_options"], "stream_options")
 	requireTestEqual(t, "future stream option", options["future_option"], true)
-	if _, exists := options["include_usage"]; exists {
-		t.Fatalf("native passthrough injected include_usage: %#v", options["include_usage"])
-	}
+	// 流式透传必须补齐 include_usage，否则兼容上游不回传 usage，用量统计恒为 0。
+	requireTestEqual(t, "stream usage opt-in", options["include_usage"], true)
 	messages := testArray(t, body["messages"], "messages")
 	message := testObject(t, messages[0], "messages[0]")
 	requireTestEqual(t, "tool-only assistant content", message["content"], "")

@@ -473,6 +473,21 @@ func PrepareChatPassthroughBody(body []byte, modelID, reasoningEffort string, wi
 		if withReasoning && reasoningEffort != "" {
 			changed = SetNativeRequestField(req, "reasoning_effort", reasoningEffort) || changed
 		}
+		// 流式 Chat 请求必须显式请求 usage 分块，否则兼容上游不会在流末尾
+		// 返回 usage，导致同协议透传的用量统计输入/输出恒为 0。此处仅补齐
+		// stream_options.include_usage，保留客户端已有的其它字段与自定义结构。
+		if stream, _ := req["stream"].(bool); stream {
+			streamOptions, _ := req["stream_options"].(map[string]any)
+			if streamOptions == nil {
+				streamOptions = map[string]any{}
+				req["stream_options"] = streamOptions
+				changed = true
+			}
+			if includeUsage, _ := streamOptions["include_usage"].(bool); !includeUsage {
+				streamOptions["include_usage"] = true
+				changed = true
+			}
+		}
 		return changed
 	})
 }
