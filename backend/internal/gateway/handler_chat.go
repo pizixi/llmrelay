@@ -48,6 +48,19 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	decision := decideProtocolBridge(WireChat, upstream, bridgeMode)
 	effortMap := getReasoningEffortMapForAlias(modelAliasInfo)
 	forwardReasoning := shouldForwardReasoningParameters(modelAliasInfo, aliasMatched)
+	if resolvedModel != requestedModel || forwardReasoning {
+		decision.MarkPatched()
+	}
+	decision.EvaluateCapabilities(upstream, requestCapabilities(body, WireChat)...)
+	if decision.Mode == BridgeModeStrict {
+		capabilityWarnings := capabilityBridgeWarnings(decision)
+		if decision.Path != BridgePathPassthrough {
+			capabilityWarnings = explicitCapabilityBridgeWarnings(decision)
+		}
+		if rejectStrictBridgeWarnings(w, r, capabilityWarnings) {
+			return
+		}
+	}
 	if decision.Path == BridgePathPassthrough {
 		applyDecisionHeaders(w.Header(), decision, nil)
 		nativeRequest := OpenAIRequest{ReasoningEffort: envelope.ReasoningEffort}
@@ -88,6 +101,9 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Messages = ensureReasoningContent(req.Messages, modelAliasInfo.WithReasoning)
 	bridgeWarnings := chatBridgeWarnings(&req, upstream)
+	if decision.Path != BridgePathPassthrough {
+		bridgeWarnings = appendBridgeWarnings(bridgeWarnings, conversionCapabilityBridgeWarnings(decision, false))
+	}
 	if decision.Mode == BridgeModeStrict && rejectStrictBridgeWarnings(w, r, bridgeWarnings) {
 		return
 	}

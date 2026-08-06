@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
         CHECK (api_type IN ('openai', 'anthropic', 'openai-responses')),
     bridge_mode TEXT NOT NULL DEFAULT 'compatible'
         CHECK (bridge_mode IN ('compatible', 'strict')),
+    capabilities_json TEXT NOT NULL DEFAULT '{}',
     responses_reasoning_format TEXT NOT NULL DEFAULT '',
     max_retries INTEGER,
     sort_order INTEGER NOT NULL DEFAULT 0,
@@ -159,13 +160,51 @@ func ensureConfigSchema(db *sql.DB) error {
 			ON CONFLICT(id) DO NOTHING`, normalizedConfigSchemaVersion); err != nil {
 			return fmt.Errorf("initialize config schema version: %w", err)
 		}
-		return nil
+		return ensureUpstreamCapabilitiesColumn(db)
 	}
 	if err != nil {
 		return fmt.Errorf("read config schema version: %w", err)
 	}
 	if version != normalizedConfigSchemaVersion {
 		return fmt.Errorf("unsupported config schema version %d", version)
+	}
+	return ensureUpstreamCapabilitiesColumn(db)
+}
+
+// ensureUpstreamCapabilitiesColumn keeps databases created by older releases
+// readable without a destructive schema reset. SQLite's CREATE TABLE IF NOT
+// EXISTS does not add columns to an existing table, so this small idempotent
+// migration is required before normalized reads/writes.
+func ensureUpstreamCapabilitiesColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(upstreams)")
+	if err != nil {
+		return fmt.Errorf("inspect upstream capability column: %w", err)
+	}
+	defer rows.Close()
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan upstream schema: %w", err)
+		}
+		if name == "capabilities_json" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read upstream schema: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close upstream schema rows: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE upstreams ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add upstream capabilities column: %w", err)
 	}
 	return nil
 }
@@ -316,7 +355,7 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 	upstreamNamesByID := make(map[int64]string)
 
 	rows, err := db.Query(`SELECT id, name, base_url, api_type, bridge_mode,
-		responses_reasoning_format, max_retries
+		capabilities_json, responses_reasoning_format, max_retries
 		FROM upstreams ORDER BY sort_order, id`)
 	if err != nil {
 		return cfg, err
@@ -324,15 +363,21 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 	for rows.Next() {
 		var value persistedUpstream
 		var upstream UpstreamConfig
-		var apiType, bridgeMode string
+		var apiType, bridgeMode, capabilitiesJSON string
 		var maxRetries sql.NullInt64
 		if err := rows.Scan(&value.ID, &value.Name, &upstream.BaseURL, &apiType, &bridgeMode,
-			&upstream.ResponsesReasoningFormat, &maxRetries); err != nil {
+			&capabilitiesJSON, &upstream.ResponsesReasoningFormat, &maxRetries); err != nil {
 			_ = rows.Close()
 			return cfg, err
 		}
 		upstream.APIType = UpstreamType(apiType)
 		upstream.BridgeMode = BridgeMode(bridgeMode)
+		if strings.TrimSpace(capabilitiesJSON) != "" {
+			var capabilities map[string]bool
+			if err := json.Unmarshal([]byte(capabilitiesJSON), &capabilities); err == nil {
+				upstream.Capabilities = capabilities
+			}
+		}
 		if maxRetries.Valid {
 			retries := int(maxRetries.Int64)
 			upstream.MaxRetries = &retries
@@ -645,16 +690,24 @@ func writeNormalizedConfig(tx *sql.Tx, cfg AppConfig) error {
 		}
 		var result sql.Result
 		var err error
+		capabilitiesJSON := "{}"
+		if upstream.Capabilities != nil {
+			encoded, err := json.Marshal(upstream.Capabilities)
+			if err != nil {
+				return err
+			}
+			capabilitiesJSON = string(encoded)
+		}
 		if upstream.ID > 0 {
 			result, err = tx.Exec(`INSERT INTO upstreams
-				(id, name, base_url, api_type, bridge_mode, responses_reasoning_format, max_retries, sort_order)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, upstream.ID, name, upstream.BaseURL, upstream.APIType,
-				upstream.BridgeMode, upstream.ResponsesReasoningFormat, maxRetries, index)
+				(id, name, base_url, api_type, bridge_mode, capabilities_json, responses_reasoning_format, max_retries, sort_order)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, upstream.ID, name, upstream.BaseURL, upstream.APIType,
+				upstream.BridgeMode, capabilitiesJSON, upstream.ResponsesReasoningFormat, maxRetries, index)
 		} else {
 			result, err = tx.Exec(`INSERT INTO upstreams
-				(name, base_url, api_type, bridge_mode, responses_reasoning_format, max_retries, sort_order)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`, name, upstream.BaseURL, upstream.APIType,
-				upstream.BridgeMode, upstream.ResponsesReasoningFormat, maxRetries, index)
+				(name, base_url, api_type, bridge_mode, capabilities_json, responses_reasoning_format, max_retries, sort_order)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, name, upstream.BaseURL, upstream.APIType,
+				upstream.BridgeMode, capabilitiesJSON, upstream.ResponsesReasoningFormat, maxRetries, index)
 		}
 		if err != nil {
 			return err

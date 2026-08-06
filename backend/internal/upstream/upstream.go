@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"llmrelay/backend/internal/sse"
 )
 
 // ======================== 上游端点 ========================
@@ -471,18 +473,6 @@ func PrepareChatPassthroughBody(body []byte, modelID, reasoningEffort string, wi
 		if withReasoning && reasoningEffort != "" {
 			changed = SetNativeRequestField(req, "reasoning_effort", reasoningEffort) || changed
 		}
-		if stream, _ := req["stream"].(bool); stream {
-			streamOptions, _ := req["stream_options"].(map[string]any)
-			if streamOptions == nil {
-				streamOptions = map[string]any{}
-				req["stream_options"] = streamOptions
-				changed = true
-			}
-			if includeUsage, _ := streamOptions["include_usage"].(bool); !includeUsage {
-				streamOptions["include_usage"] = true
-				changed = true
-			}
-		}
 		return changed
 	})
 }
@@ -558,49 +548,24 @@ func EnsureChatToolMessageContent(rawMessages any) bool {
 }
 
 func ProxyResponsesPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model string) error {
-	defer body.Close()
 	usageStats := NewRequestUsageAccumulator(model)
 	defer usageStats.commit()
-	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(body)
-	currentEvent := ""
-	clientGone := false
-	disconnectedBytes := 0
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			if clientGone {
-				disconnectedBytes += len(line)
-				if disconnectedBytes > maxDisconnectedUsageDrainBytes {
-					return nil
-				}
-			}
-			if !clientGone {
-				if _, writeErr := io.WriteString(w, line); writeErr != nil {
-					clientGone = true
-				}
-			}
-			if strings.HasPrefix(line, "event:") {
-				currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			} else if strings.HasPrefix(line, "data:") {
-				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				if data != "" && data != "[DONE]" && (currentEvent == "response.completed" || currentEvent == "response.incomplete") {
-					var payload map[string]any
-					if json.Unmarshal([]byte(data), &payload) == nil {
-						if u := ExtractResponsesUsage(payload); u != nil {
-							usageStats.observeMap(u)
-						}
-					}
-				}
-			}
-			if !clientGone && flusher != nil {
-				flusher.Flush()
-			}
+	return proxyNativePassthroughStream(w, body, func(event sse.Event) {
+		if event.Data == "" || event.Data == "[DONE]" {
+			return
 		}
-		if err != nil {
-			return nil
+		var payload map[string]any
+		if json.Unmarshal([]byte(event.Data), &payload) != nil {
+			return
 		}
-	}
+		eventType, _ := payload["type"].(string)
+		if eventType == "" {
+			eventType = event.Name
+		}
+		if eventType == "response.completed" || eventType == "response.incomplete" {
+			usageStats.observeMap(ExtractResponsesUsage(payload))
+		}
+	})
 }
 
 func SseDataPayload(line string) (string, bool) {
@@ -614,95 +579,94 @@ func SseDataPayload(line string) (string, bool) {
 }
 
 func ProxyChatPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model string, recordUsage ...bool) error {
-	defer body.Close()
 	shouldRecordUsage := len(recordUsage) == 0 || recordUsage[0]
 	var usageStats *requestUsageAccumulator
 	if shouldRecordUsage {
 		usageStats = NewRequestUsageAccumulator(model)
 		defer usageStats.commit()
 	}
-	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(body)
-	clientGone := false
-	disconnectedBytes := 0
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			if clientGone {
-				disconnectedBytes += len(line)
-				if disconnectedBytes > maxDisconnectedUsageDrainBytes {
-					return nil
-				}
-			}
-			if !clientGone {
-				if _, writeErr := io.WriteString(w, line); writeErr != nil {
-					clientGone = true
-				}
-			}
-			if payload, ok := SseDataPayload(line); ok && payload != "" && payload != "[DONE]" {
-				var chunk map[string]any
-				if json.Unmarshal([]byte(payload), &chunk) == nil {
-					if usage, ok := chunk["usage"].(map[string]any); ok && usageStats != nil {
-						usageStats.observeMap(usage)
-					}
-				}
-			}
-			if !clientGone && flusher != nil {
-				flusher.Flush()
-			}
+	return proxyNativePassthroughStream(w, body, func(event sse.Event) {
+		if usageStats == nil || event.Data == "" || event.Data == "[DONE]" {
+			return
 		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
+		var chunk map[string]any
+		if json.Unmarshal([]byte(event.Data), &chunk) != nil {
+			return
 		}
-	}
+		if usage, ok := chunk["usage"].(map[string]any); ok {
+			usageStats.observeMap(usage)
+		}
+	})
 }
 
 func ProxyAnthropicPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model string) error {
-	defer body.Close()
 	usageStats := NewRequestUsageAccumulator(model)
 	defer usageStats.commit()
+	return proxyNativePassthroughStream(w, body, func(event sse.Event) {
+		if event.Data == "" {
+			return
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(event.Data), &payload) != nil {
+			return
+		}
+		if message, ok := payload["message"].(map[string]any); ok {
+			if usage, ok := message["usage"].(map[string]any); ok {
+				usageStats.observeMap(usage)
+			}
+		}
+		if usage, ok := payload["usage"].(map[string]any); ok {
+			usageStats.observeMap(usage)
+		}
+	})
+}
+
+// proxyNativePassthroughStream forwards every upstream read chunk immediately and
+// feeds a bounded SSE observer as a side operation. Observation must never decide
+// whether a raw chunk is written to the client.
+func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, observe func(sse.Event)) error {
+	if body == nil {
+		return nil
+	}
+	defer body.Close()
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(body)
+	parser := sse.NewParser(sse.DefaultMaxEventBytes)
 	clientGone := false
 	disconnectedBytes := 0
+	buffer := make([]byte, 32*1024)
+	consume := func(events []sse.Event) {
+		if observe == nil {
+			return
+		}
+		for _, event := range events {
+			observe(event)
+		}
+	}
 	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
+		n, err := body.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
 			if clientGone {
-				disconnectedBytes += len(line)
+				disconnectedBytes += n
 				if disconnectedBytes > maxDisconnectedUsageDrainBytes {
 					return nil
 				}
-			}
-			if !clientGone {
-				if _, writeErr := io.WriteString(w, line); writeErr != nil {
+			} else {
+				if _, writeErr := w.Write(chunk); writeErr != nil {
 					clientGone = true
 				}
 			}
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-				var event map[string]any
-				if payload != "" && json.Unmarshal([]byte(payload), &event) == nil {
-					if message, ok := event["message"].(map[string]any); ok {
-						if usage, ok := message["usage"].(map[string]any); ok {
-							usageStats.observeMap(usage)
-						}
-					}
-					if usage, ok := event["usage"].(map[string]any); ok {
-						usageStats.observeMap(usage)
-					}
-				}
-			}
+			consume(parser.Feed(chunk))
 			if !clientGone && flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
-			return nil
+			consume(parser.Flush())
+			if err == io.EOF || clientGone {
+				return nil
+			}
+			return err
 		}
 	}
 }

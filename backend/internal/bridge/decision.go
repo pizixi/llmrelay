@@ -27,10 +27,14 @@ const (
 
 // ProtocolDecision 记录请求应如何进行协议桥接。
 type ProtocolDecision struct {
-	Client   WireProtocol
-	Upstream WireProtocol
-	Path     BridgePath
-	Mode     domain.BridgeMode
+	Client       WireProtocol
+	Upstream     WireProtocol
+	Path         BridgePath
+	Mode         domain.BridgeMode
+	Fidelity     BridgeFidelity
+	Pivot        WireProtocol
+	Capabilities []CapabilityResult
+	Plan         BridgePlan
 }
 
 func wireProtocolFromUpstream(apiType domain.UpstreamType) WireProtocol {
@@ -55,20 +59,70 @@ func decideProtocolBridge(client WireProtocol, upstream *domain.UpstreamConfig, 
 	if upstream != nil {
 		up = wireProtocolFromUpstream(upstream.APIType)
 	}
-	if mode == "" {
-		mode = domain.BridgeModeCompatible
+	plan := BuildBridgePlan(BridgePlanRequest{
+		Client: client, Upstream: up, Mode: mode, UpstreamConfig: upstream,
+	})
+	return ProtocolDecision{
+		Client: plan.Client, Upstream: plan.Upstream, Path: plan.Path,
+		Mode: plan.Mode, Fidelity: plan.Fidelity, Pivot: plan.Pivot,
+		Capabilities: append([]CapabilityResult(nil), plan.Capabilities...), Plan: plan,
 	}
-	decision := ProtocolDecision{Client: client, Upstream: up, Mode: mode}
-	if client == up {
-		decision.Path = BridgePathPassthrough
-		return decision
+}
+
+// UsePivot is the single mutation point for runtime fallbacks (for example a
+// provider that rejected native hosted search). Keeping Plan and legacy fields
+// synchronized prevents headers and diagnostics from disagreeing.
+func (d *ProtocolDecision) UsePivot() {
+	if d == nil {
+		return
 	}
-	if hasPairwiseBridge(client, up) {
-		decision.Path = BridgePathPairwise
-		return decision
+	d.Path = BridgePathPivot
+	d.Fidelity = FidelityEmulated
+	d.Pivot = WireChat
+	d.Plan.Path = BridgePathPivot
+	d.Plan.Fidelity = FidelityEmulated
+	d.Plan.Pivot = WireChat
+}
+
+// MarkPatched records a same-protocol request whose body must be changed for
+// routing or an explicitly configured provider option. The wire response is
+// still native, but it is no longer byte-for-byte request passthrough.
+func (d *ProtocolDecision) MarkPatched() {
+	if d == nil || d.Path != BridgePathPassthrough || d.Fidelity == FidelityRejected {
+		return
 	}
-	decision.Path = BridgePathPivot
-	return decision
+	d.Fidelity = FidelityPatched
+	d.Plan.Fidelity = FidelityPatched
+}
+
+// EvaluateCapabilities refreshes the planner portion after request fields
+// have been decoded. Existing path selection is retained; this method only
+// adds explicit outcomes so handlers can expose them and strict mode can
+// reject them through their normal warning machinery.
+func (d *ProtocolDecision) EvaluateCapabilities(upstream *domain.UpstreamConfig, requirements ...Capability) {
+	if d == nil || len(requirements) == 0 {
+		return
+	}
+	plan := BuildBridgePlan(BridgePlanRequest{
+		Client: d.Client, Upstream: d.Upstream, Mode: d.Mode,
+		UpstreamConfig: upstream, Requirements: requirements,
+		ForcePivot: d.Path == BridgePathPivot, PatchRequired: d.Fidelity == FidelityPatched,
+	})
+	// Runtime fallback can have changed d.Path since the initial decision;
+	// preserve that explicit choice while adopting the fresh outcomes.
+	if d.Path == BridgePathPivot {
+		plan.Path = BridgePathPivot
+		plan.Pivot = WireChat
+		if plan.Fidelity != FidelityRejected {
+			plan.Fidelity = FidelityEmulated
+		}
+	}
+	d.Capabilities = append([]CapabilityResult(nil), plan.Capabilities...)
+	d.Plan.Capabilities = append([]CapabilityResult(nil), plan.Capabilities...)
+	if plan.Fidelity == FidelityRejected {
+		d.Fidelity = FidelityRejected
+		d.Plan.Fidelity = FidelityRejected
+	}
 }
 
 func hasPairwiseBridge(client, upstream WireProtocol) bool {
@@ -108,6 +162,13 @@ func writeProtocolBridgeHeaders(header http.Header, decision ProtocolDecision) {
 	header.Set("X-Llm2api-Bridge-Client", string(decision.Client))
 	header.Set("X-Llm2api-Bridge-Upstream", string(decision.Upstream))
 	header.Set("X-Llm2api-Bridge-Mode", protocolBridgeModeHeader(decision.Path, decision.Mode))
+	if decision.Fidelity != "" {
+		header.Set("X-Llm2api-Bridge-Fidelity", string(decision.Fidelity))
+	}
+	header.Del("X-Llm2api-Capability")
+	for _, capability := range decision.Capabilities {
+		header.Add("X-Llm2api-Capability", string(capability.Capability)+"="+string(capability.Outcome))
+	}
 }
 
 func applyDecisionHeaders(header http.Header, decision ProtocolDecision, warnings []BridgeWarning) {

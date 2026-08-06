@@ -1859,11 +1859,29 @@ function collectUpstreams() {
     const bridgeMode = bridgeModeEl ? bridgeModeEl.value : "compatible";
     const customEl = tr.querySelector('[data-field="custom_models"]');
     const customRaw = customEl ? (customEl.dataset.value || "").trim() : "";
+    // The table does not expose provider capability declarations yet. Keep
+    // the persisted value intact when the form rebuilds an upstream object.
+    const previousUpstream =
+      (originalName && upstreamData[originalName]) || upstreamData[name] || {};
+    // Start from the persisted object so fields without an editor (retry
+    // policy, Responses reasoning format, future provider flags, etc.) are
+    // not erased by an ordinary admin save.
     const up = {
+      ...previousUpstream,
       base_url: baseURL,
       api_type: apiType,
       bridge_mode: bridgeMode,
     };
+    delete up.api_key;
+    delete up.custom_models;
+    if (
+      Object.prototype.hasOwnProperty.call(previousUpstream, "capabilities") &&
+      previousUpstream.capabilities &&
+      typeof previousUpstream.capabilities === "object" &&
+      !Array.isArray(previousUpstream.capabilities)
+    ) {
+      up.capabilities = { ...previousUpstream.capabilities };
+    }
     const upstreamID = Number.parseInt(tr.dataset.upstreamId || "", 10);
     if (Number.isSafeInteger(upstreamID) && upstreamID > 0) up.id = upstreamID;
     if (apiKey) up.api_key = apiKey;

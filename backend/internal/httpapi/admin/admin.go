@@ -15,9 +15,29 @@ import (
 	"unicode/utf8"
 
 	"llmrelay/backend/internal/auth"
+	"llmrelay/backend/internal/bridge"
 	catalogpkg "llmrelay/backend/internal/catalog"
 	"llmrelay/backend/internal/stats"
 )
+
+// BridgeCapabilitiesHandler reports the effective protocol capability matrix
+// and each configured provider declaration. It is read-only so operators can
+// inspect why a request was converted without changing routing state.
+func BridgeCapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAdminJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	cfg := currentConfig()
+	upstreams := map[string]any{}
+	for name, upstream := range cfg.Upstreams {
+		upstreams[name] = bridge.ProviderCapabilities(upstream)
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]any{
+		"matrix":    bridge.CapabilityOutcomesMatrix(),
+		"upstreams": upstreams,
+	})
+}
 
 // ======================== Admin 管理页面 ========================
 

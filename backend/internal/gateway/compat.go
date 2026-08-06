@@ -43,6 +43,12 @@ type WebSearchConfig = domain.WebSearchConfig
 type WireProtocol = bridge.WireProtocol
 type ProtocolDecision = bridge.ProtocolDecision
 type BridgeWarning = bridge.BridgeWarning
+type BridgePlan = bridge.BridgePlan
+type BridgePlanRequest = bridge.BridgePlanRequest
+type BridgeFidelity = bridge.BridgeFidelity
+type Capability = bridge.Capability
+type CapabilityResult = bridge.CapabilityResult
+type CapabilityOutcome = bridge.CapabilityOutcome
 type BridgeMode = domain.BridgeMode
 
 const (
@@ -60,6 +66,30 @@ const (
 
 	BridgeModeCompatible = domain.BridgeModeCompatible
 	BridgeModeStrict     = domain.BridgeModeStrict
+
+	FidelityExact     = bridge.FidelityExact
+	FidelityPatched   = bridge.FidelityPatched
+	FidelityConverted = bridge.FidelityConverted
+	FidelityEmulated  = bridge.FidelityEmulated
+	FidelityRejected  = bridge.FidelityRejected
+
+	CapabilityStreaming        = bridge.CapabilityStreaming
+	CapabilityToolCalls        = bridge.CapabilityToolCalls
+	CapabilityReasoning        = bridge.CapabilityReasoning
+	CapabilityStructuredOutput = bridge.CapabilityStructuredOutput
+	CapabilityCustomTools      = bridge.CapabilityCustomTools
+	CapabilityHostedWebSearch  = bridge.CapabilityHostedWebSearch
+	CapabilityStatefulContext  = bridge.CapabilityStatefulContext
+	CapabilityResponseStore    = bridge.CapabilityResponseStore
+	CapabilityItemReferences   = bridge.CapabilityItemReferences
+	CapabilityBackground       = bridge.CapabilityBackground
+	CapabilityEncryptedReason  = bridge.CapabilityEncryptedReason
+	CapabilityPromptCaching    = bridge.CapabilityPromptCaching
+
+	CapabilityPreserved  = bridge.CapabilityPreserved
+	CapabilityDowngraded = bridge.CapabilityDowngraded
+	CapabilityEmulated   = bridge.CapabilityEmulated
+	CapabilityRejected   = bridge.CapabilityRejected
 
 	internalAnthropicRequestKey = chat.InternalAnthropicRequestKey
 )
@@ -145,6 +175,62 @@ func getWebSearchConfig() WebSearchConfig { return config.GetWebSearchConfig() }
 
 func decideProtocolBridge(client WireProtocol, target *UpstreamConfig, mode BridgeMode) ProtocolDecision {
 	return bridge.Decide(client, target, mode)
+}
+
+func buildBridgePlan(request BridgePlanRequest) BridgePlan { return bridge.BuildPlan(request) }
+
+func buildBridgePlanForUpstream(client WireProtocol, target *UpstreamConfig, mode BridgeMode, requirements ...Capability) BridgePlan {
+	return bridge.BuildPlanForUpstream(client, target, mode, requirements...)
+}
+
+func useBridgePivot(decision *ProtocolDecision) { bridge.UsePivot(decision) }
+
+func markBridgePatched(decision *ProtocolDecision) { bridge.MarkPatched(decision) }
+
+func evaluateBridgeCapabilities(decision *ProtocolDecision, upstream *UpstreamConfig, requirements ...Capability) {
+	bridge.EvaluateCapabilities(decision, upstream, requirements...)
+}
+
+// capabilityBridgeWarnings turns planner outcomes into the same warning
+// shape used by the protocol converters. Handlers use this for strict-mode
+// rejection so an explicitly unsupported provider capability cannot silently
+// proceed through an otherwise native-looking path.
+func capabilityBridgeWarnings(decision ProtocolDecision) []BridgeWarning {
+	return bridge.CapabilityWarnings(decision)
+}
+
+// Explicit capability declarations are authoritative even on a pairwise
+// bridge. Protocol-level gaps remain converter-owned because some features
+// (notably hosted search) are negotiated dynamically at runtime.
+func explicitCapabilityBridgeWarnings(decision ProtocolDecision) []BridgeWarning {
+	var warnings []BridgeWarning
+	for _, result := range decision.Capabilities {
+		if result.Outcome != CapabilityRejected ||
+			!strings.Contains(result.Reason, "provider declaration disables") {
+			continue
+		}
+		warnings = appendBridgeWarning(warnings, BridgeWarning{
+			Code:    "capability_rejected",
+			Path:    "capabilities." + string(result.Capability),
+			Message: result.Reason,
+		})
+	}
+	return warnings
+}
+
+func conversionCapabilityBridgeWarnings(decision ProtocolDecision, skipHostedSearch bool) []BridgeWarning {
+	warnings := capabilityBridgeWarnings(decision)
+	if !skipHostedSearch {
+		return warnings
+	}
+	filtered := warnings[:0]
+	for _, warning := range warnings {
+		if warning.Path == "capabilities."+string(CapabilityHostedWebSearch) {
+			continue
+		}
+		filtered = append(filtered, warning)
+	}
+	return filtered
 }
 
 func effectiveBridgeMode(r *http.Request, target *UpstreamConfig) BridgeMode {

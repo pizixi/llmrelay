@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	bridgestate "llmrelay/backend/internal/bridge/state"
 )
 
 func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +50,19 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	strictBridge := decision.Mode == BridgeModeStrict
 	effortMap := getReasoningEffortMapForAlias(modelAliasInfo)
 	forwardReasoning := shouldForwardReasoningParameters(modelAliasInfo, aliasMatched)
+	if resolvedModel != requestedModel || forwardReasoning {
+		decision.MarkPatched()
+	}
+	decision.EvaluateCapabilities(upstream, requestCapabilities(body, WireResponses)...)
+	if decision.Mode == BridgeModeStrict {
+		capabilityWarnings := capabilityBridgeWarnings(decision)
+		if decision.Path != BridgePathPassthrough {
+			capabilityWarnings = explicitCapabilityBridgeWarnings(decision)
+		}
+		if rejectStrictBridgeWarnings(w, r, capabilityWarnings) {
+			return
+		}
+	}
 	webSearchConfig := getWebSearchConfig()
 	hasHostedWebSearch := requestContainsHostedWebSearch(body)
 	requiresHostedWebSearch := hasHostedWebSearch && requestRequiresHostedWebSearch(body)
@@ -56,7 +71,7 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	forceWebSearchFallback := allowAutomaticWebSearchFallback && shouldUseGatewayWebSearchFallback(upstream, webSearchConfig, resolvedModel) && hasHostedWebSearch
 	if forceWebSearchFallback && decision.Path == BridgePathPassthrough {
 		// 已缓存该上游不支持原生托管搜索；本地执行器使用 Chat 作为中间协议。
-		decision.Path = BridgePathPivot
+		decision.UsePivot()
 	}
 	applyDecisionHeaders(w.Header(), decision, nil)
 
@@ -87,20 +102,39 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responseEcho := responsesRequestEchoFields(requestFields)
+	storeRequested, _ := requestFields["store"].(bool)
+	storeEmulated := storeRequested && upstream.APIType != UpstreamResponses
+	bridgeRequestBody := body
+	_, localStateItems := resolveLocalResponsesState(requestFields, upstream)
+	localStateEmulated := len(localStateItems) > 0
+	if localStateEmulated {
+		respReq.Input = prependResponsesStateItems(respReq.Input, localStateItems)
+		bridgeRequestBody = replaceResponsesInput(body, respReq.Input)
+	}
 	useWebSearchFallback := allowAutomaticWebSearchFallback && shouldUseGatewayWebSearchFallback(upstream, webSearchConfig, respReq.Model) && containsHostedWebSearch(respReq.Tools)
 	nativeSearchProbe := negotiateHostedWebSearch && !useWebSearchFallback && decision.Path == BridgePathPassthrough
 	useNativeChatWebSearch := upstream.APIType == UpstreamOpenAI && !useWebSearchFallback && containsHostedWebSearch(respReq.Tools)
 	requestBridgeWarnings := responsesBridgeRequestWarningsForUpstream(requestFields, upstream)
+	if localStateEmulated {
+		requestBridgeWarnings = removeBridgeWarning(requestBridgeWarnings, "stateful_context_ignored", "previous_response_id")
+		requestBridgeWarnings = appendBridgeWarning(requestBridgeWarnings, BridgeWarning{
+			Code: "stateful_context_emulated", Path: "previous_response_id",
+			Message: "previous response items were loaded from the gateway's bounded local compatibility store",
+		})
+	}
+	if storeEmulated {
+		requestBridgeWarnings = removeBridgeWarning(requestBridgeWarnings, "storage_ignored", "store")
+		requestBridgeWarnings = appendBridgeWarning(requestBridgeWarnings, BridgeWarning{
+			Code: "storage_emulated", Path: "store",
+			Message: "the response will be retained in the gateway's bounded local compatibility store",
+		})
+	}
 	if nativeSearchProbe {
 		requestBridgeWarnings = nil
 	}
 	if strictBridge && rejectStrictBridgeWarnings(w, r, requestBridgeWarnings) {
 		return
 	}
-	if store, _ := requestFields["store"].(bool); store {
-		responseEcho["store"] = false
-	}
-
 	// 转换输入历史前先构建跨协议工具计划。
 	// 自定义工具调用项目需要与其定义使用相同的可逆名称映射。
 	var bridgeWarnings []BridgeWarning
@@ -227,7 +261,7 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	if decision.Upstream == WireAnthropic {
 		var directMappings map[string]ResponseToolNameMapping
 		var pairwiseWarnings []BridgeWarning
-		pairwiseUpstreamBody, directMappings, pairwiseWarnings, err = convertResponsesRequestToAnthropicDirect(body, respReq.Model, forwardReasoning, effortMap)
+		pairwiseUpstreamBody, directMappings, pairwiseWarnings, err = convertResponsesRequestToAnthropicDirect(bridgeRequestBody, respReq.Model, forwardReasoning, effortMap)
 		bridgeWarnings = appendBridgeWarnings(bridgeWarnings, pairwiseWarnings)
 		if len(directMappings) > 0 {
 			toolNameMappings = directMappings
@@ -236,6 +270,9 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 			writeExternalAPIError(w, r.URL.Path, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
+	}
+	if decision.Path != BridgePathPassthrough {
+		bridgeWarnings = appendBridgeWarnings(bridgeWarnings, conversionCapabilityBridgeWarnings(decision, hasHostedWebSearch))
 	}
 	if strictBridge && rejectStrictBridgeWarnings(w, r, bridgeWarnings) {
 		return
@@ -269,7 +306,7 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		useWebSearchFallback = true
-		decision.Path = BridgePathPivot
+		decision.UsePivot()
 		fallbackTools, fallbackMappings, fallbackWarnings := convertResponsesToolsWithMappingsDetailed(bridgeToolDefinitions, true)
 		toolNameMappings = fallbackMappings
 		chatReq.Tools = fallbackTools
@@ -305,12 +342,29 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		responsesBody, convertErr := convertChatToResponsesForRequestWithError(
-			loopResult.Body, chatReq.Model, body, toolNameMappings, bridgeWarnings,
+			loopResult.Body, chatReq.Model, bridgeRequestBody, toolNameMappings, bridgeWarnings,
 		)
 		if convertErr != nil {
 			log.Printf("[响应转换失败] path=/v1/responses model=%q 错误=%v", chatReq.Model, convertErr)
 			writeExternalAPIError(w, r.URL.Path, http.StatusBadGateway, "upstream_protocol_error", "web search fallback returned an invalid Chat response")
 			return
+		}
+		if storeEmulated {
+			stored := false
+			if respReq.Stream {
+				stored = storeResponsesStreamResponse(responsesBody)
+			} else {
+				_, stored = bridgestate.Default().PutResponseBytes(responsesBody)
+			}
+			if !stored {
+				bridgeWarnings = removeBridgeWarning(bridgeWarnings, "storage_emulated", "store")
+				bridgeWarnings = appendBridgeWarning(bridgeWarnings, BridgeWarning{
+					Code: "storage_ignored", Path: "store",
+					Message: "the converted Responses response had no stable id and could not be retained locally",
+				})
+				writeBridgeWarningHeaders(w.Header(), bridgeWarnings)
+			}
+			responsesBody = updateResponsesStoreResult(responsesBody, stored, bridgeWarnings)
 		}
 		copyFilteredResponseHeaders(w.Header(), loopResult.Header)
 		usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, chatReq.Model)
@@ -420,6 +474,11 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 			UsageModel: requestedModel, UpstreamName: upstreamName, UpstreamModel: chatReq.Model, Request: r, RequestContext: r.Context(), Tools: respReq.Tools, ToolChoice: respReq.ToolChoice,
 			ParallelToolCalls: respReq.ParallelToolCalls, ToolNameMappings: toolNameMappings,
 			ResponseEcho: responseEcho, BridgeWarnings: bridgeWarnings,
+			OnResponseCompleted: func(response map[string]any) {
+				if storeEmulated {
+					_, _ = bridgestate.Default().PutResponse(response)
+				}
+			},
 		})
 		return
 	}
@@ -511,12 +570,23 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// callUpstream 返回的 respBody 已统一为 Chat 格式（Anthropic/OpenAI 上游在内部已转换）
 		// 需要转为 Responses API 格式返回给客户端
-		responsesBody, err = convertChatToResponsesForRequestWithError(respBody, chatReq.Model, body, toolNameMappings, bridgeWarnings)
+		responsesBody, err = convertChatToResponsesForRequestWithError(respBody, chatReq.Model, bridgeRequestBody, toolNameMappings, bridgeWarnings)
 		if err != nil {
 			log.Printf("[响应转换失败] path=/v1/responses model=%q 错误=%v", chatReq.Model, err)
 			writeExternalAPIError(w, r.URL.Path, http.StatusBadGateway, "upstream_protocol_error", "upstream returned an invalid Chat response")
 			return
 		}
+	}
+	if storeEmulated {
+		_, stored := bridgestate.Default().PutResponseBytes(responsesBody)
+		if !stored {
+			bridgeWarnings = removeBridgeWarning(bridgeWarnings, "storage_emulated", "store")
+			bridgeWarnings = appendBridgeWarning(bridgeWarnings, BridgeWarning{
+				Code: "storage_ignored", Path: "store",
+				Message: "the converted Responses response had no stable id and could not be retained locally",
+			})
+		}
+		responsesBody = updateResponsesStoreResult(responsesBody, stored, bridgeWarnings)
 	}
 
 	usageStats := newRequestUsageAccumulatorForContext(r.Context(), requestedModel, upstreamName, chatReq.Model)

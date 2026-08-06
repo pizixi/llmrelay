@@ -19,6 +19,7 @@ func TestSQLiteConfigRoundTripUsesNormalizedTables(t *testing.T) {
 				APIKey:                   "key-a\nkey-b",
 				APIType:                  UpstreamOpenAI,
 				BridgeMode:               BridgeModeStrict,
+				Capabilities:             map[string]bool{"streaming": true, "hosted_web_search": false},
 				CustomModels:             []string{"gpt-test", "gpt-mini"},
 				ResponsesReasoningFormat: "summary",
 				MaxRetries:               &maxRetries,
@@ -75,6 +76,9 @@ func TestSQLiteConfigRoundTripUsesNormalizedTables(t *testing.T) {
 	}
 	if got.Upstreams["primary"].APIKey != "key-a\nkey-b" || *got.Upstreams["primary"].MaxRetries != 2 {
 		t.Fatalf("upstream credentials/retries were not preserved: %#v", got.Upstreams["primary"])
+	}
+	if got.Upstreams["primary"].Capabilities["streaming"] != true || got.Upstreams["primary"].Capabilities["hosted_web_search"] != false {
+		t.Fatalf("upstream capability declaration was not preserved: %#v", got.Upstreams["primary"].Capabilities)
 	}
 	if target := got.ModelAlias["chat"].Targets; len(target) != 2 || target[0].Weight != 2 || target[1].Upstream != "backup" {
 		t.Fatalf("unexpected alias targets: %#v", target)
@@ -162,6 +166,70 @@ func TestSQLiteConfigMigratesOnlyExistingJSONBlobTable(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("legacy JSON blob table was not removed after migration")
+	}
+}
+
+func TestSQLiteConfigAddsCapabilitiesColumnToOlderUpstreamSchema(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "llmrelay.db")
+	db, err := storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recreate only the tables that an older normalized release owned. The
+	// current loader must add capabilities_json without resetting this row.
+	_, err = db.Exec(`
+CREATE TABLE config_schema_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO config_schema_version(id, version) VALUES (1, 1);
+CREATE TABLE upstreams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NOT NULL,
+    api_type TEXT NOT NULL DEFAULT 'openai',
+    bridge_mode TEXT NOT NULL DEFAULT 'compatible',
+    responses_reasoning_format TEXT NOT NULL DEFAULT '',
+    max_retries INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO upstreams(id, name, base_url, api_type, bridge_mode, sort_order)
+VALUES (7, 'legacy', 'https://legacy.example/v1', 'openai', 'compatible', 0);
+`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadConfig(databasePath)
+	if err != nil {
+		t.Fatalf("load older schema: %v", err)
+	}
+	legacy := got.Upstreams["legacy"]
+	if legacy == nil || legacy.ID != 7 || legacy.BaseURL != "https://legacy.example/v1" {
+		t.Fatalf("legacy upstream was not preserved: %#v", got.Upstreams)
+	}
+	if legacy.Capabilities != nil && len(legacy.Capabilities) != 0 {
+		t.Fatalf("old schema should start with empty capabilities: %#v", legacy.Capabilities)
+	}
+
+	db, err = storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var columnCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name = 'capabilities_json'`).Scan(&columnCount); err != nil {
+		t.Fatal(err)
+	}
+	if columnCount != 1 {
+		t.Fatal("capabilities_json column was not added")
 	}
 }
 

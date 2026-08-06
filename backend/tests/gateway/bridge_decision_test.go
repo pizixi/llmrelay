@@ -1,6 +1,10 @@
 package gateway
 
-import "testing"
+import (
+	"testing"
+
+	"llmrelay/backend/internal/bridge"
+)
 
 func TestDecideProtocolBridgePaths(t *testing.T) {
 	cases := []struct {
@@ -54,5 +58,22 @@ func TestChooseStreamDispatchMatrix(t *testing.T) {
 				t.Fatalf("dispatch=%q want %q (%s)", got, tc.want, decision)
 			}
 		})
+	}
+}
+
+func TestStrictCapabilityLossBecomesARejectableWarning(t *testing.T) {
+	upstream := &UpstreamConfig{
+		APIType:      UpstreamOpenAI,
+		Capabilities: map[string]bool{"streaming": false},
+	}
+	decision := decideProtocolBridge(
+		WireChat,
+		upstream,
+		BridgeModeStrict,
+	)
+	decision.EvaluateCapabilities(upstream, bridge.CapabilityStreaming)
+	warnings := bridge.CapabilityWarnings(decision)
+	if len(warnings) != 1 || warnings[0].Code != "capability_rejected" || warnings[0].Path != "capabilities.streaming" {
+		t.Fatalf("warnings=%#v decision=%#v", warnings, decision)
 	}
 }

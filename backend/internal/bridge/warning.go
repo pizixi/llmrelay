@@ -70,7 +70,8 @@ func bridgeWarningSeverity(code string) string {
 	switch code {
 	case "custom_tool_emulated", "tool_name_rewritten", "chat_option_auto_downgraded",
 		"output_hint_ignored", "prompt_cache_hint_ignored", "system_cache_control_ignored",
-		"tool_cache_control_ignored", "hosted_web_search_fallback":
+		"tool_cache_control_ignored", "hosted_web_search_fallback", "stateful_context_emulated",
+		"storage_emulated":
 		return "info"
 	default:
 		return "degraded"
@@ -219,6 +220,25 @@ func appendBridgeWarnings(warnings []BridgeWarning, additions ...[]BridgeWarning
 		for _, warning := range group {
 			warnings = appendBridgeWarning(warnings, warning)
 		}
+	}
+	return warnings
+}
+
+func capabilityWarnings(decision ProtocolDecision) []BridgeWarning {
+	var warnings []BridgeWarning
+	for _, result := range decision.Capabilities {
+		if result.Outcome == CapabilityPreserved {
+			continue
+		}
+		reason := result.Reason
+		if strings.TrimSpace(reason) == "" {
+			reason = "the selected bridge cannot preserve this capability"
+		}
+		warnings = appendBridgeWarning(warnings, BridgeWarning{
+			Code:    "capability_" + string(result.Outcome),
+			Path:    "capabilities." + string(result.Capability),
+			Message: reason,
+		})
 	}
 	return warnings
 }

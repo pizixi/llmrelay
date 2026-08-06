@@ -26,14 +26,15 @@ type UpstreamConfig struct {
 	// ID is the stable relational identity of this upstream. The display name
 	// is editable, so model alias targets must not depend on it to detect a
 	// rename.
-	ID                       int64        `json:"id,omitempty"`
-	BaseURL                  string       `json:"base_url"`
-	APIKey                   string       `json:"api_key"`
-	APIType                  UpstreamType `json:"api_type"`
-	BridgeMode               BridgeMode   `json:"bridge_mode,omitempty"`
-	CustomModels             []string     `json:"custom_models,omitempty"`
-	ResponsesReasoningFormat string       `json:"responses_reasoning_format,omitempty"`
-	MaxRetries               *int         `json:"max_retries,omitempty"`
+	ID                       int64           `json:"id,omitempty"`
+	BaseURL                  string          `json:"base_url"`
+	APIKey                   string          `json:"api_key"`
+	APIType                  UpstreamType    `json:"api_type"`
+	BridgeMode               BridgeMode      `json:"bridge_mode,omitempty"`
+	Capabilities             map[string]bool `json:"capabilities,omitempty"`
+	CustomModels             []string        `json:"custom_models,omitempty"`
+	ResponsesReasoningFormat string          `json:"responses_reasoning_format,omitempty"`
+	MaxRetries               *int            `json:"max_retries,omitempty"`
 }
 
 // WebSearchConfig 控制网关托管的 Web Search 降级功能。它有意设计为全局配置：

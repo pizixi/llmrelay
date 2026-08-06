@@ -22,6 +22,10 @@ type ClientStreamOptions struct {
 	ToolNameMappings  map[string]ResponseToolNameMapping
 	ResponseEcho      map[string]any
 	BridgeWarnings    []BridgeWarning
+	// OnResponseCompleted is used by the Responses compatibility store. It is
+	// invoked only for a converted client Responses terminal event; native
+	// passthrough remains provider-owned and does not enter local state.
+	OnResponseCompleted func(map[string]any)
 }
 
 // DispatchClientStream 将成功的上游流路由到正确的客户端转换器或透传代理。
@@ -34,6 +38,13 @@ func DispatchClientStream(
 	model string,
 	opts ClientStreamOptions,
 ) {
+	streamWriter := w
+	var capture *responseCaptureWriter
+	if client == WireResponses && opts.OnResponseCompleted != nil {
+		capture = newResponseCaptureWriter(w, opts.OnResponseCompleted)
+		streamWriter = capture
+		defer capture.FlushObserved()
+	}
 	kind := ChooseStreamDispatch(client, decision, upstream)
 	usageModel := opts.UsageModel
 	if usageModel == "" {
@@ -64,21 +75,21 @@ func DispatchClientStream(
 	case streamKindAnthropicToChat:
 		AnthropicStreamToChatHandler(w, upResp, model, usageModel, true)
 	case streamKindResponsesToChat:
-		ResponsesStreamToChatHandler(w, upResp, model, usageModel, true)
+		ResponsesStreamToChatHandler(streamWriter, upResp, model, usageModel, true)
 	case streamKindChatToAnthropic:
 		ClaudeStreamHandler(w, upResp, model, usageModel)
 	case streamKindResponsesToAnthropic:
 		ResponsesStreamToAnthropicDirectHandler(w, upResp, model, usageModel)
 	case streamKindAnthropicToResponses:
 		AnthropicStreamToResponsesDirectHandler(
-			w, upResp, model, usageModel, decision.Mode,
+			streamWriter, upResp, model, usageModel, decision.Mode,
 			opts.Tools, opts.ToolChoice, opts.ParallelToolCalls,
 			opts.ToolNameMappings, opts.ResponseEcho, opts.BridgeWarnings,
 		)
 	case streamKindChatToResponses:
 		resp := &http.Response{Body: upResp, Header: make(http.Header)}
 		ResponsesStreamHandler(
-			w, opts.Request, resp, model, usageModel,
+			streamWriter, opts.Request, resp, model, usageModel,
 			opts.Tools, opts.ToolChoice, opts.ParallelToolCalls,
 			opts.ToolNameMappings, opts.ResponseEcho, opts.BridgeWarnings,
 		)

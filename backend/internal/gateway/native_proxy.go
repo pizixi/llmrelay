@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type NativeRequestEnvelope struct {
@@ -59,7 +60,18 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 			}
 			return
 		}
-		setSSEHeaders(w.Header())
+		if !nativeResponseIsSSE(headers) {
+			// Some compatible upstreams return a normal JSON body even when the
+			// request asked for streaming. Preserve that native response instead
+			// of changing its Content-Type to SSE.
+			w.WriteHeader(status)
+			if body != nil {
+				defer body.Close()
+				_, _ = io.Copy(w, body)
+			}
+			return
+		}
+		setNativeSSEHeaders(w.Header())
 		w.WriteHeader(status)
 		usageRoute := usageIdentityForContext(ctx, usageModel, request.UpstreamName, request.Model)
 		switch request.Client {
@@ -93,4 +105,24 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func nativeResponseIsSSE(headers http.Header) bool {
+	contentType := strings.ToLower(strings.TrimSpace(headers.Get("Content-Type")))
+	return contentType == "" || strings.HasPrefix(contentType, "text/event-stream")
+}
+
+func setNativeSSEHeaders(header http.Header) {
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "text/event-stream")
+	}
+	if header.Get("Cache-Control") == "" {
+		header.Set("Cache-Control", "no-cache")
+	}
+	if header.Get("Connection") == "" {
+		header.Set("Connection", "keep-alive")
+	}
+	if header.Get("X-Accel-Buffering") == "" {
+		header.Set("X-Accel-Buffering", "no")
+	}
 }

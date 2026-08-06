@@ -49,6 +49,19 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	decision := decideProtocolBridge(WireAnthropic, upstream, effectiveBridgeMode(r, upstream))
 	effortMap := getReasoningEffortMapForAlias(modelAliasInfo)
 	forwardReasoning := shouldForwardReasoningParameters(modelAliasInfo, aliasMatched)
+	if resolvedModel != requestedModel || forwardReasoning {
+		decision.MarkPatched()
+	}
+	decision.EvaluateCapabilities(upstream, requestCapabilities(body, WireAnthropic)...)
+	if decision.Mode == BridgeModeStrict {
+		capabilityWarnings := capabilityBridgeWarnings(decision)
+		if decision.Path != BridgePathPassthrough {
+			capabilityWarnings = explicitCapabilityBridgeWarnings(decision)
+		}
+		if rejectStrictBridgeWarnings(w, r, capabilityWarnings) {
+			return
+		}
+	}
 	webSearchConfig := getWebSearchConfig()
 	hasHostedWebSearch := requestContainsAnthropicHostedWebSearch(body)
 	requiresHostedWebSearch := hasHostedWebSearch && requestRequiresAnthropicHostedWebSearch(body)
@@ -56,7 +69,7 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	negotiateHostedWebSearch := hasHostedWebSearch && allowAutomaticWebSearchFallback
 	forceWebSearchFallback := allowAutomaticWebSearchFallback && shouldUseGatewayWebSearchFallback(upstream, webSearchConfig, resolvedModel) && hasHostedWebSearch
 	if forceWebSearchFallback && decision.Path == BridgePathPassthrough {
-		decision.Path = BridgePathPivot
+		decision.UsePivot()
 	}
 	if decision.Path == BridgePathPassthrough && !forceWebSearchFallback && !negotiateHostedWebSearch {
 		applyDecisionHeaders(w.Header(), decision, nil)
@@ -192,6 +205,9 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	strictBridge := upstream.APIType != UpstreamAnthropic && effectiveBridgeMode(r, upstream) == BridgeModeStrict
+	if decision.Path != BridgePathPassthrough {
+		bridgeWarnings = appendBridgeWarnings(bridgeWarnings, conversionCapabilityBridgeWarnings(decision, hasHostedWebSearch))
+	}
 	if strictBridge && rejectStrictBridgeWarnings(w, r, bridgeWarnings) {
 		return
 	}
@@ -217,7 +233,7 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		useWebSearchFallback = true
-		decision.Path = BridgePathPivot
+		decision.UsePivot()
 		fallbackTools, fallbackWarnings, convertErr := claudeToOpenAIToolsDetailed(claudeReq.Tools, true)
 		if convertErr != nil {
 			fallbackWarnings = appendBridgeWarning(fallbackWarnings, BridgeWarning{

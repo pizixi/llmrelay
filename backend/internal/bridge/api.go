@@ -14,6 +14,30 @@ func Decide(client WireProtocol, upstream *domain.UpstreamConfig, mode domain.Br
 	return decideProtocolBridge(client, upstream, mode)
 }
 
+// BuildPlan exposes the pure planner for admin tooling and protocol fixture
+// tests without requiring a gateway handler or HTTP request.
+func BuildPlan(request BridgePlanRequest) BridgePlan { return BuildBridgePlan(request) }
+
+func BuildPlanForUpstream(client WireProtocol, upstream *domain.UpstreamConfig, mode domain.BridgeMode, requirements ...Capability) BridgePlan {
+	return BuildBridgePlanForUpstream(client, upstream, mode, requirements...)
+}
+
+func NativeCapabilityProfile(protocol WireProtocol) map[Capability]bool {
+	return NativeCapabilities(protocol)
+}
+
+func EffectiveCapabilityProfile(protocol WireProtocol, upstream *domain.UpstreamConfig) map[Capability]bool {
+	return EffectiveCapabilities(protocol, upstream)
+}
+
+func ProviderCapabilities(upstream *domain.UpstreamConfig) ProviderCapabilityDeclaration {
+	return DeclareProviderCapabilities(upstream)
+}
+
+func CapabilityOutcomesMatrix() map[WireProtocol]map[WireProtocol]map[Capability]CapabilityOutcome {
+	return CapabilityMatrix()
+}
+
 func ProtocolFromUpstream(apiType domain.UpstreamType) WireProtocol {
 	return wireProtocolFromUpstream(apiType)
 }
@@ -30,6 +54,24 @@ func WriteProtocolHeaders(header http.Header, decision ProtocolDecision) {
 
 func ApplyDecisionHeaders(header http.Header, decision ProtocolDecision, warnings []BridgeWarning) {
 	applyDecisionHeaders(header, decision, warnings)
+}
+
+func UsePivot(decision *ProtocolDecision) {
+	decision.UsePivot()
+}
+
+func MarkPatched(decision *ProtocolDecision) {
+	decision.MarkPatched()
+}
+
+func EvaluateCapabilities(decision *ProtocolDecision, upstream *domain.UpstreamConfig, requirements ...Capability) {
+	decision.EvaluateCapabilities(upstream, requirements...)
+}
+
+// CapabilityWarnings exposes planner losses in the same shape as converter
+// warnings, allowing strict-mode handlers and diagnostics to share one policy.
+func CapabilityWarnings(decision ProtocolDecision) []BridgeWarning {
+	return capabilityWarnings(decision)
 }
 
 func AppendWarning(warnings []BridgeWarning, warning BridgeWarning) []BridgeWarning {

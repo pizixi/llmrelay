@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	bridgestate "llmrelay/backend/internal/bridge/state"
 	"llmrelay/backend/internal/netproxy"
 )
 
@@ -1627,7 +1629,80 @@ func TestResponsesStatefulFieldsUseBestEffortByDefault(t *testing.T) {
 	if !ok || len(warnings) < 3 {
 		t.Fatalf("warnings=%#v, want state, background, and store warnings", body["llm2api_warnings"])
 	}
-	requireTestEqual(t, "effective store", body["store"], false)
+	requireTestEqual(t, "effective store", body["store"], true)
+	storageEmulated := false
+	for _, rawWarning := range warnings {
+		warning, _ := rawWarning.(map[string]any)
+		if warning["code"] == "storage_emulated" && warning["path"] == "store" {
+			storageEmulated = true
+			break
+		}
+	}
+	if !storageEmulated {
+		t.Fatalf("warnings=%#v, want storage_emulated", body["llm2api_warnings"])
+	}
+}
+
+func TestResponsesLocalStateIsEmulatedOnlyWhenAvailable(t *testing.T) {
+	matrixIsolateRuntime(t)
+	bridgestate.Default().Reset()
+	t.Cleanup(bridgestate.Default().Reset)
+	_, stored := bridgestate.Default().PutResponse(map[string]any{
+		"id": "resp_saved",
+		"output": []any{map[string]any{
+			"type": "message", "role": "assistant",
+			"content": []any{map[string]any{"type": "output_text", "text": "remembered context"}},
+		}},
+	})
+	if !stored {
+		t.Fatal("failed to seed local Responses state")
+	}
+	upstreamServer, recorder := matrixMockUpstream(t, UpstreamOpenAI)
+	matrixSelectUpstream(upstreamServer.URL, UpstreamOpenAI)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"matrix-public-model","input":"continue","previous_response_id":"resp_saved","store":true
+	}`))
+	response := httptest.NewRecorder()
+	responsesHandler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	calls := recorder.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("upstream calls=%d, want 1", len(calls))
+	}
+	messages, ok := calls[0].body["messages"].([]any)
+	if !ok || len(messages) < 2 {
+		t.Fatalf("converted messages=%#v, want previous state plus current input", calls[0].body["messages"])
+	}
+	if !strings.Contains(fmt.Sprint(messages[0]), "remembered context") {
+		t.Fatalf("previous state was not forwarded: %#v", messages[0])
+	}
+	body := decodeTestObject(t, response.Body.Bytes())
+	if body["store"] != true {
+		t.Fatalf("store=%#v, want true for local emulation", body["store"])
+	}
+	warnings, _ := body["llm2api_warnings"].([]any)
+	foundState, foundStore := false, false
+	for _, rawWarning := range warnings {
+		warning, _ := rawWarning.(map[string]any)
+		switch warning["code"] {
+		case "stateful_context_emulated":
+			foundState = true
+		case "storage_emulated":
+			foundStore = true
+		}
+	}
+	if !foundState || !foundStore {
+		t.Fatalf("warnings=%#v, want stateful_context_emulated and storage_emulated", warnings)
+	}
+	responseID, _ := body["id"].(string)
+	if responseID == "" {
+		t.Fatal("converted response has no id")
+	}
+	if _, ok := bridgestate.Default().Get(responseID); !ok {
+		t.Fatalf("stored converted response %q was not available for the next request", responseID)
+	}
 }
 
 func TestResponsesCustomToolUsesReversibleFunctionWrapper(t *testing.T) {
@@ -1817,7 +1892,9 @@ func TestChatPassthroughRequestPreservesFutureToolShapes(t *testing.T) {
 	}
 	options := testObject(t, body["stream_options"], "stream_options")
 	requireTestEqual(t, "future stream option", options["future_option"], true)
-	requireTestEqual(t, "include usage", options["include_usage"], true)
+	if _, exists := options["include_usage"]; exists {
+		t.Fatalf("native passthrough injected include_usage: %#v", options["include_usage"])
+	}
 	messages := testArray(t, body["messages"], "messages")
 	message := testObject(t, messages[0], "messages[0]")
 	requireTestEqual(t, "tool-only assistant content", message["content"], "")

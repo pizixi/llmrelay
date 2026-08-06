@@ -63,6 +63,12 @@ func CloneUpstreamConfig(config *UpstreamConfig) *UpstreamConfig {
 	if config.CustomModels != nil {
 		copy.CustomModels = append([]string(nil), config.CustomModels...)
 	}
+	if config.Capabilities != nil {
+		copy.Capabilities = make(map[string]bool, len(config.Capabilities))
+		for name, enabled := range config.Capabilities {
+			copy.Capabilities[name] = enabled
+		}
+	}
 	return &copy
 }
 
@@ -92,6 +98,16 @@ func NormalizeSingleUpstream(config *UpstreamConfig) bool {
 		config.BridgeMode = BridgeModeCompatible
 	}
 	config.ResponsesReasoningFormat = strings.TrimSpace(config.ResponsesReasoningFormat)
+	if len(config.Capabilities) > 0 {
+		capabilities := make(map[string]bool, len(config.Capabilities))
+		for name, enabled := range config.Capabilities {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "" {
+				capabilities[name] = enabled
+			}
+		}
+		config.Capabilities = capabilities
+	}
 	if len(config.CustomModels) > 0 {
 		cleaned := make([]string, 0, len(config.CustomModels))
 		seen := make(map[string]struct{}, len(config.CustomModels))
