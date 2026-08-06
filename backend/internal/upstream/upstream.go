@@ -191,7 +191,7 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 			ApplyAnthropicProtocolHeadersFromContext(up)
 		}
 		startTTFB := time.Now()
-		client, exitLabel := GetHTTPClientWithExit(false)
+		client, exitLabel := GetHTTPClientForUpstream(false, upstream)
 		resp, err := client.Do(up)
 		if err != nil {
 			if attempt+1 >= attemptLimit {
@@ -236,7 +236,6 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 					return errBody, resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained rate limited on exit %s after %d retries", exitLabel, max429RetriesPerExit)
 				}
 				rateLimitRetriesByExit[exitLabel]++
-				RotateSocks5OnRateLimit()
 			}
 			if attempt+1 >= attemptLimit {
 				if !preserveRaw {
@@ -303,7 +302,7 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 			ApplyAnthropicProtocolHeadersFromContext(up)
 		}
 		startTTFB := time.Now()
-		client, exitLabel := GetHTTPClientWithExit(true)
+		client, exitLabel := GetHTTPClientForUpstream(true, upstream)
 		resp, err := client.Do(up)
 		if err != nil {
 			if attempt+1 >= attemptLimit {
@@ -342,7 +341,6 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 					return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained rate limited on exit %s after %d retries", exitLabel, max429RetriesPerExit)
 				}
 				rateLimitRetriesByExit[exitLabel]++
-				RotateSocks5OnRateLimit()
 			}
 			if attempt+1 >= attemptLimit {
 				if !preserveRaw {

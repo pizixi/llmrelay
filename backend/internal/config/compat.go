@@ -78,6 +78,10 @@ func NormalizeSingleUpstream(config *UpstreamConfig) bool {
 	}
 	config.BaseURL = strings.TrimSpace(config.BaseURL)
 	config.APIKey = strings.TrimSpace(config.APIKey)
+	config.Proxy = strings.TrimSpace(config.Proxy)
+	if strings.EqualFold(config.Proxy, "direct") {
+		config.Proxy = ""
+	}
 	if config.APIType == "" {
 		config.APIType = UpstreamOpenAI
 	}
@@ -139,6 +143,13 @@ func SortedUpstreamNames(values map[string]*UpstreamConfig) []string {
 func ResolveUpstream(name string) (string, *UpstreamConfig) {
 	configMu.RLock()
 	defer configMu.RUnlock()
+	return resolveUpstreamLocked(name)
+}
+
+// resolveUpstreamLocked resolves an explicitly named upstream and otherwise
+// returns the first configured upstream in stable order. It intentionally does
+// not consult a default-upstream selector.
+func resolveUpstreamLocked(name string) (string, *UpstreamConfig) {
 	requestedName := strings.TrimSpace(name)
 	if requestedName != "" {
 		if config := CloneUpstreamConfig(upstreamCfgs[requestedName]); config != nil {
@@ -148,20 +159,19 @@ func ResolveUpstream(name string) (string, *UpstreamConfig) {
 		// 返回 nil 可产生明确的配置错误。
 		return requestedName, nil
 	}
-	resolvedName := defaultUpstreamName
-	if config := CloneUpstreamConfig(upstreamCfgs[resolvedName]); config != nil {
-		return resolvedName, config
-	}
-	for _, fallbackName := range SortedUpstreamNames(upstreamCfgs) {
+	for _, fallbackName := range NormalizeUpstreamOrder(upstreamOrder, upstreamCfgs) {
 		if config := CloneUpstreamConfig(upstreamCfgs[fallbackName]); config != nil {
 			return fallbackName, config
 		}
 	}
-	return resolvedName, nil
+	return "", nil
 }
 
 func ApplyRuntimeDependencies(config AppConfig) {
-	netproxy.Configure(config.Socks5Proxies, config.ActiveSocks5)
+	// SOCKS5 entries are a pool of named connection definitions. The selected
+	// proxy is now read from each upstream's Proxy field at request time; there
+	// is no process-wide active proxy.
+	netproxy.Configure(config.Socks5Proxies)
 	websearch.SetConfig(config.WebSearch)
 	convert.SetReasoningEffortMap(config.ReasoningEffortMap)
 }

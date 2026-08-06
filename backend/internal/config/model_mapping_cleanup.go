@@ -258,6 +258,7 @@ func sameUpstreamIdentity(previous, next *UpstreamConfig) bool {
 	}
 	if strings.TrimSpace(previous.BaseURL) != strings.TrimSpace(next.BaseURL) ||
 		strings.TrimSpace(previous.APIKey) != strings.TrimSpace(next.APIKey) ||
+		strings.TrimSpace(previous.Proxy) != strings.TrimSpace(next.Proxy) ||
 		previousAPIType != nextAPIType ||
 		previousBridgeMode != nextBridgeMode ||
 		strings.TrimSpace(previous.ResponsesReasoningFormat) != strings.TrimSpace(next.ResponsesReasoningFormat) {

@@ -15,6 +15,19 @@ const (
 
 func Client(stream bool) *http.Client { return getHTTPClient(stream) }
 
+// ClientForProxy returns an HTTP client bound to the requested SOCKS5
+// definition. An empty proxy address uses a direct client.
+func ClientForProxy(stream bool, proxyAddress string) *http.Client {
+	client, _ := ClientForProxyWithExit(stream, proxyAddress)
+	return client
+}
+
+// ClientForProxyWithExit is the per-upstream counterpart to the deprecated
+// process-wide ClientWithExit API.
+func ClientForProxyWithExit(stream bool, proxyAddress string) (*http.Client, string) {
+	return getHTTPClientForProxy(stream, proxyAddress)
+}
+
 func ClientWithExit(stream bool) (*http.Client, string) {
 	return getHTTPClientWithExit(stream)
 }
@@ -27,12 +40,18 @@ func RotateOnRateLimitFor(source string) { rotateSocks5OnRateLimitFor(source) }
 
 func CurrentExitLabel() string { return currentSocks5ExitLabel() }
 
-// Configure 原子地替换代理配置，并关闭旧配置创建的空闲连接。
-func Configure(proxies []domain.Socks5Proxy, active string) {
+// Configure 原子地替换 SOCKS5 定义，并关闭旧配置创建的空闲连接。
+// The optional active argument exists only for source compatibility with old
+// integrations. Normal application configuration passes no active selector;
+// every upstream chooses its own proxy through UpstreamConfig.Proxy.
+func Configure(proxies []domain.Socks5Proxy, legacyActive ...string) {
 	socks5Mu.Lock()
 	closeSocks5ClientsLocked()
 	socks5Proxies = append([]domain.Socks5Proxy(nil), proxies...)
-	activeSocks5 = active
+	activeSocks5 = ""
+	if len(legacyActive) > 0 {
+		activeSocks5 = legacyActive[0]
+	}
 	atomic.StoreUint32(&socks5RRIndex, 0)
 	atomic.StoreUint32(&socks5RateLimitIndex, 0)
 	socks5Mu.Unlock()

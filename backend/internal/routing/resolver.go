@@ -1,4 +1,4 @@
-// Package routing 负责模型别名、默认上游和推理参数转发策略。
+// Package routing 负责模型别名、按模型选择上游和推理参数转发策略。
 package routing
 
 import (

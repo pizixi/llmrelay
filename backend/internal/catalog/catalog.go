@@ -55,7 +55,7 @@ func SortedUpstreamNames(values map[string]*UpstreamConfig) []string {
 }
 func GetConfiguredUpstreams() (map[string]*UpstreamConfig, string) {
 	snapshot := config.Snapshot()
-	return snapshot.Upstreams, snapshot.DefaultUpstream
+	return snapshot.Upstreams, ""
 }
 func FetchModelsFromUpstream(name string, cfg *UpstreamConfig, useCustomModels bool) ([]ModelInfo, error) {
 	if cfg == nil || cfg.BaseURL == "" {
@@ -126,7 +126,7 @@ func FetchModelsFromUpstreamOnce(name string, cfg *UpstreamConfig) ([]ModelInfo,
 		} else if apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
-		resp, err := GetHTTPClient(false).Do(req)
+		resp, err := netproxy.ClientForProxy(false, cfg.Proxy).Do(req)
 		if err != nil {
 			lastErr = err
 			continue
@@ -265,22 +265,28 @@ func GetAliasModelInfos() []ModelInfo {
 }
 
 // GetRoutableModelInfos 与请求路由保持一致：将别名作为公开模型名，
-// 同时包含可直接访问默认上游的模型。两者同名时别名优先。
+// 同时包含所有上游声明支持的直接模型。两者同名时别名优先。
 func GetRoutableModelInfos() []ModelInfo {
 	snapshot := config.Snapshot()
 	now := time.Now().Unix()
 	byID := make(map[string]ModelInfo)
-	if defaultUpstream := snapshot.Upstreams[snapshot.DefaultUpstream]; defaultUpstream != nil {
-		for _, rawModel := range defaultUpstream.CustomModels {
+	for _, upstreamName := range config.NormalizeUpstreamOrder(snapshot.UpstreamOrder, snapshot.Upstreams) {
+		upstream := snapshot.Upstreams[upstreamName]
+		if upstream == nil {
+			continue
+		}
+		for _, rawModel := range upstream.CustomModels {
 			model := strings.TrimSpace(rawModel)
 			if model == "" {
 				continue
 			}
-			byID[model] = ModelInfo{
-				ID:      model,
-				Object:  "model",
-				Created: now,
-				OwnedBy: EffectiveUpstreamName(snapshot.DefaultUpstream),
+			if _, exists := byID[model]; !exists {
+				byID[model] = ModelInfo{
+					ID:      model,
+					Object:  "model",
+					Created: now,
+					OwnedBy: EffectiveUpstreamName(upstreamName),
+				}
 			}
 		}
 	}

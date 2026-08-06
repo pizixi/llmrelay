@@ -191,7 +191,6 @@ let aliasData = {},
   savedUpstreamModelsByUpstream = {},
   pendingUpstreamRenames = {},
   upstreamOrder = [],
-  defaultUpstream = "",
   socks5Data = [],
   webSearchData = {},
   searxngInstances = [],
@@ -354,7 +353,7 @@ function normalizeAliasData() {
         targets = normalizeAliasTargets([
           {
             target_model: raw.target_model || k,
-            upstream: raw.upstream || defaultUpstream || "",
+            upstream: raw.upstream || "",
             weight: 1,
           },
         ]);
@@ -371,7 +370,7 @@ function normalizeAliasData() {
           ? [
               {
                 target_model: targetModel,
-                upstream: defaultUpstream || "",
+                upstream: "",
                 weight: 1,
               },
             ]
@@ -389,10 +388,7 @@ function normalizeUpstreamData(cfg) {
   upstreamOrder = Array.isArray(cfg.upstream_order)
     ? cfg.upstream_order.slice()
     : [];
-  const names = orderedUpstreamNames();
-  defaultUpstream = (cfg.default_upstream || defaultUpstream || "").trim();
-  if (!defaultUpstream || !upstreamData[defaultUpstream])
-    defaultUpstream = names[0] || "";
+  orderedUpstreamNames();
 }
 
 function orderedUpstreamNames() {
@@ -613,8 +609,6 @@ async function loadConfig() {
     renderEffortTable();
     renderSocks5Table();
     renderWebSearchConfig();
-    document.getElementById("activeSocks5").value = cfg.active_socks5 || "";
-    ssSyncLabel(document.getElementById("activeSocks5"));
     setTimeout(() => window.scrollTo(0, sy), 0);
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
@@ -869,10 +863,8 @@ async function saveConfigSilent(options) {
     reasoning_effort_map: globalEffortData,
     web_search: webSearchData,
     socks5_proxies: socks5Data,
-    active_socks5: document.getElementById("activeSocks5").value,
     upstreams: upstreamData,
     upstream_order: upstreamOrder,
-    default_upstream: defaultUpstream || "",
   };
   const qs = options && options.skipModelSync ? "?skip_model_sync=1" : "";
   const r = await apiFetch("/api/config" + qs, {
@@ -1254,6 +1246,25 @@ function bridgeModeSelectHtml(selected) {
   );
 }
 
+function proxySelectHtml(selected) {
+  const value = String(selected || "").trim();
+  const options = [{ value: "", label: "直连" }];
+  const seen = new Set([""]);
+  (socks5Data || []).forEach((proxy) => {
+    const addr = String(proxy?.addr || "").trim();
+    if (!addr || seen.has(addr)) return;
+    seen.add(addr);
+    options.push({
+      value: addr,
+      label: proxy.name ? proxy.name + " (" + addr + ")" : addr,
+    });
+  });
+  if (value && !seen.has(value)) {
+    options.push({ value: value, label: value + "（配置中不存在）" });
+  }
+  return searchableSelectHtml("proxy", options, value);
+}
+
 function upstreamSearchModels(name, row) {
   const models = new Set(modelListByUpstream[name] || []);
   const configured =
@@ -1334,7 +1345,7 @@ function filterUpstreamRows() {
   if (rows.length && visible === 0) {
     tbody.insertAdjacentHTML(
       "beforeend",
-      '<tr class="upstream-filter-empty"><td colspan="8">' +
+      '<tr class="upstream-filter-empty"><td colspan="9">' +
         '<div class="upstream-filter-empty-content">' +
         ICONS.search +
         "<span>没有匹配的上游</span></div>" +
@@ -1350,7 +1361,7 @@ function renderUpstreamTable() {
   const ks = orderedUpstreamNames().slice().reverse();
   if (!ks.length) {
     tb.innerHTML = emptyRowHtml(
-      8,
+      9,
       ICONS.server,
       "暂无上游配置",
       "添加第一个上游后即可开始路由请求",
@@ -1361,7 +1372,6 @@ function renderUpstreamTable() {
   tb.innerHTML = ks
     .map((name) => {
       const up = upstreamData[name] || {};
-      const isDefault = name === defaultUpstream;
       return (
         '<tr data-upstream-row="' +
         escAttr(name) +
@@ -1370,7 +1380,6 @@ function renderUpstreamTable() {
         '" data-upstream-id="' +
         escAttr(up.id || "") +
         '"' +
-        (isDefault ? ' class="upstream-default"' : "") +
         ">" +
         '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
         ICONS.grip +
@@ -1391,6 +1400,9 @@ function renderUpstreamTable() {
         bridgeModeSelectHtml(up.bridge_mode) +
         "</td>" +
         "<td>" +
+        proxySelectHtml(up.proxy) +
+        "</td>" +
+        "<td>" +
         customModelsFieldHtml((up.custom_models || []).join(",")) +
         "</td>" +
         '<td class="action-cell">' +
@@ -1401,17 +1413,6 @@ function renderUpstreamTable() {
         "</button>" +
         '<button class="btn-icon btn-icon-success" onclick="syncModels(this)" title="同步模型">' +
         ICONS.sync +
-        "</button>" +
-        '<button class="btn-icon btn-icon-default' +
-        (isDefault ? " is-active" : "") +
-        '" onclick="setDefaultUpstream(this)" title="' +
-        (isDefault ? "当前默认上游" : "设为默认上游") +
-        '" aria-label="' +
-        (isDefault ? "当前默认上游" : "设为默认上游") +
-        '" aria-pressed="' +
-        (isDefault ? "true" : "false") +
-        '">' +
-        ICONS.star +
         "</button>" +
         '<button class="btn-icon btn-icon-danger" onclick="delUpstream(this)" title="删除">' +
         ICONS.trash +
@@ -1447,6 +1448,9 @@ function addUpstreamRow() {
       bridgeModeSelectHtml("compatible") +
       "</td>" +
       "<td>" +
+      proxySelectHtml("") +
+      "</td>" +
+      "<td>" +
       customModelsFieldHtml("") +
       "</td>" +
       '<td class="action-cell">' +
@@ -1456,16 +1460,12 @@ function addUpstreamRow() {
       '<button class="btn-icon btn-icon-success" onclick="syncModels(this)" title="同步模型">' +
       ICONS.sync +
       "</button>" +
-      '<button class="btn-icon btn-icon-default" onclick="setDefaultUpstream(this)" title="设为默认上游" aria-label="设为默认上游" aria-pressed="false">' +
-      ICONS.star +
-      "</button>" +
       '<button class="btn-icon btn-icon-danger" onclick="delUpstream(this)" title="删除">' +
       ICONS.trash +
       "</button>" +
       "</td>" +
       "</tr>",
   );
-  renderDefaultUpstreamState();
 }
 
 /* ===== 上游拖动排序 ===== */
@@ -1507,7 +1507,6 @@ function finishUpstreamDrag(commit) {
   if (!commit) return;
   collectUpstreams();
   collectAliases();
-  renderDefaultUpstreamState();
   renderAliasTable();
 }
 
@@ -1771,12 +1770,11 @@ async function delUpstream(btn) {
   if (upstreamName) delete modelListByUpstream[upstreamName];
   if (!Object.keys(upstreamData).length)
     document.querySelector("#upstreamTable tbody").innerHTML = emptyRowHtml(
-      8,
+      9,
       ICONS.server,
       "暂无上游配置",
       "添加第一个上游后即可开始路由请求",
     );
-  renderDefaultUpstreamState();
   renderUpstreamModelFilter();
   filterUpstreamRows();
   renderAliasTable();
@@ -1857,6 +1855,8 @@ function collectUpstreams() {
     const apiType = apiTypeEl ? apiTypeEl.value : "openai";
     const bridgeModeEl = tr.querySelector('[data-field="bridge_mode"]');
     const bridgeMode = bridgeModeEl ? bridgeModeEl.value : "compatible";
+    const proxyEl = tr.querySelector('[data-field="proxy"]');
+    const proxy = proxyEl ? proxyEl.value : "";
     const customEl = tr.querySelector('[data-field="custom_models"]');
     const customRaw = customEl ? (customEl.dataset.value || "").trim() : "";
     // The table does not expose provider capability declarations yet. Keep
@@ -1871,6 +1871,7 @@ function collectUpstreams() {
       base_url: baseURL,
       api_type: apiType,
       bridge_mode: bridgeMode,
+      proxy: proxy,
     };
     delete up.api_key;
     delete up.custom_models;
@@ -1894,80 +1895,9 @@ function collectUpstreams() {
     if (!order.includes(name)) order.push(name);
   });
   upstreamData = r;
-  if (pendingUpstreamRenames[defaultUpstream]) {
-    defaultUpstream = resolvedPendingUpstreamName(defaultUpstream);
-  }
-  if (!upstreamData[defaultUpstream]) defaultUpstream = order[0] || "";
   upstreamOrder = order.slice().reverse();
   syncPendingUpstreamRenames();
   return r;
-}
-
-function renderDefaultUpstreamState() {
-  document
-    .querySelectorAll("#upstreamTable tbody tr[data-upstream-row]")
-    .forEach((row) => {
-      const name = String(
-        row.querySelector('[data-field="name"]')?.value || "",
-      ).trim();
-      const selected = !!name && name === defaultUpstream;
-      row.dataset.upstreamRow = name;
-      row.classList.toggle("upstream-default", selected);
-      const button = row.querySelector(".btn-icon-default");
-      if (!button) return;
-      const label = selected ? "当前默认上游" : "设为默认上游";
-      button.classList.toggle("is-active", selected);
-      button.classList.toggle("is-saving", defaultUpstreamSaving === name);
-      button.disabled = !!defaultUpstreamSaving;
-      button.title = label;
-      button.setAttribute("aria-label", label);
-      button.setAttribute("aria-pressed", selected ? "true" : "false");
-    });
-}
-
-let defaultUpstreamSaving = "";
-
-async function setDefaultUpstream(button) {
-  if (defaultUpstreamSaving) return;
-  const row = button.closest("tr");
-  const name = String(
-    row?.querySelector('[data-field="name"]')?.value || "",
-  ).trim();
-  const baseURL = String(
-    row?.querySelector('[data-field="base_url"]')?.value || "",
-  ).trim();
-  if (!name || !baseURL) {
-    showToast("请先填写上游名称和 Base URL", "error");
-    return;
-  }
-
-  const previous = defaultUpstream;
-  collectUpstreams();
-  collectAliases();
-  if (!upstreamData[name]) {
-    showToast("当前上游配置不完整，无法设为默认上游", "error");
-    return;
-  }
-  if (name === previous && upstreamData[previous]) return;
-
-  defaultUpstream = name;
-  defaultUpstreamSaving = name;
-  renderDefaultUpstreamState();
-  renderAliasTable();
-  try {
-    await saveConfigSilent({ skipModelSync: true });
-    showToast("已设为默认上游：" + name, "success");
-  } catch (e) {
-    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
-    defaultUpstream = upstreamData[previous]
-      ? previous
-      : upstreamOrder[0] || "";
-    renderAliasTable();
-    showToast("设置默认上游失败：" + e.message, "error");
-  } finally {
-    defaultUpstreamSaving = "";
-    renderDefaultUpstreamState();
-  }
 }
 
 /* ===== API Key 字段（点击弹层编辑） ===== */
@@ -4206,12 +4136,12 @@ async function syncAllUpstreamModels(button) {
 
 /* ===== 别名表格 ===== */
 function modelsForUpstream(name) {
-  const resolved = (name || defaultUpstream || "").trim();
+  const resolved = String(name || "").trim();
   return modelListByUpstream[resolved] || [];
 }
 
 function selectedModelsForUpstream(name) {
-  const resolved = (name || defaultUpstream || "").trim();
+  const resolved = String(name || "").trim();
   const upstream = upstreamData[resolved] || {};
   return Array.isArray(upstream.custom_models) ? upstream.custom_models : [];
 }
@@ -5114,8 +5044,9 @@ function renderSocks5Table() {
       5,
       ICONS.server,
       "暂无代理配置",
-      "可选配置 SOCKS5 出口，支持轮询与限流切换",
+      "可选配置 SOCKS5 出口，然后在上游配置中选择",
     );
+    refreshUpstreamProxySelectors();
     return;
   }
   tb.innerHTML = socks5Data
@@ -5142,7 +5073,7 @@ function renderSocks5Table() {
         "</tr>",
     )
     .join("");
-  renderSocks5Select();
+  refreshUpstreamProxySelectors();
 }
 
 function addSocks5Row() {
@@ -5182,38 +5113,15 @@ function collectSocks5() {
   return r;
 }
 
-function renderSocks5Select() {
-  const sel = document.getElementById("activeSocks5");
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">直连（不使用代理）</option>';
-  socks5Data.forEach((p) => {
-    if (p.addr) {
-      const label = p.name ? p.name + " (" + p.addr + ")" : p.addr;
-      const opt = document.createElement("option");
-      opt.value = p.addr;
-      opt.textContent = label;
-      sel.appendChild(opt);
-    }
-  });
-  if (socks5Data.length >= 1) {
-    const opt = document.createElement("option");
-    opt.value = "__rate_limit_switch__";
-    opt.textContent = "限流切换（429 后切换，含直连）";
-    sel.appendChild(opt);
-    const opt2 = document.createElement("option");
-    opt2.value = "__rate_limit_switch_no_direct__";
-    opt2.textContent = "限流切换（429 后切换，不含直连）";
-    sel.appendChild(opt2);
-  }
-  if (socks5Data.length >= 2) {
-    const opt = document.createElement("option");
-    opt.value = "__round_robin__";
-    opt.textContent = "轮询（每次请求切换）";
-    sel.appendChild(opt);
-  }
-  sel.value = cur;
-  if (!sel.value) sel.value = "";
-  ssSyncLabel(sel);
+function refreshUpstreamProxySelectors() {
+  document
+    .querySelectorAll("#upstreamTable tbody tr[data-upstream-row]")
+    .forEach((row) => {
+      const cell = row.querySelector('[data-field="proxy"]')?.closest("td");
+      const select = row.querySelector('[data-field="proxy"]');
+      if (!cell || !select) return;
+      cell.innerHTML = proxySelectHtml(select.value);
+    });
 }
 
 /* ===== 保存配置 ===== */
@@ -5421,10 +5329,8 @@ async function saveConfig(section) {
     reasoning_effort_map: globalEffortData,
     web_search: webSearchData,
     socks5_proxies: socks5Data,
-    active_socks5: document.getElementById("activeSocks5").value,
     upstreams: upstreamData,
     upstream_order: upstreamOrder,
-    default_upstream: defaultUpstream || "",
   };
   const label = section || "配置";
   const saveBtns = Array.from(
@@ -6328,7 +6234,6 @@ function fmt(n) {
 function initAdminPage() {
   initAdminTabs();
   ssEnhanceSelect(document.getElementById("upstreamModelFilter"));
-  ssEnhanceSelect(document.getElementById("activeSocks5"));
   ssEnhanceSelect(document.getElementById("usageModelFilter"));
   ssEnhanceSelect(document.getElementById("usageUpstreamFilter"));
   ssEnhanceSelect(document.getElementById("usageAPIKeyFilter"));

@@ -26,9 +26,12 @@ type UpstreamConfig struct {
 	// ID is the stable relational identity of this upstream. The display name
 	// is editable, so model alias targets must not depend on it to detect a
 	// rename.
-	ID                       int64           `json:"id,omitempty"`
-	BaseURL                  string          `json:"base_url"`
-	APIKey                   string          `json:"api_key"`
+	ID      int64  `json:"id,omitempty"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	// Proxy is the address of a SOCKS5 proxy from AppConfig.Socks5Proxies.
+	// An empty value means that this upstream uses a direct connection.
+	Proxy                    string          `json:"proxy,omitempty"`
 	APIType                  UpstreamType    `json:"api_type"`
 	BridgeMode               BridgeMode      `json:"bridge_mode,omitempty"`
 	Capabilities             map[string]bool `json:"capabilities,omitempty"`
@@ -74,15 +77,24 @@ type APIKey struct {
 type AppConfig struct {
 	ModelAlias map[string]ModelAlias `json:"model_alias"`
 
-	ReasoningEffortMap map[string]string          `json:"reasoning_effort_map"`
-	WebSearch          WebSearchConfig            `json:"web_search,omitempty"`
-	APIKeys            []APIKey                   `json:"api_keys,omitempty"`
-	Socks5Proxies      []Socks5Proxy              `json:"socks5_proxies,omitempty"`
-	ActiveSocks5       string                     `json:"active_socks5,omitempty"`
-	Upstream           *UpstreamConfig            `json:"upstream,omitempty"`
-	Upstreams          map[string]*UpstreamConfig `json:"upstreams,omitempty"`
-	UpstreamOrder      []string                   `json:"upstream_order,omitempty"`
-	DefaultUpstream    string                     `json:"default_upstream,omitempty"`
+	ReasoningEffortMap map[string]string `json:"reasoning_effort_map"`
+	WebSearch          WebSearchConfig   `json:"web_search,omitempty"`
+	APIKeys            []APIKey          `json:"api_keys,omitempty"`
+	Socks5Proxies      []Socks5Proxy     `json:"socks5_proxies,omitempty"`
+	// ActiveSocks5 is retained only so older database records and clients can
+	// still be decoded. Runtime routing no longer reads this global selector;
+	// proxy selection is configured on each UpstreamConfig.Proxy.
+	ActiveSocks5  string                     `json:"active_socks5,omitempty"`
+	Upstream      *UpstreamConfig            `json:"upstream,omitempty"`
+	Upstreams     map[string]*UpstreamConfig `json:"upstreams,omitempty"`
+	UpstreamOrder []string                   `json:"upstream_order,omitempty"`
+	// DefaultUpstream is retained for decoding old configurations. New routing
+	// never uses a default upstream and selects by the requested model.
+	DefaultUpstream string `json:"default_upstream,omitempty"`
+	// LegacyDefaultUpstream distinguishes an explicitly loaded old selector
+	// from the compatibility value generated while normalizing old callers.
+	// It is never serialized or exposed by the admin API.
+	LegacyDefaultUpstream bool `json:"-"`
 }
 
 type ModelAlias struct {

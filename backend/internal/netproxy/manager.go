@@ -217,6 +217,27 @@ func getHTTPClient(stream bool) *http.Client {
 	return client
 }
 
+func getHTTPClientForProxy(stream bool, proxyAddress string) (*http.Client, string) {
+	proxyAddress = strings.TrimSpace(proxyAddress)
+	socks5Mu.Lock()
+	defer socks5Mu.Unlock()
+	if proxyAddress == "" {
+		if stream {
+			return streamHTTPClient, "direct"
+		}
+		return httpClient, "direct"
+	}
+	for _, proxy := range socks5Proxies {
+		if proxy.Addr == proxyAddress || proxy.Name == proxyAddress {
+			return getHTTPClientForSocks5Locked(stream, proxy)
+		}
+	}
+	// Validation normally prevents this path. Falling back to direct keeps a
+	// stale proxy reference from taking the whole gateway offline while an
+	// administrator repairs the configuration.
+	return directHTTPClient(stream)
+}
+
 func getHTTPClientWithExit(stream bool) (*http.Client, string) {
 	socks5Mu.Lock()
 	defer socks5Mu.Unlock()
@@ -265,6 +286,17 @@ func getHTTPClientWithExit(stream bool) (*http.Client, string) {
 		}
 	}
 
+	return getHTTPClientForSocks5Locked(stream, proxy)
+}
+
+func directHTTPClient(stream bool) (*http.Client, string) {
+	if stream {
+		return streamHTTPClient, "direct"
+	}
+	return httpClient, "direct"
+}
+
+func getHTTPClientForSocks5Locked(stream bool, proxy Socks5Proxy) (*http.Client, string) {
 	cacheKey := socks5ClientCacheKey{
 		Addr: proxy.Addr, Username: proxy.Username, Password: proxy.Password, Stream: stream,
 	}

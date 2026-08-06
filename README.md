@@ -6,11 +6,11 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 
 - OpenAI Chat、OpenAI Responses、Anthropic Messages 三种协议互转
 - 普通 JSON 响应和 SSE 流式响应
-- 多上游、默认上游、模型别名和按模型指定上游
+- 多上游、按模型自动负载均衡、模型别名和按模型指定上游
 - compatible（尽力兼容并告警）和 strict（拒绝已知有损转换）桥接模式
 - 文本、图片、推理内容和工具调用转换
 - 多 API Key 轮询及 429、502、503、504 自动重试
-- SOCKS5 固定或轮询出口，遇到 429 时可切换出口
+- 每个上游独立选择 SOCKS5 或直连出口
 - 请求量与 Token 统计
 - 对外 API Key 鉴权和独立的管理后台密码认证
 - 上游模型同步及 `/health` 健康检查
@@ -32,13 +32,12 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 模型路由遵循以下规则：
 
 - 模型名是已配置的别名；别名可以配置一个或多个“目标上游 + 实际模型”，并用正整数权重分配请求。
-- 没有匹配别名时，模型名原样发送到默认上游。
-- 默认上游的 `custom_models` 非空时，它是直接模型的允许列表，不在列表中的模型会在访问上游前返回 404。
-- 默认上游的 `custom_models` 为空时不限制模型名，由上游判断模型是否存在及当前密钥是否有权访问。
+- 没有匹配别名时，网关查找所有 `custom_models` 中包含该模型的上游，并按上游顺序轮询负载均衡。
+- 没有任何上游声明该模型时，请求会在访问上游前返回 404。
 
 直接模型会保留客户端显式发送的 `thinking`、`reasoning` 或 `reasoning_effort`。命中模型别名时，只有启用该别名的“思维链”开关才会向上游发送这些推理参数；关闭后该策略会一致应用于三种客户端协议的透传、桥接和 Web Search 回退路径。
 
-显式模型别名的优先级高于默认上游模型。核心解析逻辑位于 `backend/internal/routing/resolver.go` 和 `backend/internal/config/`。
+显式模型别名的优先级高于按模型名自动选择。核心解析逻辑位于 `backend/internal/routing/resolver.go` 和 `backend/internal/config/`。
 
 多目标映射使用按别名独立计数的加权周期分配。例如下面的 `3:1` 配置每四个请求会将三个请求路由到主上游、一个请求路由到备用上游。权重为 `0` 的目标会保留在配置中但不参与轮询；每个映射至少需要一个权重大于 `0` 的目标。旧版单目标 `target_model/upstream` 配置仍可读取，并会在管理页保存时转换为 `targets`：
 
@@ -188,7 +187,7 @@ go run . -password "管理密码" -api-key "对外 API 密钥"
 - API Base URL：<http://localhost:8000/v1>
 - 健康检查：<http://localhost:8000/health>
 
-首次启动会在当前目录生成纯 Go 驱动的 SQLite 数据库 `llmrelay.db`，配置和调用明细、统计数据统一保存在其中。配置已经使用关系表保存：上游、上游密钥、模型白名单、模型别名及目标、推理强度映射、API 密钥、SOCKS5、Web Search 和全局选择分别存储，并通过外键、唯一约束和排序字段关联。旧 SQLite 数据库中的 `app_config` JSON 记录会在首次加载时事务迁移到这些表，迁移成功后删除旧表；应用不再读取、写入或导入 `config.json`，也不再提供 `-config` 参数。数据库路径通过 `-db <数据库路径>` 指定。旧版 `stats.json` 仅作为统计数据的独立一次性导入来源。
+首次启动会在当前目录生成纯 Go 驱动的 SQLite 数据库 `llmrelay.db`，配置和调用明细、统计数据统一保存在其中。配置已经使用关系表保存：上游（含独立 SOCKS5 配置）、上游密钥、模型白名单、模型别名及目标、推理强度映射、API 密钥、SOCKS5 和 Web Search 分别存储，并通过外键、唯一约束和排序字段关联。旧 SQLite 数据库中的 `app_config` JSON 记录会在首次加载时事务迁移到这些表，迁移成功后删除旧表；应用不再读取、写入或导入 `config.json`，也不再提供 `-config` 参数。数据库路径通过 `-db <数据库路径>` 指定。旧版 `stats.json` 仅作为统计数据的独立一次性导入来源。
 
 管理后台的“API 密钥”页可创建、停用、删除和复制多个对外 API Key。旧版本通过 `-api-key`、`LLMGATEWAYGO_API_KEY` 或兼容环境变量 `LLM2API_API_KEY` 设置的密钥，会在首次启动时自动迁移为“默认密钥”；这些参数仍可用于兼容启动脚本。
 

@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -60,18 +62,19 @@ func ServeNativeProtocol(w http.ResponseWriter, request NativeProxyRequest) {
 			}
 			return
 		}
-		if !nativeResponseIsSSE(headers) {
+		body, isSSE := sniffNativeResponse(headers, body)
+		if !isSSE {
 			// Some compatible upstreams return a normal JSON body even when the
 			// request asked for streaming. Preserve that native response instead
-			// of changing its Content-Type to SSE.
-			var responseBody []byte
+			// of passing JSON through as SSE when the upstream header is wrong.
+			setNativeJSONHeaders(w.Header())
+			var responseBody bytes.Buffer
+			w.WriteHeader(status)
 			if body != nil {
-				responseBody, _ = io.ReadAll(body)
+				_, _ = io.Copy(w, io.TeeReader(body, &responseBody))
 				_ = body.Close()
 			}
-			commitNativeResponseUsage(ctx, usageModel, request.UpstreamName, request.Model, responseBody)
-			w.WriteHeader(status)
-			_, _ = w.Write(responseBody)
+			commitNativeResponseUsage(ctx, usageModel, request.UpstreamName, request.Model, responseBody.Bytes())
 			return
 		}
 		setNativeSSEHeaders(w.Header())
@@ -107,11 +110,28 @@ func commitNativeResponseUsage(ctx context.Context, usageModel, upstreamName, up
 	usageStats := newRequestUsageAccumulatorForContext(ctx, usageModel, upstreamName, upstreamModel)
 	var decoded map[string]any
 	if json.Unmarshal(body, &decoded) == nil {
-		if usage, ok := decoded["usage"].(map[string]any); ok {
+		if usage := nativeResponseUsage(decoded); usage != nil {
 			usageStats.observeMap(usage)
 		}
 	}
 	usageStats.commit()
+}
+
+func nativeResponseUsage(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		return usage
+	}
+	for _, key := range []string{"response", "message"} {
+		if nested, ok := payload[key].(map[string]any); ok {
+			if usage, ok := nested["usage"].(map[string]any); ok {
+				return usage
+			}
+		}
+	}
+	return nil
 }
 
 func nativeResponseIsSSE(headers http.Header) bool {
@@ -119,8 +139,72 @@ func nativeResponseIsSSE(headers http.Header) bool {
 	return contentType == "" || strings.HasPrefix(contentType, "text/event-stream")
 }
 
+const nativeResponseSniffLimit = 4 * 1024
+
+type nativeResponseReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *nativeResponseReadCloser) Close() error {
+	if r == nil || r.closer == nil {
+		return nil
+	}
+	return r.closer.Close()
+}
+
+// sniffNativeResponse handles providers that advertise the wrong response
+// content type. It reads only a small prefix, then replays that prefix before
+// the remaining response body so streaming responses are not buffered.
+func sniffNativeResponse(headers http.Header, body io.ReadCloser) (io.ReadCloser, bool) {
+	isSSE := nativeResponseIsSSE(headers)
+	if body == nil {
+		return nil, isSSE
+	}
+
+	reader := bufio.NewReader(body)
+	prefix := make([]byte, 0, 128)
+	for len(prefix) < nativeResponseSniffLimit {
+		value, err := reader.ReadByte()
+		if err != nil {
+			break
+		}
+		prefix = append(prefix, value)
+		if kind, ok := nativeResponsePrefixKind(prefix); ok {
+			isSSE = kind
+			break
+		}
+	}
+	if kind, ok := nativeResponsePrefixKind(prefix); ok {
+		isSSE = kind
+	}
+
+	return &nativeResponseReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(prefix), reader),
+		closer: body,
+	}, isSSE
+}
+
+func nativeResponsePrefixKind(prefix []byte) (isSSE bool, known bool) {
+	trimmed := bytes.TrimPrefix(prefix, []byte{0xef, 0xbb, 0xbf})
+	trimmed = bytes.TrimLeft(trimmed, " \t\r\n")
+	if len(trimmed) == 0 {
+		return false, false
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		return false, true
+	}
+	for _, marker := range []string{"data:", "event:", "id:", "retry:", ":"} {
+		if bytes.HasPrefix(trimmed, []byte(marker)) {
+			return true, true
+		}
+	}
+	return false, false
+}
+
 func setNativeSSEHeaders(header http.Header) {
-	if header.Get("Content-Type") == "" {
+	contentType := strings.ToLower(strings.TrimSpace(header.Get("Content-Type")))
+	if !strings.HasPrefix(contentType, "text/event-stream") {
 		header.Set("Content-Type", "text/event-stream")
 	}
 	if header.Get("Cache-Control") == "" {
@@ -131,5 +215,13 @@ func setNativeSSEHeaders(header http.Header) {
 	}
 	if header.Get("X-Accel-Buffering") == "" {
 		header.Set("X-Accel-Buffering", "no")
+	}
+}
+
+func setNativeJSONHeaders(header http.Header) {
+	contentType := strings.ToLower(strings.TrimSpace(header.Get("Content-Type")))
+	if contentType == "" || strings.HasPrefix(contentType, "text/event-stream") ||
+		(!strings.HasPrefix(contentType, "application/json") && !strings.HasSuffix(contentType, "+json")) {
+		header.Set("Content-Type", "application/json")
 	}
 }

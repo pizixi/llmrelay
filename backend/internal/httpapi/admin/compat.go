@@ -57,7 +57,7 @@ func getConfiguredUpstreamCount() int { return config.GetConfiguredUpstreamCount
 
 func getConfiguredUpstreams() (map[string]*UpstreamConfig, string) {
 	snapshot := config.Snapshot()
-	return snapshot.Upstreams, snapshot.DefaultUpstream
+	return snapshot.Upstreams, ""
 }
 
 func cloneUpstreamConfig(target *UpstreamConfig) *UpstreamConfig {
@@ -74,6 +74,10 @@ func anthropicStreamToChatHandler(w http.ResponseWriter, body io.ReadCloser, mod
 
 func responsesStreamToChatHandler(w http.ResponseWriter, body io.ReadCloser, model, usageModel string, record bool) {
 	upstream.ResponsesStreamToChatHandler(w, body, model, usageModel, record)
+}
+
+func proxyChatPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model string, record ...bool) error {
+	return upstream.ProxyChatPassthroughStream(w, body, model, record...)
 }
 
 func setSSEHeaders(header http.Header) { sse.SetHeaders(header) }

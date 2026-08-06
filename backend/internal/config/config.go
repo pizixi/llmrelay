@@ -19,8 +19,10 @@ var (
 	webSearchCfg        WebSearchConfig
 	apiKeys             []APIKey
 	upstreamOrder       []string
+	legacyDefaultRoute  bool
 	configMu            sync.RWMutex
 	aliasTargetCounters sync.Map
+	modelRouteCounters  sync.Map
 )
 
 // ======================== 配置管理 ========================
@@ -93,6 +95,22 @@ func ValidateConfig(cfg *AppConfig) error {
 		if !validBridgeMode(upstream.BridgeMode) {
 			return fmt.Errorf("upstream %q has unsupported bridge_mode %q", name, upstream.BridgeMode)
 		}
+		proxyAddress := strings.TrimSpace(upstream.Proxy)
+		if strings.EqualFold(proxyAddress, "direct") {
+			proxyAddress = ""
+		}
+		if proxyAddress != "" {
+			proxyConfigured := false
+			for _, proxy := range cfg.Socks5Proxies {
+				if strings.TrimSpace(proxy.Addr) == proxyAddress || strings.TrimSpace(proxy.Name) == proxyAddress {
+					proxyConfigured = true
+					break
+				}
+			}
+			if !proxyConfigured {
+				return fmt.Errorf("upstream %q references unknown socks5 proxy %q", name, proxyAddress)
+			}
+		}
 	}
 	if cfg.Upstream != nil && !validType(cfg.Upstream.APIType) {
 		return fmt.Errorf("legacy upstream has unsupported api_type %q", cfg.Upstream.APIType)
@@ -152,6 +170,8 @@ func ValidateConfig(cfg *AppConfig) error {
 }
 
 func NormalizeConfig(cfg *AppConfig) {
+	explicitLegacyDefault := strings.TrimSpace(cfg.DefaultUpstream) != ""
+	cfg.LegacyDefaultUpstream = explicitLegacyDefault
 	cfg.APIKeys = NormalizeAPIKeys(cfg.APIKeys)
 	if cfg.ModelAlias == nil {
 		cfg.ModelAlias = map[string]ModelAlias{}
@@ -215,23 +235,31 @@ func NormalizeConfig(cfg *AppConfig) {
 		normalizedUpstreams[trimmedName] = copied
 	}
 	cfg.Upstreams = normalizedUpstreams
+	// DefaultUpstream is no longer generated from order. It is normalized only
+	// for old callers that still carry the deprecated field; model routing below
+	// never uses it to select a configured model.
 	cfg.DefaultUpstream = strings.TrimSpace(cfg.DefaultUpstream)
 	if len(cfg.Upstreams) == 0 && legacyValid {
 		cfg.Upstreams["default"] = legacy
 		if cfg.DefaultUpstream == "" {
 			cfg.DefaultUpstream = "default"
+			cfg.LegacyDefaultUpstream = true
 		}
 	}
 	cfg.UpstreamOrder = NormalizeUpstreamOrder(cfg.UpstreamOrder, cfg.Upstreams)
 	if len(cfg.Upstreams) == 0 {
 		cfg.DefaultUpstream = ""
+		cfg.LegacyDefaultUpstream = false
 		cfg.Upstream = nil
 		return
 	}
-	if cfg.DefaultUpstream == "" || cfg.Upstreams[cfg.DefaultUpstream] == nil {
-		names := cfg.UpstreamOrder
-		if len(names) > 0 {
-			cfg.DefaultUpstream = names[0]
+	if cfg.DefaultUpstream == "" {
+		// Keep the aggregate shape backwards compatible for old callers that
+		// inspect NormalizeConfig output. The runtime flag below remains false,
+		// so this value is not used as a routing decision or persisted as a
+		// default selector.
+		if len(cfg.UpstreamOrder) > 0 {
+			cfg.DefaultUpstream = cfg.UpstreamOrder[0]
 		}
 	}
 	cfg.Upstream = nil
@@ -342,21 +370,23 @@ func ApplyConfig(cfg AppConfig) {
 		upstreamCfgs[name] = CloneUpstreamConfig(upstream)
 	}
 	upstreamOrder = append([]string(nil), cfg.UpstreamOrder...)
-	defaultUpstreamName = strings.TrimSpace(cfg.DefaultUpstream)
-	if defaultUpstreamName == "" && len(upstreamCfgs) > 0 {
-		names := NormalizeUpstreamOrder(upstreamOrder, upstreamCfgs)
-		if len(names) > 0 {
-			defaultUpstreamName = names[0]
-		}
+	legacyDefaultRoute = cfg.LegacyDefaultUpstream
+	if legacyDefaultRoute {
+		defaultUpstreamName = strings.TrimSpace(cfg.DefaultUpstream)
+	} else {
+		defaultUpstreamName = ""
 	}
 	upstreamCfg = CloneUpstreamConfig(upstreamCfgs[defaultUpstreamName])
+	modelRouteCounters.Range(func(key, _ any) bool {
+		modelRouteCounters.Delete(key)
+		return true
+	})
 	ApplyRuntimeDependencies(cfg)
 }
 
 // ResolveRequestModel 解析请求模型，并返回配置的路由表是否允许该请求。
-// 模型别名属于显式路由，因此优先于默认上游中的同名模型。
-// 如果没有别名，请求会路由到默认上游。非空 custom_models 是允许列表；
-// 空列表表示不限制模型名，最终由默认上游判断模型是否存在及是否有权访问。
+// 模型别名属于显式路由，因此优先于按模型名自动选择的上游。
+// 没有别名时，所有 custom_models 中包含该模型的上游共同参与轮询。
 func ResolveRequestModel(model string) (string, ModelAlias, string, *UpstreamConfig, bool, bool) {
 	m := strings.TrimSpace(model)
 	alias := ModelAlias{}
@@ -372,31 +402,83 @@ func ResolveRequestModel(model string) (string, ModelAlias, string, *UpstreamCon
 			alias.Upstream = target.Upstream
 		}
 	}
-	directModelMatched := false
-	if !aliasMatched {
-		if defaultUpstream := upstreamCfgs[defaultUpstreamName]; defaultUpstream != nil {
-			if len(defaultUpstream.CustomModels) == 0 {
-				directModelMatched = true
-			} else {
-				for _, configuredModel := range defaultUpstream.CustomModels {
-					if strings.TrimSpace(configuredModel) == m {
-						directModelMatched = true
-						break
-					}
-				}
-			}
-		}
-	}
-	configMu.RUnlock()
 	if alias.TargetModel != "" {
 		m = alias.TargetModel
 	}
-	upstreamName, upstream := ResolveUpstream(alias.Upstream)
-	if m == "" {
-		m = strings.TrimSpace(model)
+	if aliasMatched {
+		upstreamName, upstream := resolveUpstreamLocked(alias.Upstream)
+		configMu.RUnlock()
+		if m == "" {
+			m = strings.TrimSpace(model)
+		}
+		return m, alias, upstreamName, upstream, true, true
 	}
-	return m, alias, upstreamName, upstream, aliasMatched, aliasMatched || directModelMatched
 
+	candidates := make([]string, 0, len(upstreamCfgs))
+	for _, name := range NormalizeUpstreamOrder(upstreamOrder, upstreamCfgs) {
+		if upstream := upstreamCfgs[name]; upstream != nil && upstreamHasModel(upstream, m) {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) > 0 {
+		counterValue, _ := modelRouteCounters.LoadOrStore(m, &atomic.Uint64{})
+		counter := counterValue.(*atomic.Uint64)
+		selectedName := candidates[(counter.Add(1)-1)%uint64(len(candidates))]
+		selected := CloneUpstreamConfig(upstreamCfgs[selectedName])
+		configMu.RUnlock()
+		return m, alias, selectedName, selected, false, true
+	}
+
+	// Compatibility for old configurations that explicitly declared a default
+	// unrestricted upstream. New configurations never populate this field, so
+	// they cannot accidentally regain default-upstream routing.
+	if legacyDefaultRoute {
+		legacyDefault := upstreamCfgs[defaultUpstreamName]
+		if legacyDefault == nil || len(legacyDefault.CustomModels) != 0 {
+			legacyDefault = nil
+		}
+		if legacyDefault != nil && strings.TrimSpace(defaultUpstreamName) != "" {
+			selected := CloneUpstreamConfig(legacyDefault)
+			configMu.RUnlock()
+			return m, alias, defaultUpstreamName, selected, false, true
+		}
+	}
+
+	// Keep a useful upstream name in the not-found error path without treating
+	// that upstream as a match. The handler rejects the request when matched is
+	// false.
+	fallbackName := ""
+	var fallback *UpstreamConfig
+	if legacyDefaultRoute && strings.TrimSpace(defaultUpstreamName) != "" {
+		fallbackName = defaultUpstreamName
+		fallback = CloneUpstreamConfig(upstreamCfgs[fallbackName])
+	}
+	if fallback == nil {
+		names := NormalizeUpstreamOrder(upstreamOrder, upstreamCfgs)
+		if len(names) > 0 {
+			fallbackName = names[0]
+			fallback = CloneUpstreamConfig(upstreamCfgs[fallbackName])
+		}
+	}
+	configMu.RUnlock()
+	return m, alias, fallbackName, fallback, false, false
+
+}
+
+func upstreamHasModel(upstream *UpstreamConfig, model string) bool {
+	if upstream == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	for _, configuredModel := range upstream.CustomModels {
+		if strings.TrimSpace(configuredModel) == model {
+			return true
+		}
+	}
+	return false
 }
 
 // ShouldForwardReasoningParameters 区分“没有模型别名”和“别名显式关闭推理”。

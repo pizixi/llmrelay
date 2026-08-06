@@ -11,13 +11,14 @@ func Path() string { return configPath }
 func Snapshot() AppConfig {
 	configMu.RLock()
 	result := AppConfig{
-		ModelAlias:         make(map[string]ModelAlias, len(modelAlias)),
-		ReasoningEffortMap: CloneStringMap(reasoningEffortMap),
-		WebSearch:          webSearchCfg,
-		APIKeys:            CloneAPIKeys(apiKeys),
-		Upstreams:          make(map[string]*UpstreamConfig, len(upstreamCfgs)),
-		UpstreamOrder:      append([]string(nil), upstreamOrder...),
-		DefaultUpstream:    defaultUpstreamName,
+		ModelAlias:            make(map[string]ModelAlias, len(modelAlias)),
+		ReasoningEffortMap:    CloneStringMap(reasoningEffortMap),
+		WebSearch:             webSearchCfg,
+		APIKeys:               CloneAPIKeys(apiKeys),
+		Upstreams:             make(map[string]*UpstreamConfig, len(upstreamCfgs)),
+		UpstreamOrder:         append([]string(nil), upstreamOrder...),
+		DefaultUpstream:       defaultUpstreamName,
+		LegacyDefaultUpstream: legacyDefaultRoute,
 	}
 	for name, alias := range modelAlias {
 		result.ModelAlias[name] = CloneModelAlias(alias)

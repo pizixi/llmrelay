@@ -6,9 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"llmrelay/backend/internal/stats"
 )
 
 func installAdminModelTestUpstream(t *testing.T, name string, upstream *UpstreamConfig) {
@@ -31,6 +34,11 @@ func installAdminModelTestUpstream(t *testing.T, name string, upstream *Upstream
 }
 
 func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
+	previousStatsPath := stats.Path()
+	stats.SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))
+	stats.LoadTokenStats()
+	t.Cleanup(func() { stats.SetPath(previousStatsPath) })
+
 	tests := []struct {
 		name         string
 		apiType      UpstreamType
@@ -45,6 +53,7 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 			streamBody: "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"plan\"},\"finish_reason\":null}]}\n\n" +
 				"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello \"},\"finish_reason\":null}]}\n\n" +
 				"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"},\"finish_reason\":null}]}\n\n" +
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n" +
 				"data: [DONE]\n\n",
 		},
 		{
@@ -84,6 +93,12 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 				}
 				if body["model"] != "test-model" || body[testCase.wantBodyKey] == nil || body[testCase.wantLimitKey] == nil || body["stream"] != true {
 					t.Errorf("unexpected body: %#v", body)
+				}
+				if testCase.apiType == UpstreamOpenAI {
+					streamOptions, _ := body["stream_options"].(map[string]any)
+					if streamOptions["include_usage"] != true {
+						t.Errorf("stream_options.include_usage=%#v", streamOptions["include_usage"])
+					}
 				}
 				if testCase.apiType == UpstreamResponses {
 					if body["input"] != "Tell me something" {
@@ -127,6 +142,22 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 				t.Fatalf("protocol header=%q", recorder.Header().Get("X-Model-Test-Protocol"))
 			}
 		})
+	}
+
+	page, err := stats.ListUsageRecords(stats.UsageQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("list usage: %v", err)
+	}
+	if page.Total != int64(len(tests)) || len(page.Items) != len(tests) {
+		t.Fatalf("usage records=%#v, want %d records", page, len(tests))
+	}
+	if page.Summary.RequestCount != int64(len(tests)) || page.Summary.PromptTokens != 3 || page.Summary.CompletionTokens != 6 || page.Summary.TotalTokens != 9 {
+		t.Fatalf("usage summary=%#v", page.Summary)
+	}
+	for _, item := range page.Items {
+		if item.RequestModel != "test-model" || item.UpstreamName != "target" || item.UpstreamModel != "test-model" {
+			t.Fatalf("usage identity=%#v", item)
+		}
 	}
 }
 

@@ -81,7 +81,7 @@
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>多上游配置</h2>
-<div class="card-desc">配置上游端点、协议类型与模型白名单</div>
+<div class="card-desc">配置上游端点、协议类型、模型白名单与独立代理</div>
 </div>
 <div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
 <label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()"></label>
@@ -91,7 +91,7 @@
 </div>
 <div class="table-scroll">
 <table class="tbl" id="upstreamTable">
-<thead><tr><th class="col-drag" aria-label="拖动排序"></th><th class="col-name">名称</th><th class="col-url">Base URL</th><th class="col-key">API Key</th><th class="col-type">接口类型</th><th class="col-bridge" title="兼容模式会降级并告警；严格模式会拒绝有损协议转换">桥接模式</th><th class="col-models">模型</th><th class="col-action"></th></tr></thead>
+<thead><tr><th class="col-drag" aria-label="拖动排序"></th><th class="col-name">名称</th><th class="col-url">Base URL</th><th class="col-key">API Key</th><th class="col-type">接口类型</th><th class="col-bridge" title="兼容模式会降级并告警；严格模式会拒绝有损协议转换">桥接模式</th><th class="col-proxy">代理</th><th class="col-models">模型</th><th class="col-action"></th></tr></thead>
 <tbody></tbody>
 </table>
 </div>
@@ -166,9 +166,9 @@
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>SOCKS5 代理</h2>
-<div class="card-desc">出口代理、轮询与限流切换</div>
+<div class="card-desc">管理 SOCKS5 代理地址；在上游配置中按需选择代理</div>
 </div>
-<div class="card-head-actions proxy-head-actions"><div class="compact-select-row"><label for="activeSocks5">启用代理</label><select id="activeSocks5" class="m-select"><option value="">直连（不使用代理）</option></select></div><button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
+<div class="card-head-actions proxy-head-actions"><button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
 <div class="table-scroll">
 <table class="tbl" id="socks5Table">

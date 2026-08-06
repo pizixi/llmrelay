@@ -84,7 +84,7 @@ func Run(assets embed.FS) {
 	log.Printf("%s", applicationName)
 	log.Printf("===================")
 	log.Printf("端口:     %s", port)
-	log.Printf("上游:     %d 个（默认: %s）", len(snapshot.Upstreams), snapshot.DefaultUpstream)
+	log.Printf("上游:     %d 个（按模型自动负载均衡）", len(snapshot.Upstreams))
 	log.Printf("模型：  %d 个模型已加载", len(catalog.GetModelIDs()))
 	log.Printf("别名：  %d", len(snapshot.ModelAlias))
 

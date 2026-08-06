@@ -1,12 +1,40 @@
 package stats
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestUsageAccumulatorAcceptsJSONNumbersAndNumericStrings(t *testing.T) {
+	previousPath := Path()
+	SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))
+	t.Cleanup(func() { SetPath(previousPath) })
+	LoadTokenStats()
+
+	usage := NewRequestUsageAccumulator("chat", "primary", "gpt-test")
+	usage.ObserveMap(map[string]any{
+		"prompt_tokens":     json.Number("12"),
+		"completion_tokens": "8",
+		"total_tokens":      "20",
+	})
+	usage.Commit()
+
+	page, err := ListUsageRecords(UsageQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("list usage: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("usage records = %#v, want one record", page)
+	}
+	item := page.Items[0]
+	if item.PromptTokens != 12 || item.CompletionTokens != 8 || item.TotalTokens != 20 {
+		t.Fatalf("usage values = %#v, want prompt=12 completion=8 total=20", item)
+	}
+}
 
 func TestSQLiteUsageRecordsAndDimensions(t *testing.T) {
 	previousPath := Path()

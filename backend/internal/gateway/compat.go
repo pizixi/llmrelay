@@ -156,7 +156,7 @@ func writeModelNotFoundError(w http.ResponseWriter, path, model string) {
 		errorType = "not_found_error"
 	}
 	writeExternalAPIError(w, path, http.StatusNotFound, errorType,
-		fmt.Sprintf("model %q is not configured in model mappings or on the default upstream", model))
+		fmt.Sprintf("model %q is not configured in model mappings or on any upstream", model))
 }
 
 func resolveRequestModel(model string) (string, ModelAlias, string, *UpstreamConfig, bool, bool) {

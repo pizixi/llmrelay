@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     base_url TEXT NOT NULL,
+    proxy_addr TEXT NOT NULL DEFAULT '',
     api_type TEXT NOT NULL DEFAULT 'openai'
         CHECK (api_type IN ('openai', 'anthropic', 'openai-responses')),
     bridge_mode TEXT NOT NULL DEFAULT 'compatible'
@@ -160,7 +161,10 @@ func ensureConfigSchema(db *sql.DB) error {
 			ON CONFLICT(id) DO NOTHING`, normalizedConfigSchemaVersion); err != nil {
 			return fmt.Errorf("initialize config schema version: %w", err)
 		}
-		return ensureUpstreamCapabilitiesColumn(db)
+		if err := ensureUpstreamCapabilitiesColumn(db); err != nil {
+			return err
+		}
+		return ensureUpstreamProxyColumn(db)
 	}
 	if err != nil {
 		return fmt.Errorf("read config schema version: %w", err)
@@ -168,7 +172,10 @@ func ensureConfigSchema(db *sql.DB) error {
 	if version != normalizedConfigSchemaVersion {
 		return fmt.Errorf("unsupported config schema version %d", version)
 	}
-	return ensureUpstreamCapabilitiesColumn(db)
+	if err := ensureUpstreamCapabilitiesColumn(db); err != nil {
+		return err
+	}
+	return ensureUpstreamProxyColumn(db)
 }
 
 // ensureUpstreamCapabilitiesColumn keeps databases created by older releases
@@ -205,6 +212,40 @@ func ensureUpstreamCapabilitiesColumn(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE upstreams ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '{}'`); err != nil {
 		return fmt.Errorf("add upstream capabilities column: %w", err)
+	}
+	return nil
+}
+
+func ensureUpstreamProxyColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(upstreams)")
+	if err != nil {
+		return fmt.Errorf("inspect upstream proxy column: %w", err)
+	}
+	defer rows.Close()
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan upstream proxy schema: %w", err)
+		}
+		if name == "proxy_addr" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read upstream proxy schema: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close upstream proxy schema rows: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE upstreams ADD COLUMN proxy_addr TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add upstream proxy column: %w", err)
 	}
 	return nil
 }
@@ -354,7 +395,7 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 	upstreamsByID := make(map[int64]*UpstreamConfig)
 	upstreamNamesByID := make(map[int64]string)
 
-	rows, err := db.Query(`SELECT id, name, base_url, api_type, bridge_mode,
+	rows, err := db.Query(`SELECT id, name, base_url, proxy_addr, api_type, bridge_mode,
 		capabilities_json, responses_reasoning_format, max_retries
 		FROM upstreams ORDER BY sort_order, id`)
 	if err != nil {
@@ -365,7 +406,7 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 		var upstream UpstreamConfig
 		var apiType, bridgeMode, capabilitiesJSON string
 		var maxRetries sql.NullInt64
-		if err := rows.Scan(&value.ID, &value.Name, &upstream.BaseURL, &apiType, &bridgeMode,
+		if err := rows.Scan(&value.ID, &value.Name, &upstream.BaseURL, &upstream.Proxy, &apiType, &bridgeMode,
 			&capabilitiesJSON, &upstream.ResponsesReasoningFormat, &maxRetries); err != nil {
 			_ = rows.Close()
 			return cfg, err
@@ -617,6 +658,7 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 	if err == nil {
 		if defaultUpstreamID.Valid {
 			cfg.DefaultUpstream = upstreamNamesByID[defaultUpstreamID.Int64]
+			cfg.LegacyDefaultUpstream = cfg.DefaultUpstream != ""
 		}
 		switch activeProxyMode {
 		case configActiveProxyRoundRobin:
@@ -700,13 +742,13 @@ func writeNormalizedConfig(tx *sql.Tx, cfg AppConfig) error {
 		}
 		if upstream.ID > 0 {
 			result, err = tx.Exec(`INSERT INTO upstreams
-				(id, name, base_url, api_type, bridge_mode, capabilities_json, responses_reasoning_format, max_retries, sort_order)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, upstream.ID, name, upstream.BaseURL, upstream.APIType,
+				(id, name, base_url, proxy_addr, api_type, bridge_mode, capabilities_json, responses_reasoning_format, max_retries, sort_order)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, upstream.ID, name, upstream.BaseURL, upstream.Proxy, upstream.APIType,
 				upstream.BridgeMode, capabilitiesJSON, upstream.ResponsesReasoningFormat, maxRetries, index)
 		} else {
 			result, err = tx.Exec(`INSERT INTO upstreams
-				(name, base_url, api_type, bridge_mode, capabilities_json, responses_reasoning_format, max_retries, sort_order)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, name, upstream.BaseURL, upstream.APIType,
+				(name, base_url, proxy_addr, api_type, bridge_mode, capabilities_json, responses_reasoning_format, max_retries, sort_order)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, name, upstream.BaseURL, upstream.Proxy, upstream.APIType,
 				upstream.BridgeMode, capabilitiesJSON, upstream.ResponsesReasoningFormat, maxRetries, index)
 		}
 		if err != nil {
@@ -817,8 +859,10 @@ func writeNormalizedConfig(tx *sql.Tx, cfg AppConfig) error {
 	}
 
 	defaultUpstreamID := any(nil)
-	if id := upstreamIDs[strings.TrimSpace(cfg.DefaultUpstream)]; id != 0 {
-		defaultUpstreamID = id
+	if cfg.LegacyDefaultUpstream {
+		if id := upstreamIDs[strings.TrimSpace(cfg.DefaultUpstream)]; id != 0 {
+			defaultUpstreamID = id
+		}
 	}
 	activeMode := configActiveProxyDirect
 	activeProxyID := any(nil)

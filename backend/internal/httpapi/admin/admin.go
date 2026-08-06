@@ -233,10 +233,11 @@ func modelTestRequestBody(apiType UpstreamType, model, prompt string) []byte {
 		}
 	default:
 		payload = map[string]any{
-			"model":      model,
-			"messages":   []map[string]any{{"role": "user", "content": prompt}},
-			"max_tokens": 1024,
-			"stream":     true,
+			"model":          model,
+			"messages":       []map[string]any{{"role": "user", "content": prompt}},
+			"max_tokens":     1024,
+			"stream":         true,
+			"stream_options": map[string]any{"include_usage": true},
 		}
 	}
 	body, _ := json.Marshal(payload)
@@ -267,29 +268,12 @@ func modelTestErrorMessage(body []byte, callErr error) string {
 	return "upstream model test failed"
 }
 
-func proxyAdminModelTestStream(w http.ResponseWriter, body io.ReadCloser) {
-	defer body.Close()
+func proxyAdminModelTestStream(w http.ResponseWriter, body io.ReadCloser, model string) {
 	setSSEHeaders(w.Header())
 	w.WriteHeader(http.StatusOK)
-
-	flusher, _ := w.(http.Flusher)
-	buffer := make([]byte, 16<<10)
-	for {
-		read, readErr := body.Read(buffer)
-		if read > 0 {
-			if _, writeErr := w.Write(buffer[:read]); writeErr != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if readErr != nil {
-			if readErr != io.EOF {
-				emitOpenAIStreamError(w, flusher, map[string]any{"message": readErr.Error()}, "failed to read upstream model test stream")
-			}
-			return
-		}
+	if err := proxyChatPassthroughStream(w, body, model, true); err != nil {
+		flusher, _ := w.(http.Flusher)
+		emitOpenAIStreamError(w, flusher, map[string]any{"message": err.Error()}, "failed to read upstream model test stream")
 	}
 }
 
@@ -352,13 +336,14 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("X-Model-Test-Protocol", string(upstream.APIType))
 	w.Header().Set("X-Upstream-Status", strconv.Itoa(status))
+	usageModel := stats.UsageIdentity(input.Model, input.Upstream, input.Model)
 	switch upstream.APIType {
 	case UpstreamAnthropic:
-		anthropicStreamToChatHandler(w, body, input.Model, input.Model, false)
+		anthropicStreamToChatHandler(w, body, input.Model, usageModel, true)
 	case UpstreamResponses:
-		responsesStreamToChatHandler(w, body, input.Model, input.Model, false)
+		responsesStreamToChatHandler(w, body, input.Model, usageModel, true)
 	default:
-		proxyAdminModelTestStream(w, body)
+		proxyAdminModelTestStream(w, body, usageModel)
 	}
 }
 
@@ -378,10 +363,8 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"reasoning_effort_map":         cfg.ReasoningEffortMap,
 			"web_search":                   cfg.WebSearch,
 			"socks5_proxies":               cfg.Socks5Proxies,
-			"active_socks5":                cfg.ActiveSocks5,
 			"upstreams":                    cfg.Upstreams,
 			"upstream_order":               cfg.UpstreamOrder,
-			"default_upstream":             cfg.DefaultUpstream,
 			"available_models":             availableModels,
 			"available_models_by_upstream": availableModelsByUpstream,
 		}
@@ -416,7 +399,7 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 		auth.SetAPIKeys(cfg.APIKeys)
 		reconfigureCatalog(cfg.Upstreams)
 		if debugMode {
-			log.Printf("配置已更新：别名=%d，推理强度映射=%d，上游=%d，默认上游=%s", len(cfg.ModelAlias), len(cfg.ReasoningEffortMap), len(cfg.Upstreams), cfg.DefaultUpstream)
+			log.Printf("配置已更新：别名=%d，推理强度映射=%d，上游=%d", len(cfg.ModelAlias), len(cfg.ReasoningEffortMap), len(cfg.Upstreams))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{

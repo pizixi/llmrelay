@@ -1,5 +1,11 @@
 package stats
 
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
+
 func getFloat(values map[string]any, keys ...string) (float64, bool) {
 	for _, key := range keys {
 		if value, ok := values[key]; ok {
@@ -14,6 +20,14 @@ func getFloat(values map[string]any, keys ...string) (float64, bool) {
 				return float64(number), true
 			case int32:
 				return float64(number), true
+			case json.Number:
+				if parsed, err := number.Float64(); err == nil {
+					return parsed, true
+				}
+			case string:
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(number), 64); err == nil {
+					return parsed, true
+				}
 			}
 		}
 	}

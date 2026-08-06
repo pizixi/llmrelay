@@ -46,6 +46,14 @@ func GetHTTPClientWithExit(stream bool) (*http.Client, string) {
 	return netproxy.ClientWithExit(stream)
 }
 
+func GetHTTPClientForUpstream(stream bool, upstream *UpstreamConfig) (*http.Client, string) {
+	proxyAddress := ""
+	if upstream != nil {
+		proxyAddress = upstream.Proxy
+	}
+	return netproxy.ClientForProxyWithExit(stream, proxyAddress)
+}
+
 func RotateSocks5OnRateLimit() { netproxy.RotateOnRateLimit() }
 
 func RandomString(n int) string {
