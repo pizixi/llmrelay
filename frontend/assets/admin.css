@@ -1245,6 +1245,11 @@ select.m-select {
   transition: transform var(--transition);
 }
 
+#upstreamTable .action-cell > .btn-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
 .btn-icon:hover {
   border-color: var(--border-strong);
   color: var(--text);
