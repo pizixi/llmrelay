@@ -641,11 +641,17 @@ header {
 .stats-trend-chart {
   display: flex;
   align-items: stretch;
+  flex: 1 1 88px;
   gap: 3px;
-  height: 88px;
+  min-height: 88px;
   margin-top: 9px;
   padding: 6px 1px 0;
   border-bottom: 1px solid var(--border);
+}
+
+.stats-trend-module {
+  display: flex;
+  flex-direction: column;
 }
 
 .stats-trend-bar-wrap {
@@ -812,7 +818,6 @@ header {
 .stats-heatmap {
   --heatmap-rows: 7;
   --heat-cell: 8px;
-  --heat-cell-min: 6px;
   --heat-cell-max: 26px;
   --heat-gap: 2px;
   position: sticky;
@@ -924,7 +929,7 @@ header {
 .stats-heatmap-scroll {
   display: flex;
   align-items: center;
-  flex: 1 1 auto;
+  flex: 1 0 auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -5406,9 +5411,8 @@ select.m-select {
     grid-template-columns: 1fr;
   }
   .stats-heatmap {
-    --heat-cell-min: 4px;
-    --heat-cell-max: 12px;
-    --heat-gap: 3px;
+    --heat-cell-max: 18px;
+    --heat-gap: 2px;
     padding: 14px 16px 11px;
   }
   .stats-heatmap-track {
@@ -5475,8 +5479,7 @@ select.m-select {
     flex-basis: min(210px, 45%);
   }
   .stats-heatmap {
-    --heat-cell-min: 3px;
-    --heat-cell-max: 8px;
+    --heat-cell-max: 11px;
     --heat-gap: 1px;
     padding: 12px 12px 10px;
   }

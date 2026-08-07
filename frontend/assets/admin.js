@@ -5757,33 +5757,16 @@ function fitStatsHeatmap(root) {
   const weeks = Number.parseInt(chart.style.getPropertyValue("--heatmap-weeks"), 10);
   if (!Number.isFinite(weeks) || weeks <= 0) return;
   const gap = Number.parseFloat(getComputedStyle(root).getPropertyValue("--heat-gap")) || 3;
-  const minCell = Number.parseFloat(getComputedStyle(root).getPropertyValue("--heat-cell-min")) || 10;
   const maxCell = Number.parseFloat(getComputedStyle(root).getPropertyValue("--heat-cell-max")) || 16;
-  const months = root.querySelector(".stats-heatmap-months");
-  const scrollStyle = getComputedStyle(scroll);
-  const paddingY =
-    (Number.parseFloat(scrollStyle.paddingTop) || 0) +
-    (Number.parseFloat(scrollStyle.paddingBottom) || 0);
-  const monthHeight = months ? months.offsetHeight : 15;
-  const weekdayOffset = Number.parseFloat(getComputedStyle(weekdays).marginTop) || 0;
-  const verticalSpace = Math.max(0, scroll.clientHeight - paddingY);
-  const rowCount = 7;
   const trackGap = Number.parseFloat(getComputedStyle(track).columnGap) || gap;
   const available = Math.max(0, scroll.clientWidth - weekdays.offsetWidth - trackGap);
   const widthFitCell = (available - (weeks - 1) * gap) / weeks;
-  const heightFitCell =
-    (verticalSpace - Math.max(monthHeight, weekdayOffset) - (rowCount - 1) * gap) /
-    rowCount;
-  const fitCell = Math.min(widthFitCell, heightFitCell);
-  // Respect the visual minimum while there is room, then shrink below it on
-  // very narrow screens so the full year remains visible without scrolling.
-  const cell = Math.min(
-    maxCell,
-    fitCell < minCell ? Math.max(1, fitCell) : fitCell,
-  );
+  // The calendar has a fixed 53-column shape. Size it from the available width
+  // and let the module grow vertically instead of compressing every cell.
+  const cell = Math.floor(Math.min(maxCell, Math.max(1, widthFitCell)) * 10) / 10;
   const chartWidth = weeks * cell + (weeks - 1) * gap;
   chart.style.width = Math.ceil(chartWidth * 10) / 10 + "px";
-  root.style.setProperty("--heat-cell", Math.round(cell * 10) / 10 + "px");
+  root.style.setProperty("--heat-cell", cell + "px");
 }
 
 function bindStatsHeatmap() {
