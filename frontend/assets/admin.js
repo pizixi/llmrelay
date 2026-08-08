@@ -903,14 +903,21 @@ async function refreshModelList(upstreamName) {
 /* ===== 可搜索下拉框 ===== */
 let ssActiveWrapper = null;
 let ssActiveDropdown = null;
+let ssFilterFrame = 0;
 
 function ssClose() {
   if (ssActiveWrapper) {
+    const trigger = ssActiveWrapper.querySelector(".ss-trigger");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
     ssActiveWrapper.classList.remove("ss-open");
     ssActiveWrapper = null;
   }
   if (ssActiveDropdown) ssActiveDropdown.remove();
   ssActiveDropdown = null;
+  if (ssFilterFrame) {
+    cancelAnimationFrame(ssFilterFrame);
+    ssFilterFrame = 0;
+  }
   document.removeEventListener("mousedown", ssOnOutsideClick, true);
   document.removeEventListener("keydown", ssOnKeydown);
   document.removeEventListener("scroll", ssOnViewportChange, true);
@@ -926,11 +933,18 @@ function ssOnOutsideClick(e) {
   }
 }
 
-function ssVisibleOptions(dropdown) {
+function ssAllOptions(dropdown) {
   if (!dropdown) return [];
-  return Array.from(
-    dropdown.querySelectorAll(".ss-option:not(.ss-no-match)"),
-  ).filter((opt) => opt.style.display !== "none");
+  if (!dropdown._options) {
+    dropdown._options = Array.from(
+      dropdown.querySelectorAll(".ss-option:not(.ss-no-match)"),
+    );
+  }
+  return dropdown._options;
+}
+
+function ssVisibleOptions(dropdown) {
+  return ssAllOptions(dropdown).filter((opt) => opt.style.display !== "none");
 }
 
 function ssActiveIndex(dropdown) {
@@ -939,9 +953,9 @@ function ssActiveIndex(dropdown) {
 }
 
 function ssHighlight(dropdown, index) {
+  ssAllOptions(dropdown).forEach((opt) => opt.classList.remove("ss-active"));
   const opts = ssVisibleOptions(dropdown);
   if (!opts.length) return;
-  opts.forEach((opt) => opt.classList.remove("ss-active"));
   const clamped = ((index % opts.length) + opts.length) % opts.length;
   const opt = opts[clamped];
   opt.classList.add("ss-active");
@@ -996,7 +1010,14 @@ function ssPositionDropdown(btn, dropdown) {
   const rect = btn.getBoundingClientRect();
   const viewportWidth = document.documentElement.clientWidth;
   const viewportHeight = document.documentElement.clientHeight;
-  const width = Math.min(Math.max(rect.width, 220), viewportWidth - margin * 2);
+  // Keep compact triggers in table cells, but let the open menu grow to fit
+  // complete option text (notably proxy host/port) when the viewport allows.
+  const borderWidth = Math.max(0, dropdown.offsetWidth - dropdown.clientWidth);
+  const contentWidth = Math.ceil((dropdown.scrollWidth || 0) + borderWidth);
+  const width = Math.min(
+    Math.max(rect.width, contentWidth, 220),
+    viewportWidth - margin * 2,
+  );
   const left = Math.min(
     Math.max(rect.left, margin),
     viewportWidth - width - margin,
@@ -1021,6 +1042,7 @@ function ssPositionDropdown(btn, dropdown) {
 function ssToggle(btn) {
   if (!btn || btn.disabled) return;
   const wrapper = btn.closest(".ss-wrapper");
+  if (!wrapper) return;
   if (wrapper.classList.contains("ss-open")) {
     ssClose();
     return;
@@ -1032,11 +1054,17 @@ function ssToggle(btn) {
   const dropdown = document.createElement("div");
   dropdown.className = "ss-dropdown";
 
+  const searchPlaceholder =
+    sel.dataset.searchPlaceholder || "搜索...";
   let html =
     '<div class="ss-search">' +
     ICONS.search +
-    '<input type="text" placeholder="搜索..." oninput="ssFilter(this)"></div>';
-  html += '<div class="ss-options">';
+    '<input type="search" placeholder="' +
+    escAttr(searchPlaceholder) +
+    '" aria-label="' +
+    escAttr(searchPlaceholder) +
+    '" oninput="ssFilter(this)"></div>';
+  html += '<div class="ss-options" role="listbox">';
   for (let i = 0; i < sel.options.length; i++) {
     const opt = sel.options[i];
     const tooltip = opt.title ? ' title="' + escAttr(opt.title) + '"' : "";
@@ -1047,6 +1075,9 @@ function ssToggle(btn) {
       escAttr(opt.value) +
       '"' +
       tooltip +
+      ' role="option" aria-selected="' +
+      String(opt.selected) +
+      '"' +
       ' onclick="ssSelect(this)">' +
       esc(opt.textContent) +
       "</div>";
@@ -1056,8 +1087,10 @@ function ssToggle(btn) {
 
   dropdown._select = sel;
   dropdown._wrapper = wrapper;
+  dropdown._options = Array.from(dropdown.querySelectorAll(".ss-option"));
   document.body.appendChild(dropdown);
   wrapper.classList.add("ss-open");
+  btn.setAttribute("aria-expanded", "true");
   ssActiveWrapper = wrapper;
   ssActiveDropdown = dropdown;
   ssPositionDropdown(btn, dropdown);
@@ -1068,6 +1101,7 @@ function ssToggle(btn) {
   window.addEventListener("resize", ssOnViewportChange);
 
   setTimeout(() => {
+    if (ssActiveDropdown !== dropdown || !dropdown.isConnected) return;
     const searchInput = dropdown.querySelector(".ss-search input");
     if (searchInput) searchInput.focus();
     const opts = ssVisibleOptions(dropdown);
@@ -1083,25 +1117,30 @@ function ssSelect(option) {
   if (!wrapper || !sel) return;
   const value = option.dataset.value;
   sel.value = value;
-
-  const label = wrapper.querySelector(".ss-label");
-  if (label) label.textContent = option.textContent;
-  const trigger = wrapper.querySelector(".ss-trigger");
-  if (trigger) trigger.title = option.title || "";
+  ssSyncLabel(sel);
 
   ssClose();
-
-  if (sel.onchange) sel.onchange.call(sel);
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function ssFilter(input) {
-  const filter = input.value.toLowerCase();
+  if (ssFilterFrame) cancelAnimationFrame(ssFilterFrame);
+  ssFilterFrame = requestAnimationFrame(() => {
+    ssFilterFrame = 0;
+    ssApplyFilter(input);
+  });
+}
+
+function ssApplyFilter(input) {
+  if (!input || !input.isConnected) return;
+  const filter = input.value.toLocaleLowerCase();
   const dropdown = input.closest(".ss-dropdown");
   if (!dropdown) return;
   let visibleCount = 0;
-  dropdown.querySelectorAll(".ss-option").forEach((opt) => {
-    if (opt.classList.contains("ss-no-match")) return;
-    const text = opt.textContent.toLowerCase();
+  ssAllOptions(dropdown).forEach((opt) => {
+    const text =
+      opt._searchText ||
+      (opt._searchText = opt.textContent.toLocaleLowerCase());
     const visible = text.includes(filter);
     opt.style.display = visible ? "" : "none";
     if (visible) visibleCount++;
@@ -1137,7 +1176,9 @@ function ssSyncLabel(sel) {
   const label = wrapper.querySelector(".ss-label");
   if (!label) return;
   const selectedOpt = sel.options[sel.selectedIndex];
-  label.textContent = selectedOpt ? selectedOpt.textContent : "";
+  label.textContent = selectedOpt
+    ? selectedOpt.dataset.displayLabel || selectedOpt.textContent
+    : "";
   const trigger = wrapper.querySelector(".ss-trigger");
   if (trigger) trigger.title = selectedOpt ? selectedOpt.title : "";
 }
@@ -1162,6 +1203,8 @@ function ssEnhanceSelect(sel) {
   const trigger = document.createElement("button");
   trigger.type = "button";
   trigger.className = "ss-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
   trigger.innerHTML =
     '<span class="ss-label"></span><svg class="ss-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
   trigger.onclick = function () {
@@ -1176,8 +1219,17 @@ function searchableSelectHtml(field, options, selected, attrs) {
   const selOpt = options.find(function (o) {
     return o.value === selected;
   });
-  const label = selOpt ? selOpt.label : options[0] ? options[0].label : "";
-  const selectedTooltip = selOpt && selOpt.tooltip ? selOpt.tooltip : "";
+  const label = selOpt
+    ? selOpt.displayLabel || selOpt.label
+    : options[0]
+      ? options[0].displayLabel || options[0].label
+      : "";
+  const selectedTooltip = selOpt
+    ? selOpt.tooltip ||
+      (selOpt.displayLabel && selOpt.displayLabel !== selOpt.label
+        ? selOpt.label
+        : "")
+    : "";
   let h = '<div class="ss-wrapper">';
   h +=
     '<select data-field="' +
@@ -1187,11 +1239,17 @@ function searchableSelectHtml(field, options, selected, attrs) {
     ">";
   for (const opt of options) {
     const tooltip = opt.tooltip ? ' title="' + escAttr(opt.tooltip) + '"' : "";
+    const displayLabel = opt.displayLabel || opt.label;
+    const displayLabelAttr =
+      displayLabel !== opt.label
+        ? ' data-display-label="' + escAttr(displayLabel) + '"'
+        : "";
     h +=
       '<option value="' +
       escAttr(opt.value) +
       '"' +
       tooltip +
+      displayLabelAttr +
       (opt.value === selected ? " selected" : "") +
       ">" +
       esc(opt.label) +
@@ -1199,7 +1257,7 @@ function searchableSelectHtml(field, options, selected, attrs) {
   }
   h += "</select>";
   h +=
-    '<button type="button" class="ss-trigger"' +
+    '<button type="button" class="ss-trigger" aria-haspopup="listbox" aria-expanded="false"' +
     (selectedTooltip ? ' title="' + escAttr(selectedTooltip) + '"' : "") +
     ' onclick="ssToggle(this)">';
   h += '<span class="ss-label">' + esc(label) + "</span>";
@@ -1254,15 +1312,24 @@ function proxySelectHtml(selected) {
     const addr = String(proxy?.addr || "").trim();
     if (!addr || seen.has(addr)) return;
     seen.add(addr);
+    const name = String(proxy?.name || "").trim();
+    const fullLabel = name ? name + " (" + addr + ")" : addr;
     options.push({
       value: addr,
-      label: proxy.name ? proxy.name + " (" + addr + ")" : addr,
+      label: fullLabel,
+      displayLabel: name || addr,
+      tooltip: fullLabel,
     });
   });
   if (value && !seen.has(value)) {
     options.push({ value: value, label: value + "（配置中不存在）" });
   }
-  return searchableSelectHtml("proxy", options, value);
+  return searchableSelectHtml(
+    "proxy",
+    options,
+    value,
+    'data-search-placeholder="搜索代理名称或地址/端口"',
+  );
 }
 
 function upstreamSearchModels(name, row) {
@@ -1304,7 +1371,21 @@ function renderUpstreamModelFilter() {
   ssSyncLabel(select);
 }
 
+let upstreamFilterFrame = 0;
+
+function scheduleFilterUpstreamRows() {
+  if (upstreamFilterFrame) cancelAnimationFrame(upstreamFilterFrame);
+  upstreamFilterFrame = requestAnimationFrame(() => {
+    upstreamFilterFrame = 0;
+    filterUpstreamRows();
+  });
+}
+
 function filterUpstreamRows() {
+  if (upstreamFilterFrame) {
+    cancelAnimationFrame(upstreamFilterFrame);
+    upstreamFilterFrame = 0;
+  }
   const tbody = document.querySelector("#upstreamTable tbody");
   if (!tbody) return;
   const keywordInput = document.getElementById("upstreamKeywordFilter");
@@ -1321,24 +1402,30 @@ function filterUpstreamRows() {
     const name = String(
       row.querySelector('[data-field="name"]')?.value || "",
     ).trim();
-    const values = [name];
-    row.querySelectorAll("input, select, [data-value]").forEach((field) => {
-      if (field instanceof HTMLSelectElement) {
-        values.push(
-          field.value,
-          field.options[field.selectedIndex]?.textContent || "",
-        );
-      } else if (field.dataset && field.dataset.value !== undefined) {
-        values.push(field.dataset.value);
-      } else {
-        values.push(field.value || "");
-      }
-    });
-    const keywordMatched =
-      !keyword || values.join(" ").toLocaleLowerCase().includes(keyword);
+    let keywordMatched = true;
+    if (keyword) {
+      const values = [name];
+      row.querySelectorAll("input, select, [data-value]").forEach((field) => {
+        if (field instanceof HTMLSelectElement) {
+          values.push(
+            field.value,
+            field.options[field.selectedIndex]?.textContent || "",
+          );
+        } else if (field.dataset && field.dataset.value !== undefined) {
+          values.push(field.dataset.value);
+        } else {
+          values.push(field.value || "");
+        }
+      });
+      keywordMatched = values
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(keyword);
+    }
     const modelMatched =
       !model || upstreamSearchModels(name, row).includes(model);
-    row.hidden = !(keywordMatched && modelMatched);
+    const hidden = !(keywordMatched && modelMatched);
+    if (row.hidden !== hidden) row.hidden = hidden;
     if (!row.hidden) visible++;
   });
 

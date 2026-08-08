@@ -84,7 +84,7 @@
 <div class="card-desc">配置上游端点、协议类型、模型白名单与独立代理</div>
 </div>
 <div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
-<label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="filterUpstreamRows()"></label>
+<label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="scheduleFilterUpstreamRows()"></label>
 <select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
 <button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)">同步模型</button>
 </div>

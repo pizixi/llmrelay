@@ -1870,7 +1870,7 @@ select.m-select {
 #upstreamTable .col-key    { width: 10%; }
 #upstreamTable .col-type   { width: 9%; }
 #upstreamTable .col-bridge { width: 9%; }
-#upstreamTable .col-proxy  { width: 14%; }
+#upstreamTable .col-proxy  { width: auto; }
 #upstreamTable .col-models { width: 14%; }
 #upstreamTable .col-action { width: 11%; }
 
