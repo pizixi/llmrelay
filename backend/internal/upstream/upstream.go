@@ -56,6 +56,11 @@ func GetUpstreamModelsEndpoint(upstream *UpstreamConfig) string {
 	for _, suffix := range []string{"/chat/completions", "/messages", "/responses"} {
 		base = strings.TrimSuffix(base, suffix)
 	}
+	// 管理员有时会直接填写浏览器中验证过的完整模型目录地址。
+	// 这种地址已经是最终端点，不应再追加一次 /models。
+	if strings.HasSuffix(base, "/models") {
+		return base
+	}
 	if upstream.APIType == UpstreamAnthropic && !strings.HasSuffix(base, "/v1") {
 		return base + "/v1/models"
 	}

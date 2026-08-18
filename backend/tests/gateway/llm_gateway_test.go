@@ -124,16 +124,22 @@ func TestGetUpstreamEndpoint(t *testing.T) {
 	}
 }
 
-func TestGetAnthropicModelsEndpointAddsAPIVersion(t *testing.T) {
-	tests := map[string]string{
-		"https://example.test":             "https://example.test/v1/models",
-		"https://example.test/v1":          "https://example.test/v1/models",
-		"https://example.test/v1/messages": "https://example.test/v1/models",
+func TestGetModelsEndpointNormalizesAPIAndCompleteURLs(t *testing.T) {
+	tests := []struct {
+		baseURL string
+		apiType UpstreamType
+		want    string
+	}{
+		{baseURL: "https://example.test", apiType: UpstreamAnthropic, want: "https://example.test/v1/models"},
+		{baseURL: "https://example.test/v1", apiType: UpstreamAnthropic, want: "https://example.test/v1/models"},
+		{baseURL: "https://example.test/v1/messages", apiType: UpstreamAnthropic, want: "https://example.test/v1/models"},
+		{baseURL: "https://example.test/v1/models", apiType: UpstreamOpenAI, want: "https://example.test/v1/models"},
+		{baseURL: "https://example.test/models/", apiType: UpstreamOpenAI, want: "https://example.test/models"},
 	}
-	for baseURL, want := range tests {
-		upstream := &UpstreamConfig{BaseURL: baseURL, APIType: UpstreamAnthropic}
-		if got := getUpstreamModelsEndpoint(upstream); got != want {
-			t.Fatalf("getUpstreamModelsEndpoint(%q) = %q, want %q", baseURL, got, want)
+	for _, test := range tests {
+		upstream := &UpstreamConfig{BaseURL: test.baseURL, APIType: test.apiType}
+		if got := getUpstreamModelsEndpoint(upstream); got != test.want {
+			t.Fatalf("getUpstreamModelsEndpoint(%q) = %q, want %q", test.baseURL, got, test.want)
 		}
 	}
 }
@@ -909,15 +915,16 @@ func TestNonOpenAIModelSyncFallsBackToOpenAIV1(t *testing.T) {
 	}
 }
 
-func TestModelSyncFallbackOnlyAppliesToNonOpenAIBaseWithoutV1(t *testing.T) {
+func TestModelSyncFallbackAppliesToRootURLsWithoutDuplicatingV1(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		apiType UpstreamType
 		baseV1  bool
+		want    int
 	}{
-		{name: "openai root", apiType: UpstreamOpenAI},
-		{name: "default openai root"},
-		{name: "anthropic v1", apiType: UpstreamAnthropic, baseV1: true},
+		{name: "openai root", apiType: UpstreamOpenAI, want: 2},
+		{name: "default openai root", want: 2},
+		{name: "anthropic v1", apiType: UpstreamAnthropic, baseV1: true, want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests := 0
@@ -934,8 +941,8 @@ func TestModelSyncFallbackOnlyAppliesToNonOpenAIBaseWithoutV1(t *testing.T) {
 			if err == nil {
 				t.Fatal("fetch models unexpectedly succeeded")
 			}
-			if requests != 1 {
-				t.Fatalf("requests=%d, want 1", requests)
+			if requests != tc.want {
+				t.Fatalf("requests=%d, want %d", requests, tc.want)
 			}
 		})
 	}

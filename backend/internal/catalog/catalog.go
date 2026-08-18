@@ -2,6 +2,7 @@
 package catalog
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,17 +88,96 @@ func FetchModelsFromUpstream(name string, cfg *UpstreamConfig, useCustomModels b
 }
 
 func OpenAIModelSyncFallback(cfg *UpstreamConfig) (*UpstreamConfig, bool) {
-	if cfg == nil || cfg.APIType == "" || cfg.APIType == UpstreamOpenAI {
+	if cfg == nil {
 		return nil, false
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if baseURL == "" || strings.HasSuffix(baseURL, "/v1") {
+	if baseURL == "" {
+		return nil, false
+	}
+	// Derive the API base even when the configured value is a complete request
+	// endpoint. This also lets an OpenAI-compatible root URL try the very common
+	// /v1/models location after /models fails.
+	for _, suffix := range []string{"/chat/completions", "/messages", "/responses", "/models"} {
+		baseURL = strings.TrimSuffix(baseURL, suffix)
+	}
+	if strings.HasSuffix(baseURL, "/v1") {
 		return nil, false
 	}
 	fallback := CloneUpstreamConfig(cfg)
 	fallback.BaseURL = baseURL + "/v1"
 	fallback.APIType = UpstreamOpenAI
+	if GetUpstreamModelsEndpoint(fallback) == GetUpstreamModelsEndpoint(cfg) {
+		return nil, false
+	}
 	return fallback, true
+}
+
+type upstreamModelEntry struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (entry *upstreamModelEntry) UnmarshalJSON(data []byte) error {
+	var id string
+	if err := json.Unmarshal(data, &id); err == nil {
+		entry.ID = id
+		return nil
+	}
+	type modelEntry upstreamModelEntry
+	var value modelEntry
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*entry = upstreamModelEntry(value)
+	return nil
+}
+
+func decodeUpstreamModelIDs(body []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(body)
+	trimmed = bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte{0xef, 0xbb, 0xbf}))
+	var entries []upstreamModelEntry
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &entries); err != nil {
+			return nil, err
+		}
+	} else {
+		var envelope struct {
+			Data   json.RawMessage `json:"data"`
+			Models json.RawMessage `json:"models"`
+		}
+		if err := json.Unmarshal(trimmed, &envelope); err != nil {
+			return nil, err
+		}
+		raw := envelope.Data
+		if len(raw) == 0 {
+			raw = envelope.Models
+		}
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("models response does not contain a data or models array")
+		}
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, err
+		}
+	}
+
+	ids := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			id = strings.TrimSpace(entry.Name)
+		}
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func FetchModelsFromUpstreamOnce(name string, cfg *UpstreamConfig) ([]ModelInfo, error) {
@@ -116,6 +196,7 @@ func FetchModelsFromUpstreamOnce(name string, cfg *UpstreamConfig) ([]ModelInfo,
 		if err != nil {
 			return nil, err
 		}
+		req.Header.Set("Accept", "application/json")
 		if cfg.APIType == UpstreamAnthropic {
 			req.Header.Set("anthropic-version", "2023-06-01")
 			req.Header.Set("anthropic-beta", "prompt-caching-2025-01-31")
@@ -134,18 +215,14 @@ func FetchModelsFromUpstreamOnce(name string, cfg *UpstreamConfig) ([]ModelInfo,
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			var result struct {
-				Data []struct {
-					ID string `json:"id"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(body, &result); err != nil {
+			ids, err := decodeUpstreamModelIDs(body)
+			if err != nil {
 				return nil, err
 			}
-			var models []ModelInfo
+			models := make([]ModelInfo, 0, len(ids))
 			now := time.Now().Unix()
-			for _, m := range result.Data {
-				models = append(models, ModelInfo{ID: m.ID, Object: "model", Created: now, OwnedBy: ownedBy})
+			for _, id := range ids {
+				models = append(models, ModelInfo{ID: id, Object: "model", Created: now, OwnedBy: ownedBy})
 			}
 			return models, nil
 		}
