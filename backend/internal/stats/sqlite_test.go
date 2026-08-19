@@ -74,6 +74,57 @@ func TestSQLiteUsageRecordsAndDimensions(t *testing.T) {
 	}
 }
 
+func TestDeleteUsageRecordUpdatesSummaries(t *testing.T) {
+	previousPath := Path()
+	SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))
+	t.Cleanup(func() { SetPath(previousPath) })
+	LoadTokenStats()
+
+	RecordUsage("chat", "primary", "gpt-primary", 11, 7, 18)
+	RecordUsage("responses", "secondary", "gpt-secondary", 5, 3, 8)
+
+	page, err := ListUsageRecords(UsageQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("list usage: %v", err)
+	}
+	if page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("usage records = %#v, want two records", page)
+	}
+	var deletedID int64
+	for _, item := range page.Items {
+		if item.UpstreamName == "primary" {
+			deletedID = item.ID
+			break
+		}
+	}
+	if deletedID == 0 {
+		t.Fatalf("primary usage record not found: %#v", page.Items)
+	}
+
+	deleted, err := DeleteUsageRecord(deletedID)
+	if err != nil || !deleted {
+		t.Fatalf("delete usage record: deleted=%v err=%v", deleted, err)
+	}
+	deleted, err = DeleteUsageRecord(deletedID)
+	if err != nil || deleted {
+		t.Fatalf("delete missing usage record: deleted=%v err=%v", deleted, err)
+	}
+
+	after, err := ListUsageRecords(UsageQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("list usage after delete: %v", err)
+	}
+	if after.Total != 1 || len(after.Items) != 1 || after.Items[0].UpstreamName != "secondary" {
+		t.Fatalf("unexpected usage page after delete: %#v", after)
+	}
+	if after.Summary.RequestCount != 1 || after.Summary.TotalTokens != 8 {
+		t.Fatalf("unexpected usage summary after delete: %#v", after.Summary)
+	}
+	if snapshot := Snapshot(); snapshot.TotalRequests != 1 || snapshot.Models["responses"].TotalTokens != 8 {
+		t.Fatalf("unexpected snapshot after delete: %#v", snapshot)
+	}
+}
+
 func TestTrackedRequestPersistsFirstByteAndDuration(t *testing.T) {
 	previousPath := Path()
 	SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))

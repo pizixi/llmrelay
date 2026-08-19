@@ -6654,11 +6654,11 @@ header {
 }
 
 .usage-table {
-  min-width: 1120px;
+  min-width: 1180px;
 }
 
-.usage-table th:nth-last-child(-n+5),
-.usage-table td:nth-last-child(-n+5),
+.usage-table th.num-cell,
+.usage-table td.num-cell,
 .stats-daily-table th:not(:first-child),
 .stats-daily-table td:not(:first-child) {
   text-align: right;
@@ -6693,6 +6693,13 @@ header {
   font-family: var(--mono);
   font-size: 13.5px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-table .usage-action {
+  width: 62px;
+  min-width: 62px;
+  text-align: center;
   white-space: nowrap;
 }
 

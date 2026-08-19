@@ -199,6 +199,7 @@ let aliasData = {},
 let usagePageOffset = 0;
 const USAGE_PAGE_SIZE = 50;
 let usageLoadSequence = 0;
+let usageRecords = [];
 
 /* ===== 登录态处理 ===== */
 function redirectToLogin() {
@@ -6252,13 +6253,19 @@ async function loadUsageRecords(offset) {
     if (loadSequence !== usageLoadSequence) return;
     usageTotal = page.total || 0;
     const items = page.items || [];
+    usageRecords = items;
+    if (!items.length && usageTotal > 0 && usagePageOffset >= usageTotal) {
+      const lastOffset = Math.floor((usageTotal - 1) / USAGE_PAGE_SIZE) * USAGE_PAGE_SIZE;
+      loadUsageRecords(lastOffset);
+      return;
+    }
     if (!items.length) {
-      tbody.innerHTML = emptyRowHtml(10, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
+      tbody.innerHTML = emptyRowHtml(11, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
     } else {
       tbody.innerHTML = items
         .map((item) => {
           const aggregate = (item.request_count || 1) > 1 ? '<span class="usage-aggregate">历史聚合 × ' + fmt(item.request_count) + "</span>" : "";
-          return "<tr><td class=\"usage-time\">" + esc(formatUsageTime(item.called_at)) + aggregate + "</td><td class=\"usage-key-name\">" + esc(item.api_key_name || "未记录") + "</td><td>" + esc(item.request_model || "-") + "</td><td>" + esc(item.upstream_name || "-") + "</td><td>" + esc(item.upstream_model || "-") + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.first_byte_ms)) + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.duration_ms)) + '</td><td class="num-cell">' + fmt(item.prompt_tokens) + '</td><td class="num-cell">' + fmt(item.completion_tokens) + '</td><td class="num-cell usage-total">' + fmt(item.total_tokens) + "</td></tr>";
+          return "<tr><td class=\"usage-time\">" + esc(formatUsageTime(item.called_at)) + aggregate + "</td><td class=\"usage-key-name\">" + esc(item.api_key_name || "未记录") + "</td><td>" + esc(item.request_model || "-") + "</td><td>" + esc(item.upstream_name || "-") + "</td><td>" + esc(item.upstream_model || "-") + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.first_byte_ms)) + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.duration_ms)) + '</td><td class="num-cell">' + fmt(item.prompt_tokens) + '</td><td class="num-cell">' + fmt(item.completion_tokens) + '</td><td class="num-cell usage-total">' + fmt(item.total_tokens) + '</td><td class="usage-action"><button class="btn-icon btn-icon-danger" type="button" title="删除使用记录" aria-label="删除使用记录" onclick="deleteUsageRecord(' + Number(item.id) + ',this)">' + ICONS.trash + "</button></td></tr>";
         })
         .join("");
     }
@@ -6269,6 +6276,11 @@ async function loadUsageRecords(offset) {
       ]),
     ).filter(Boolean);
     setUsageFilterOptions("usageAPIKeyFilter", keyNames, "全部密钥");
+    const keyFilter = document.getElementById("usageAPIKeyFilter");
+    if (apiKeyName && keyFilter && keyFilter.value !== apiKeyName) {
+      loadUsageRecords(0);
+      return;
+    }
     const summary = page.summary || {};
     document.getElementById("usageSummaryRequests").textContent = fmt(summary.request_count);
     document.getElementById("usageSummaryPrompt").textContent = fmt(summary.prompt_tokens);
@@ -6281,12 +6293,45 @@ async function loadUsageRecords(offset) {
   } catch (e) {
     if (loadSequence !== usageLoadSequence) return;
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
-    tbody.innerHTML = emptyRowHtml(10, ICONS.alert, "加载失败", e.message || "请稍后重试");
+    usageRecords = [];
+    tbody.innerHTML = emptyRowHtml(11, ICONS.alert, "加载失败", e.message || "请稍后重试");
     document.getElementById("usageSummaryRequests").textContent = "0";
     document.getElementById("usageSummaryPrompt").textContent = "0";
     document.getElementById("usageSummaryCompletion").textContent = "0";
     document.getElementById("usageSummaryTotal").textContent = "0";
     updateUsagePagination();
+  }
+}
+
+async function deleteUsageRecord(id, trigger) {
+  const item = usageRecords.find((record) => Number(record.id) === Number(id));
+  if (!item) {
+    showToast("使用记录已更新，请刷新后重试", "error");
+    return;
+  }
+  const confirmed = await showDangerConfirm(trigger, {
+    title: "确认删除使用记录？",
+    subject: (item.request_model || "未命名模型") + " · " + formatUsageTime(item.called_at),
+    description: "该次调用记录及其 Token 用量将从统计中移除。",
+    note: "删除操作立即生效且不可撤销。",
+    confirmLabel: "确认删除",
+  });
+  if (!confirmed) return;
+  if (trigger) trigger.disabled = true;
+  try {
+    await apiJSON("/api/usage?id=" + encodeURIComponent(id), { method: "DELETE" });
+    const remainingTotal = Math.max(0, usageTotal - 1);
+    const nextOffset =
+      usagePageOffset > 0 && usagePageOffset >= remainingTotal
+        ? Math.max(0, usagePageOffset - USAGE_PAGE_SIZE)
+        : usagePageOffset;
+    await loadStats();
+    await loadUsageRecords(nextOffset);
+    showToast("使用记录已删除", "success");
+  } catch (e) {
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    if (trigger) trigger.disabled = false;
+    showToast("删除失败: " + e.message, "error");
   }
 }
 

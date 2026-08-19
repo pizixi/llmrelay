@@ -422,6 +422,28 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 	return page, rows.Err()
 }
 
+// DeleteUsageRecord removes one persisted usage entry. Aggregate statistics
+// are calculated from usage_records, so snapshots and summaries immediately
+// reflect the deletion without a separate reconciliation step.
+func DeleteUsageRecord(id int64) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+	db, err := sqliteDB()
+	if err != nil {
+		return false, err
+	}
+	result, err := db.Exec("DELETE FROM usage_records WHERE id = ?", id)
+	if err != nil {
+		return false, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return deleted > 0, nil
+}
+
 func importLegacyStats(db *sql.DB, databasePath string) error {
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&count); err != nil || count > 0 {

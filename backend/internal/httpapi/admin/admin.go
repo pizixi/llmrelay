@@ -599,25 +599,42 @@ func AdminStatsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func AdminUsageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		page, err := stats.ListUsageRecords(stats.UsageQuery{
+			Limit:      limit,
+			Offset:     offset,
+			Model:      r.URL.Query().Get("model"),
+			Upstream:   r.URL.Query().Get("upstream"),
+			APIKeyName: firstQueryValue(r, "key_name", "api_key_name"),
+			Date:       r.URL.Query().Get("date"),
+		})
+		if err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeAdminJSON(w, http.StatusOK, page)
+	case http.MethodDelete:
+		id, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("id")), 10, 64)
+		if err != nil || id <= 0 {
+			writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "usage record id is required"})
+			return
+		}
+		deleted, err := stats.DeleteUsageRecord(id)
+		if err != nil {
+			writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if !deleted {
+			writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "usage record not found"})
+			return
+		}
+		writeAdminJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
+	default:
+		writeAdminJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	page, err := stats.ListUsageRecords(stats.UsageQuery{
-		Limit:      limit,
-		Offset:     offset,
-		Model:      r.URL.Query().Get("model"),
-		Upstream:   r.URL.Query().Get("upstream"),
-		APIKeyName: firstQueryValue(r, "key_name", "api_key_name"),
-		Date:       r.URL.Query().Get("date"),
-	})
-	if err != nil {
-		writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeAdminJSON(w, http.StatusOK, page)
 }
 
 func firstQueryValue(r *http.Request, names ...string) string {
