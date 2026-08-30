@@ -1,7 +1,9 @@
 package config
 
 import (
+	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,7 +139,6 @@ func ValidateConfig(cfg *AppConfig) error {
 			continue
 		}
 		seenTargets := make(map[string]struct{}, len(alias.Targets))
-		hasRoutableTarget := false
 		for index, target := range alias.Targets {
 			upstreamName := strings.TrimSpace(target.Upstream)
 			targetModel := strings.TrimSpace(target.TargetModel)
@@ -150,17 +151,11 @@ func ValidateConfig(cfg *AppConfig) error {
 			if target.Weight < 0 || target.Weight > 1000000 {
 				return fmt.Errorf("model alias %q target %d weight must be between 0 and 1000000", model, index+1)
 			}
-			if target.Weight > 0 {
-				hasRoutableTarget = true
-			}
 			key := upstreamName + "\x00" + targetModel
 			if _, exists := seenTargets[key]; exists {
 				return fmt.Errorf("model alias %q has duplicate target %q on upstream %q", model, targetModel, upstreamName)
 			}
 			seenTargets[key] = struct{}{}
-		}
-		if !hasRoutableTarget {
-			return fmt.Errorf("model alias %q must have at least one target with a weight greater than 0", model)
 		}
 	}
 	if err := ValidateWebSearchConfig(cfg.WebSearch); err != nil {
@@ -346,8 +341,11 @@ func SaveConfig(path string, cfg AppConfig) error {
 }
 
 func ApplyConfig(cfg AppConfig) {
+	// Work out which requested models can still be using the previous route
+	// before replacing the runtime tables.  The cancellation is performed after
+	// the swap so every request admitted afterwards observes the new mapping.
 	configMu.Lock()
-	defer configMu.Unlock()
+	changedModels, cancelAll := changedRoutingModelsLocked(cfg)
 	if cfg.ModelAlias != nil {
 		modelAlias = make(map[string]ModelAlias, len(cfg.ModelAlias))
 		for name, alias := range cfg.ModelAlias {
@@ -381,7 +379,219 @@ func ApplyConfig(cfg AppConfig) {
 		modelRouteCounters.Delete(key)
 		return true
 	})
+	var requestCancels []context.CancelFunc
+	if len(changedModels) > 0 || cancelAll {
+		// Detach old requests before releasing configMu. Requests that register
+		// after this point will block on configMu while resolving and therefore
+		// observe the new routing table.
+		requestCancels = takeModelRequestContexts(changedModels, cancelAll)
+	}
 	ApplyRuntimeDependencies(cfg)
+	configMu.Unlock()
+
+	for _, cancel := range requestCancels {
+		cancel()
+	}
+}
+
+// changedRoutingModelsLocked computes the requested model names whose route
+// may have changed between the currently active configuration and cfg.  The
+// caller must hold configMu for writing while this helper snapshots the active
+// tables and computes the diff.
+func changedRoutingModelsLocked(cfg AppConfig) (map[string]struct{}, bool) {
+	oldAliases := make(map[string]ModelAlias, len(modelAlias))
+	for name, alias := range modelAlias {
+		oldAliases[name] = CloneModelAlias(alias)
+	}
+	oldUpstreams := make(map[string]*UpstreamConfig, len(upstreamCfgs))
+	for name, upstream := range upstreamCfgs {
+		oldUpstreams[name] = CloneUpstreamConfig(upstream)
+	}
+	oldOrder := append([]string(nil), upstreamOrder...)
+	oldDefaultName := defaultUpstreamName
+	oldLegacyDefault := legacyDefaultRoute
+
+	changed := make(map[string]struct{})
+	if cfg.ModelAlias != nil {
+		for name := range oldAliases {
+			if next, exists := cfg.ModelAlias[name]; !exists || !modelAliasesEqual(oldAliases[name], next) {
+				changed[strings.TrimSpace(name)] = struct{}{}
+			}
+		}
+		for name, next := range cfg.ModelAlias {
+			if previous, exists := oldAliases[name]; !exists || !modelAliasesEqual(previous, next) {
+				changed[strings.TrimSpace(name)] = struct{}{}
+			}
+		}
+	}
+
+	changedUpstreams := make(map[string]struct{})
+	for name, previous := range oldUpstreams {
+		next, exists := cfg.Upstreams[name]
+		if !exists || !upstreamConfigsEqual(previous, next) {
+			changedUpstreams[name] = struct{}{}
+		}
+	}
+	for name, next := range cfg.Upstreams {
+		if previous, exists := oldUpstreams[name]; !exists || !upstreamConfigsEqual(previous, next) {
+			changedUpstreams[name] = struct{}{}
+		}
+	}
+
+	// A changed upstream can affect aliases explicitly bound to it as well as
+	// direct model requests selected from its custom_models list.
+	for aliasName, alias := range oldAliases {
+		if aliasReferencesUpstreams(alias, changedUpstreams) {
+			changed[strings.TrimSpace(aliasName)] = struct{}{}
+		}
+	}
+	if cfg.ModelAlias != nil {
+		for aliasName, alias := range cfg.ModelAlias {
+			if aliasReferencesUpstreams(alias, changedUpstreams) {
+				changed[strings.TrimSpace(aliasName)] = struct{}{}
+			}
+		}
+	}
+	for upstreamName := range changedUpstreams {
+		addCustomModels(changed, oldUpstreams[upstreamName])
+		addCustomModels(changed, cfg.Upstreams[upstreamName])
+	}
+
+	orderChanged := !upstreamOrdersEqual(oldOrder, cfg.UpstreamOrder, oldUpstreams, cfg.Upstreams)
+	if orderChanged {
+		for _, upstream := range oldUpstreams {
+			addCustomModels(changed, upstream)
+		}
+		for _, upstream := range cfg.Upstreams {
+			addCustomModels(changed, upstream)
+		}
+	}
+	legacyChanged := oldLegacyDefault != cfg.LegacyDefaultUpstream ||
+		oldDefaultName != strings.TrimSpace(cfg.DefaultUpstream)
+	if legacyChanged {
+		for _, upstream := range oldUpstreams {
+			addCustomModels(changed, upstream)
+		}
+		for _, upstream := range cfg.Upstreams {
+			addCustomModels(changed, upstream)
+		}
+	}
+
+	// An unrestricted upstream (empty custom_models) can receive any direct
+	// model, so a change to it or to the candidate order cannot be represented
+	// by a finite key set.  Cancel all tracked requests in that case.
+	cancelAll := false
+	for upstreamName := range changedUpstreams {
+		if isUnrestrictedUpstream(oldUpstreams[upstreamName]) || isUnrestrictedUpstream(cfg.Upstreams[upstreamName]) {
+			cancelAll = true
+			break
+		}
+	}
+	if !cancelAll && orderChanged {
+		for _, upstream := range oldUpstreams {
+			if isUnrestrictedUpstream(upstream) {
+				cancelAll = true
+				break
+			}
+		}
+		if !cancelAll {
+			for _, upstream := range cfg.Upstreams {
+				if isUnrestrictedUpstream(upstream) {
+					cancelAll = true
+					break
+				}
+			}
+		}
+	}
+	if !cancelAll && legacyChanged && (oldLegacyDefault || cfg.LegacyDefaultUpstream) {
+		if isUnrestrictedUpstream(oldUpstreams[oldDefaultName]) ||
+			isUnrestrictedUpstream(cfg.Upstreams[strings.TrimSpace(cfg.DefaultUpstream)]) {
+			cancelAll = true
+		}
+	}
+	return changed, cancelAll
+}
+
+func aliasReferencesUpstreams(alias ModelAlias, names map[string]struct{}) bool {
+	if _, exists := names[strings.TrimSpace(alias.Upstream)]; exists && strings.TrimSpace(alias.Upstream) != "" {
+		return true
+	}
+	for _, target := range alias.Targets {
+		if _, exists := names[strings.TrimSpace(target.Upstream)]; exists && strings.TrimSpace(target.Upstream) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func addCustomModels(models map[string]struct{}, upstream *UpstreamConfig) {
+	if upstream == nil {
+		return
+	}
+	for _, model := range upstream.CustomModels {
+		if model = strings.TrimSpace(model); model != "" {
+			models[model] = struct{}{}
+		}
+	}
+}
+
+func isUnrestrictedUpstream(upstream *UpstreamConfig) bool {
+	return upstream != nil && len(upstream.CustomModels) == 0
+}
+
+// modelAliasesEqual compares routing semantics while treating nil and empty
+// optional fields as equivalent.  Runtime snapshots clone nil maps into empty
+// maps, so a raw reflect.DeepEqual would otherwise cancel unchanged requests
+// on every save.
+func modelAliasesEqual(left, right ModelAlias) bool {
+	if strings.TrimSpace(left.TargetModel) != strings.TrimSpace(right.TargetModel) ||
+		strings.TrimSpace(left.Upstream) != strings.TrimSpace(right.Upstream) ||
+		left.WithReasoning != right.WithReasoning || len(left.Targets) != len(right.Targets) {
+		return false
+	}
+	for index := range left.Targets {
+		lt, rt := left.Targets[index], right.Targets[index]
+		if strings.TrimSpace(lt.TargetModel) != strings.TrimSpace(rt.TargetModel) ||
+			strings.TrimSpace(lt.Upstream) != strings.TrimSpace(rt.Upstream) || lt.Weight != rt.Weight {
+			return false
+		}
+	}
+	if len(left.ReasoningEffortMap) != len(right.ReasoningEffortMap) {
+		return false
+	}
+	for key, value := range left.ReasoningEffortMap {
+		if rightValue, exists := right.ReasoningEffortMap[key]; !exists || value != rightValue {
+			return false
+		}
+	}
+	return true
+}
+
+func upstreamConfigsEqual(left, right *UpstreamConfig) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	leftCopy, rightCopy := *left, *right
+	if len(leftCopy.CustomModels) == 0 {
+		leftCopy.CustomModels = nil
+	}
+	if len(rightCopy.CustomModels) == 0 {
+		rightCopy.CustomModels = nil
+	}
+	if len(leftCopy.Capabilities) == 0 {
+		leftCopy.Capabilities = nil
+	}
+	if len(rightCopy.Capabilities) == 0 {
+		rightCopy.Capabilities = nil
+	}
+	return reflect.DeepEqual(leftCopy, rightCopy)
+}
+
+func upstreamOrdersEqual(left, right []string, leftUpstreams, rightUpstreams map[string]*UpstreamConfig) bool {
+	return reflect.DeepEqual(
+		NormalizeUpstreamOrder(left, leftUpstreams),
+		NormalizeUpstreamOrder(right, rightUpstreams),
+	)
 }
 
 // ResolveRequestModel 解析请求模型，并返回配置的路由表是否允许该请求。
@@ -398,6 +608,13 @@ func ResolveRequestModel(model string) (string, ModelAlias, string, *UpstreamCon
 			counterValue, _ := aliasTargetCounters.LoadOrStore(m, &atomic.Uint64{})
 			counter := counterValue.(*atomic.Uint64)
 			target := SelectWeightedAliasTarget(alias.Targets, counter.Add(1)-1)
+			if strings.TrimSpace(target.TargetModel) == "" || strings.TrimSpace(target.Upstream) == "" {
+				// A saved mapping whose targets all have weight 0 is intentionally
+				// inactive. Do not silently fall back to the first upstream; report
+				// it as unavailable until an operator enables a target again.
+				configMu.RUnlock()
+				return m, alias, "", nil, true, false
+			}
 			alias.TargetModel = target.TargetModel
 			alias.Upstream = target.Upstream
 		}

@@ -20,6 +20,9 @@ func TestUsageAccumulatorAcceptsJSONNumbersAndNumericStrings(t *testing.T) {
 		"prompt_tokens":     json.Number("12"),
 		"completion_tokens": "8",
 		"total_tokens":      "20",
+		"prompt_tokens_details": map[string]any{
+			"cached_tokens": json.Number("5"),
+		},
 	})
 	usage.Commit()
 
@@ -31,8 +34,28 @@ func TestUsageAccumulatorAcceptsJSONNumbersAndNumericStrings(t *testing.T) {
 		t.Fatalf("usage records = %#v, want one record", page)
 	}
 	item := page.Items[0]
-	if item.PromptTokens != 12 || item.CompletionTokens != 8 || item.TotalTokens != 20 {
-		t.Fatalf("usage values = %#v, want prompt=12 completion=8 total=20", item)
+	if item.PromptTokens != 12 || item.CachedTokens != 5 || item.CompletionTokens != 8 || item.TotalTokens != 20 {
+		t.Fatalf("usage values = %#v, want prompt=12 cached=5 completion=8 total=20", item)
+	}
+}
+
+func TestCachedTokensFromUsageSupportsProviderFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage map[string]any
+		want  float64
+	}{
+		{name: "anthropic", usage: map[string]any{"cache_read_input_tokens": 17}, want: 17},
+		{name: "chat details", usage: map[string]any{"prompt_tokens_details": map[string]any{"cached_tokens": "23"}}, want: 23},
+		{name: "responses details", usage: map[string]any{"input_tokens_details": map[string]any{"cached_tokens": json.Number("29")}}, want: 29},
+		{name: "compatible direct", usage: map[string]any{"cached_content_token_count": float64(31)}, want: 31},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := cachedTokensFromUsage(test.usage); got != test.want {
+				t.Fatalf("cachedTokensFromUsage() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -43,7 +66,7 @@ func TestSQLiteUsageRecordsAndDimensions(t *testing.T) {
 	LoadTokenStats()
 
 	first := NewRequestUsageAccumulator(UsageIdentity("chat", "primary", "gpt-test"))
-	first.ObserveMap(map[string]any{"prompt_tokens": float64(11), "completion_tokens": float64(7), "total_tokens": float64(18)})
+	first.ObserveMap(map[string]any{"prompt_tokens": float64(11), "completion_tokens": float64(7), "total_tokens": float64(18), "prompt_tokens_details": map[string]any{"cached_tokens": 4}})
 	first.Commit()
 	second := NewRequestUsageAccumulator("chat", "secondary", "gpt-test-2")
 	second.ObserveMap(map[string]any{"input_tokens": float64(5), "output_tokens": float64(3)})
@@ -52,6 +75,9 @@ func TestSQLiteUsageRecordsAndDimensions(t *testing.T) {
 	snapshot := Snapshot()
 	if snapshot.TotalRequests != 2 || snapshot.Models["chat"].TotalTokens != 26 {
 		t.Fatalf("unexpected model summary: %#v", snapshot)
+	}
+	if snapshot.Models["chat"].CachedTokens != 4 || snapshot.Upstreams["primary"].CachedTokens != 4 || snapshot.Days[0].CachedTokens != 4 {
+		t.Fatalf("unexpected cache summary: models=%#v upstreams=%#v days=%#v", snapshot.Models, snapshot.Upstreams, snapshot.Days)
 	}
 	if snapshot.Upstreams["primary"].TotalTokens != 18 || snapshot.DailyUpstreams["secondary"].TotalTokens != 8 {
 		t.Fatalf("unexpected upstream summary: %#v %#v", snapshot.Upstreams, snapshot.DailyUpstreams)

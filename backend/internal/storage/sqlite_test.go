@@ -59,4 +59,11 @@ func TestOpenAddsUsageTimingColumnsToExistingDatabase(t *testing.T) {
 	if apiKeyID != "" || apiKeyName != "" {
 		t.Fatalf("unexpected migrated api key defaults: id=%q name=%q", apiKeyID, apiKeyName)
 	}
+	var cachedTokens int64
+	if err := db.QueryRow("SELECT cached_tokens FROM usage_records LIMIT 1").Scan(&cachedTokens); err != nil {
+		t.Fatalf("query migrated cache token column: %v", err)
+	}
+	if cachedTokens != 0 {
+		t.Fatalf("unexpected migrated cache token default: %d", cachedTokens)
+	}
 }

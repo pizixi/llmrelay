@@ -23,7 +23,11 @@ func TestTrackedUsageCarriesAPIKeyAndFilteredSummary(t *testing.T) {
 
 	handler := auth.RequireAPIAuth(TrackRequest(func(w http.ResponseWriter, r *http.Request) {
 		usage := NewRequestUsageAccumulatorForContext(r.Context(), "chat", "primary", "gpt-test")
-		usage.ObserveMap(map[string]any{"input_tokens": 11, "output_tokens": 7})
+		usage.ObserveMap(map[string]any{
+			"input_tokens":         11,
+			"output_tokens":        7,
+			"input_tokens_details": map[string]any{"cached_tokens": 6},
+		})
 		usage.Commit()
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -62,7 +66,7 @@ func TestTrackedUsageCarriesAPIKeyAndFilteredSummary(t *testing.T) {
 	if item.APIKeyID != "key-prod" || item.APIKeyName != "生产环境（已更新）" {
 		t.Fatalf("api key identity = %#v", item)
 	}
-	if page.Summary.RequestCount != 1 || page.Summary.PromptTokens != 11 || page.Summary.CompletionTokens != 7 || page.Summary.TotalTokens != 18 {
+	if page.Summary.RequestCount != 1 || page.Summary.PromptTokens != 11 || page.Summary.CachedTokens != 6 || page.Summary.CompletionTokens != 7 || page.Summary.TotalTokens != 18 {
 		t.Fatalf("unexpected summary: %#v", page.Summary)
 	}
 }

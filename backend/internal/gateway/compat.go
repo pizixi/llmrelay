@@ -163,6 +163,17 @@ func resolveRequestModel(model string) (string, ModelAlias, string, *UpstreamCon
 	return routing.ResolveRequestModel(model)
 }
 
+// trackModelRequest attaches a cancellation context tied to the requested
+// model's current routing mapping.  Admin mapping updates cancel requests
+// still using an old mapping while subsequent requests resolve normally.
+func trackModelRequest(r *http.Request, model string) (*http.Request, func()) {
+	if r == nil {
+		return r, func() {}
+	}
+	ctx, release := config.TrackModelRequestContext(r.Context(), model)
+	return r.WithContext(ctx), release
+}
+
 func getReasoningEffortMapForAlias(alias ModelAlias) map[string]string {
 	return routing.ReasoningEffortMapForAlias(alias)
 }

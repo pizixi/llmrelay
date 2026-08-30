@@ -19,6 +19,7 @@ type usageSample struct {
 	apiKeyID         string
 	apiKeyName       string
 	promptTokens     int64
+	cachedTokens     int64
 	completionTokens int64
 	totalTokens      int64
 }
@@ -160,6 +161,7 @@ func recordUsageSample(sample usageSample, calledAt time.Time, firstByteMS, dura
 		sample.upstreamName,
 		sample.upstreamModel,
 		sample.promptTokens,
+		sample.cachedTokens,
 		sample.completionTokens,
 		sample.totalTokens,
 		calledAt,

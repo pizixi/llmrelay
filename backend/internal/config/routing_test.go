@@ -51,6 +51,30 @@ func TestResolveRequestModelMappingWinsOverAutomaticModelBalance(t *testing.T) {
 	}
 }
 
+func TestResolveRequestModelDoesNotFallbackForInactiveAlias(t *testing.T) {
+	previous := Snapshot()
+	t.Cleanup(func() { ApplyConfig(previous) })
+
+	ApplyConfig(AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"request-model", "target-a"}},
+			"backup":  {BaseURL: "https://backup.example/v1", CustomModels: []string{"request-model", "target-b"}},
+		},
+		UpstreamOrder: []string{"primary", "backup"},
+		ModelAlias: map[string]ModelAlias{
+			"request-model": {Targets: []ModelAliasTarget{
+				{Upstream: "primary", TargetModel: "target-a", Weight: 0},
+				{Upstream: "backup", TargetModel: "target-b", Weight: 0},
+			}},
+		},
+	})
+
+	model, alias, upstreamName, upstream, aliasMatched, matched := ResolveRequestModel("request-model")
+	if model != "request-model" || !aliasMatched || matched || upstreamName != "" || upstream != nil {
+		t.Fatalf("inactive alias route = model=%q alias=%#v upstream=%q config=%#v aliasMatched=%t matched=%t", model, alias, upstreamName, upstream, aliasMatched, matched)
+	}
+}
+
 func TestUpstreamProxyRoundTripsThroughSQLite(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "llmrelay.db")
 	want := AppConfig{

@@ -23,6 +23,7 @@ type BreakdownStats struct {
 	Date             string `json:"date,omitempty"`
 	RequestCount     int64  `json:"request_count"`
 	PromptTokens     int64  `json:"prompt_tokens"`
+	CachedTokens     int64  `json:"cached_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
 	TotalTokens      int64  `json:"total_tokens"`
 }
@@ -36,6 +37,7 @@ type UsageRecord struct {
 	APIKeyName       string `json:"api_key_name,omitempty"`
 	CalledAt         string `json:"called_at"`
 	PromptTokens     int64  `json:"prompt_tokens"`
+	CachedTokens     int64  `json:"cached_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
 	TotalTokens      int64  `json:"total_tokens"`
 	RequestCount     int64  `json:"request_count"`
@@ -46,6 +48,7 @@ type UsageRecord struct {
 type UsageSummary struct {
 	RequestCount     int64 `json:"request_count"`
 	PromptTokens     int64 `json:"prompt_tokens"`
+	CachedTokens     int64 `json:"cached_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	TotalTokens      int64 `json:"total_tokens"`
 }
@@ -164,7 +167,7 @@ func loadSQLiteStats(path string) error {
 	return nil
 }
 
-func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName string, promptTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64) bool {
+func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName string, promptTokens, cachedTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64) bool {
 	if !usingSQLite() {
 		return false
 	}
@@ -187,6 +190,9 @@ func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName 
 	}
 	apiKeyID = strings.TrimSpace(apiKeyID)
 	apiKeyName = strings.TrimSpace(apiKeyName)
+	promptTokens = max(promptTokens, 0)
+	cachedTokens = max(cachedTokens, 0)
+	completionTokens = max(completionTokens, 0)
 	if totalTokens < promptTokens+completionTokens {
 		totalTokens = promptTokens + completionTokens
 	}
@@ -196,8 +202,8 @@ func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName 
 	firstByteMS = max(firstByteMS, 0)
 	durationMS = max(durationMS, firstByteMS)
 	_, err = db.Exec(`INSERT INTO usage_records
-		(request_model, upstream_name, upstream_model, api_key_id, api_key_name, called_at, called_date, prompt_tokens, completion_tokens, total_tokens, first_byte_ms, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, model, upstreamName, upstreamModel, apiKeyID, apiKeyName, calledAt.UnixMilli(), calledAt.Format("2006-01-02"), promptTokens, completionTokens, totalTokens, firstByteMS, durationMS)
+		(request_model, upstream_name, upstream_model, api_key_id, api_key_name, called_at, called_date, prompt_tokens, cached_tokens, completion_tokens, total_tokens, first_byte_ms, duration_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, model, upstreamName, upstreamModel, apiKeyID, apiKeyName, calledAt.UnixMilli(), calledAt.Format("2006-01-02"), promptTokens, cachedTokens, completionTokens, totalTokens, firstByteMS, durationMS)
 	if err != nil {
 		log.Printf("写入 SQLite 用量失败: %v", err)
 	}
@@ -221,7 +227,7 @@ func resetSQLiteStats() bool {
 
 func aggregateQuery(db *sql.DB, where string, args ...any) map[string]*ModelStats {
 	query := `SELECT request_model, COALESCE(SUM(request_count), 0), COALESCE(SUM(prompt_tokens), 0),
-        COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+		COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
         FROM usage_records`
 	if where != "" {
 		query += " WHERE " + where
@@ -237,7 +243,7 @@ func aggregateQuery(db *sql.DB, where string, args ...any) map[string]*ModelStat
 	for rows.Next() {
 		var model string
 		var value ModelStats
-		if err := rows.Scan(&model, &value.RequestCount, &value.PromptTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
+		if err := rows.Scan(&model, &value.RequestCount, &value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
 			result[model] = &value
 		}
 	}
@@ -246,7 +252,7 @@ func aggregateQuery(db *sql.DB, where string, args ...any) map[string]*ModelStat
 
 func upstreamAggregateQuery(db *sql.DB, where string, args ...any) map[string]*ModelStats {
 	query := `SELECT upstream_name, COALESCE(SUM(request_count), 0), COALESCE(SUM(prompt_tokens), 0),
-        COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+		COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
         FROM usage_records`
 	if where != "" {
 		query += " WHERE " + where
@@ -262,7 +268,7 @@ func upstreamAggregateQuery(db *sql.DB, where string, args ...any) map[string]*M
 	for rows.Next() {
 		var name string
 		var value ModelStats
-		if err := rows.Scan(&name, &value.RequestCount, &value.PromptTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
+		if err := rows.Scan(&name, &value.RequestCount, &value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
 			result[name] = &value
 		}
 	}
@@ -279,7 +285,7 @@ func breakdownQuery(db *sql.DB, query string) []BreakdownStats {
 	result := []BreakdownStats{}
 	for rows.Next() {
 		var value BreakdownStats
-		if err := rows.Scan(&value.Model, &value.Upstream, &value.Date, &value.RequestCount, &value.PromptTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
+		if err := rows.Scan(&value.Model, &value.Upstream, &value.Date, &value.RequestCount, &value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
 			result = append(result, value)
 		}
 	}
@@ -312,14 +318,14 @@ func sqliteSnapshot() TokenStatsData {
 		Upstreams:      upstreams,
 		DailyUpstreams: upstreamAggregateQuery(db, "called_date = ?", today),
 		ModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, '', COALESCE(SUM(request_count), 0),
-            COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 			FROM usage_records GROUP BY request_model, upstream_name ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
 		DailyModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, '', COALESCE(SUM(request_count), 0),
-			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 			FROM usage_records WHERE called_date = '`+today+`' GROUP BY request_model, upstream_name ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
 		Days: breakdownQuery(db, `SELECT '', '', called_date, COALESCE(SUM(request_count), 0),
-            COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
-            FROM usage_records GROUP BY called_date ORDER BY called_date DESC`),
+			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+			FROM usage_records GROUP BY called_date ORDER BY called_date DESC`),
 	}
 }
 
@@ -375,9 +381,9 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 		return page, err
 	}
 	if err := db.QueryRow(`SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(prompt_tokens), 0),
-		COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+		COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 		FROM `+from+` WHERE `+where, args...).Scan(&page.Summary.RequestCount, &page.Summary.PromptTokens,
-		&page.Summary.CompletionTokens, &page.Summary.TotalTokens); err != nil {
+		&page.Summary.CachedTokens, &page.Summary.CompletionTokens, &page.Summary.TotalTokens); err != nil {
 		return page, err
 	}
 	keyRows, err := db.Query("SELECT DISTINCT " + apiKeyNameExpression + " FROM " + from +
@@ -402,7 +408,7 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 	}
 	args = append(args, query.Limit, query.Offset)
 	rows, err := db.Query(`SELECT usage_records.id, usage_records.request_model, usage_records.upstream_name, usage_records.upstream_model, usage_records.called_at,
-		usage_records.api_key_id, `+apiKeyNameExpression+`, usage_records.prompt_tokens, usage_records.completion_tokens, usage_records.total_tokens, usage_records.request_count, usage_records.first_byte_ms, usage_records.duration_ms
+		usage_records.api_key_id, `+apiKeyNameExpression+`, usage_records.prompt_tokens, usage_records.cached_tokens, usage_records.completion_tokens, usage_records.total_tokens, usage_records.request_count, usage_records.first_byte_ms, usage_records.duration_ms
 		FROM `+from+` WHERE `+where+` ORDER BY usage_records.called_at DESC, usage_records.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return page, err
@@ -413,7 +419,7 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 		var calledAt int64
 		if err := rows.Scan(&value.ID, &value.RequestModel, &value.UpstreamName, &value.UpstreamModel, &calledAt,
 			&value.APIKeyID, &value.APIKeyName,
-			&value.PromptTokens, &value.CompletionTokens, &value.TotalTokens, &value.RequestCount, &value.FirstByteMS, &value.DurationMS); err != nil {
+			&value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens, &value.RequestCount, &value.FirstByteMS, &value.DurationMS); err != nil {
 			return page, err
 		}
 		value.CalledAt = time.UnixMilli(calledAt).Format(time.RFC3339)
@@ -472,8 +478,8 @@ func importLegacyStats(db *sql.DB, databasePath string) error {
 			return nil
 		}
 		_, err := tx.Exec(`INSERT INTO usage_records
-            (request_model, upstream_name, upstream_model, called_at, called_date, prompt_tokens, completion_tokens, total_tokens, request_count, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy_import')`, model, "历史数据", model, when.UnixMilli(), when.Format("2006-01-02"), value.PromptTokens, value.CompletionTokens, value.TotalTokens, value.RequestCount)
+			(request_model, upstream_name, upstream_model, called_at, called_date, prompt_tokens, cached_tokens, completion_tokens, total_tokens, request_count, source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy_import')`, model, "历史数据", model, when.UnixMilli(), when.Format("2006-01-02"), value.PromptTokens, value.CachedTokens, value.CompletionTokens, value.TotalTokens, value.RequestCount)
 		return err
 	}
 	for model, total := range legacy.Models {
@@ -485,6 +491,7 @@ func importLegacyStats(db *sql.DB, databasePath string) error {
 			historical := &ModelStats{
 				RequestCount:     total.RequestCount - daily.RequestCount,
 				PromptTokens:     total.PromptTokens - daily.PromptTokens,
+				CachedTokens:     total.CachedTokens - daily.CachedTokens,
 				CompletionTokens: total.CompletionTokens - daily.CompletionTokens,
 				TotalTokens:      total.TotalTokens - daily.TotalTokens,
 			}

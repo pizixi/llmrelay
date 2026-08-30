@@ -34,6 +34,31 @@ func getFloat(values map[string]any, keys ...string) (float64, bool) {
 	return 0, false
 }
 
+// cachedTokensFromUsage recognizes the cache-hit counters used by OpenAI
+// Chat, OpenAI Responses, Anthropic, and common compatible providers. Cache
+// hits remain a separate metric because OpenAI includes them in input tokens,
+// while Anthropic reports them alongside ordinary input tokens.
+func cachedTokensFromUsage(usage map[string]any) float64 {
+	if usage == nil {
+		return 0
+	}
+	best, _ := getFloat(usage,
+		"cache_read_input_tokens",
+		"cached_tokens",
+		"cached_content_token_count",
+	)
+	for _, detailsKey := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		details, _ := usage[detailsKey].(map[string]any)
+		if value, ok := getFloat(details, "cached_tokens", "cache_read_input_tokens"); ok && value > best {
+			best = value
+		}
+	}
+	if best < 0 {
+		return 0
+	}
+	return best
+}
+
 // Snapshot 返回统计数据的深拷贝。
 func Snapshot() TokenStatsData {
 	if usingSQLite() {

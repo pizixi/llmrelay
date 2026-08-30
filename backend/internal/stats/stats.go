@@ -17,6 +17,7 @@ import (
 type ModelStats struct {
 	RequestCount     int64 `json:"request_count"`
 	PromptTokens     int64 `json:"prompt_tokens"`
+	CachedTokens     int64 `json:"cached_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	TotalTokens      int64 `json:"total_tokens"`
 }
@@ -208,11 +209,11 @@ func RecordUsage(model, upstreamName, upstreamModel string, promptTokens, comple
 
 // RecordUsageWithTiming persists a completed call and its user-visible latency.
 func RecordUsageWithTiming(model, upstreamName, upstreamModel string, promptTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64) {
-	recordUsageWithAPIKey(model, upstreamName, upstreamModel, promptTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS, "", "")
+	recordUsageWithAPIKey(model, upstreamName, upstreamModel, promptTokens, 0, completionTokens, totalTokens, calledAt, firstByteMS, durationMS, "", "")
 }
 
-func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64, apiKeyID, apiKeyName string) {
-	if recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName, promptTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS) {
+func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptTokens, cachedTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64, apiKeyID, apiKeyName string) {
+	if recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName, promptTokens, cachedTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS) {
 		return
 	}
 	CheckAndResetDailyStats()
@@ -225,6 +226,7 @@ func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptToke
 	}
 	ms.RequestCount++
 	ms.PromptTokens += promptTokens
+	ms.CachedTokens += cachedTokens
 	ms.CompletionTokens += completionTokens
 	ms.TotalTokens += totalTokens
 	if tokenStats.Daily == nil {
@@ -238,6 +240,7 @@ func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptToke
 	}
 	dms.RequestCount++
 	dms.PromptTokens += promptTokens
+	dms.CachedTokens += cachedTokens
 	dms.CompletionTokens += completionTokens
 	dms.TotalTokens += totalTokens
 	tokenStatsMu.Unlock()
@@ -252,6 +255,7 @@ type RequestUsageAccumulator struct {
 	upstreamName     string
 	upstreamModel    string
 	promptTokens     int64
+	cachedTokens     int64
 	completionTokens int64
 	totalTokens      int64
 	timing           *RequestTiming
@@ -283,11 +287,15 @@ func (a *RequestUsageAccumulator) ObserveMap(usage map[string]any) {
 	promptTokens, _ := getFloat(usage, "prompt_tokens", "input_tokens")
 	completionTokens, _ := getFloat(usage, "completion_tokens", "output_tokens")
 	totalTokens, _ := getFloat(usage, "total_tokens")
+	cachedTokens := cachedTokensFromUsage(usage)
 	if promptTokens > float64(a.promptTokens) {
 		a.promptTokens = int64(promptTokens)
 	}
 	if completionTokens > float64(a.completionTokens) {
 		a.completionTokens = int64(completionTokens)
+	}
+	if cachedTokens > float64(a.cachedTokens) {
+		a.cachedTokens = int64(cachedTokens)
 	}
 	if totalTokens > float64(a.totalTokens) {
 		a.totalTokens = int64(totalTokens)
@@ -306,6 +314,7 @@ func (a *RequestUsageAccumulator) Commit() {
 		upstreamName:     a.upstreamName,
 		upstreamModel:    a.upstreamModel,
 		promptTokens:     a.promptTokens,
+		cachedTokens:     a.cachedTokens,
 		completionTokens: a.completionTokens,
 		totalTokens:      a.totalTokens,
 	}

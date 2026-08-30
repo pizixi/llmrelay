@@ -76,6 +76,38 @@ func TestReconcileRemovedUpstreamModelsPrunesDeletedUpstream(t *testing.T) {
 	}
 }
 
+func TestReconcileDeletedUpstreamKeepsInactiveRemainingAlias(t *testing.T) {
+	previous := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"standby-model"}},
+			"backup":  {BaseURL: "https://backup.example/v1", CustomModels: []string{"active-model"}},
+		},
+	}
+	next := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"standby-model"}},
+		},
+		ModelAlias: map[string]ModelAlias{
+			"chat": {Targets: []ModelAliasTarget{
+				{Upstream: "primary", TargetModel: "standby-model", Weight: 0},
+				{Upstream: "backup", TargetModel: "active-model", Weight: 1},
+			}},
+		},
+	}
+
+	cleanup := ReconcileRemovedUpstreamModels(previous, &next)
+	if cleanup.RemovedTargets != 1 || cleanup.RemovedAliases != 0 {
+		t.Fatalf("cleanup = %#v, want one removed target and retained alias", cleanup)
+	}
+	remaining := next.ModelAlias["chat"].Targets
+	if len(remaining) != 1 || remaining[0].Upstream != "primary" || remaining[0].Weight != 0 {
+		t.Fatalf("remaining inactive targets = %#v", remaining)
+	}
+	if err := ValidateConfig(&next); err != nil {
+		t.Fatalf("inactive alias left by upstream deletion must remain saveable: %v", err)
+	}
+}
+
 func TestReconcileRemovedUpstreamModelsPreservesManualRouteFromUnrestrictedList(t *testing.T) {
 	previous := AppConfig{
 		Upstreams: map[string]*UpstreamConfig{"primary": {CustomModels: nil}},

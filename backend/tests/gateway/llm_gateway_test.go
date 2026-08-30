@@ -862,8 +862,8 @@ func TestValidateConfigRejectsUnknownRoutes(t *testing.T) {
 			{TargetModel: "target", Upstream: "good", Weight: 0},
 		}}},
 	}
-	if err := validateConfig(allDisabled); err == nil {
-		t.Fatal("validateConfig accepted an alias with no positive target weight")
+	if err := validateConfig(allDisabled); err != nil {
+		t.Fatalf("validateConfig rejected an intentionally inactive alias: %v", err)
 	}
 }
 

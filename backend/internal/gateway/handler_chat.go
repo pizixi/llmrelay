@@ -31,6 +31,8 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestedModel := strings.TrimSpace(envelope.Model)
+	r, releaseModelRequest := trackModelRequest(r, requestedModel)
+	defer releaseModelRequest()
 	resolvedModel, modelAliasInfo, upstreamName, upstream, aliasMatched, modelMatched := resolveRequestModel(envelope.Model)
 	if resolvedModel == "" {
 		writeExternalAPIError(w, r.URL.Path, http.StatusBadRequest, "invalid_request_error", "model is required")

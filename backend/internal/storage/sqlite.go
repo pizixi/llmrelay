@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     called_at INTEGER NOT NULL,
     called_date TEXT NOT NULL,
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     request_count INTEGER NOT NULL DEFAULT 1,
@@ -108,6 +109,7 @@ func ensureUsageTimingColumns(db *sql.DB) error {
 	definitions := []string{
 		"api_key_id TEXT NOT NULL DEFAULT ''",
 		"api_key_name TEXT NOT NULL DEFAULT ''",
+		"cached_tokens INTEGER NOT NULL DEFAULT 0",
 		"first_byte_ms INTEGER NOT NULL DEFAULT 0",
 		"duration_ms INTEGER NOT NULL DEFAULT 0",
 	}

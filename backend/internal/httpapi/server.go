@@ -20,6 +20,7 @@ func NewHandler() http.Handler {
 	mux.HandleFunc("/login", auth.LoginHandler)
 	mux.HandleFunc("/logout", auth.LogoutHandler)
 	mux.HandleFunc("/api/config", middleware.Admin(admin.AdminConfigHandler))
+	mux.HandleFunc("/api/site-info", middleware.Admin(admin.SiteInfoHandler))
 	mux.HandleFunc("/api/bridge/capabilities", middleware.Admin(admin.BridgeCapabilitiesHandler))
 	mux.HandleFunc("/api/api-keys", middleware.Admin(admin.AdminAPIKeysHandler))
 	mux.HandleFunc("/api/api-keys/", middleware.Admin(admin.AdminAPIKeysHandler))

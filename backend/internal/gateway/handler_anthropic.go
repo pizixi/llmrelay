@@ -14,7 +14,6 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	upstreamContext := withAnthropicProtocolHeaders(r.Context(), r.Header)
 	defer r.Body.Close()
 	body, readStatus, err := readAPIRequestBody(w, r)
 	if err != nil {
@@ -33,6 +32,9 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestedModel := strings.TrimSpace(envelope.Model)
+	r, releaseModelRequest := trackModelRequest(r, requestedModel)
+	defer releaseModelRequest()
+	upstreamContext := withAnthropicProtocolHeaders(r.Context(), r.Header)
 	resolvedModel, modelAliasInfo, upstreamName, upstream, aliasMatched, modelMatched := resolveRequestModel(envelope.Model)
 	if resolvedModel == "" {
 		writeExternalAPIError(w, r.URL.Path, http.StatusBadRequest, "invalid_request_error", "model is required")

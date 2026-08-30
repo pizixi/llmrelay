@@ -493,14 +493,7 @@ function syncPendingUpstreamRenames() {
         })),
       );
       if (JSON.stringify(before) === JSON.stringify(next)) return;
-      field.dataset.targets = JSON.stringify(next);
-      field.title = aliasTargetsTitle(next);
-      field.setAttribute("aria-label", aliasTargetsTitle(next));
-      field.innerHTML =
-        aliasTargetsDisplay(next) +
-        '<span class="field-edit-icon">' +
-        ICONS.layers +
-        "</span>";
+      updateAliasTargetsField(field, next);
     });
 
   Object.keys(pendingUpstreamRenames).forEach((oldName) => {
@@ -1474,7 +1467,7 @@ function renderUpstreamTable() {
         "</span></td>" +
         '<td><input value="' +
         escAttr(name) +
-        '" data-field="name" placeholder="例如: main"></td>' +
+        '" data-field="name" placeholder="例如: main（留空自动获取）"></td>' +
         '<td><input value="' +
         escAttr(up.base_url || "") +
         '" data-field="base_url" placeholder="https://example.com/v1"></td>' +
@@ -1524,7 +1517,7 @@ function addUpstreamRow() {
       '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
       ICONS.grip +
       "</span></td>" +
-      '<td><input value="" data-field="name" placeholder="例如: main"></td>' +
+      '<td><input value="" data-field="name" placeholder="例如: main（留空自动获取）"></td>' +
       '<td><input value="" data-field="base_url" placeholder="https://example.com/v1"></td>' +
       "<td>" +
       apiKeyFieldHtml("") +
@@ -1759,18 +1752,23 @@ function upstreamAliasDeleteImpact(upstreamName) {
     const remainingTargets = targets.filter(
       (target) => !upstreamNames.has(target.upstream),
     );
+    const unroutable =
+      remainingTargets.length > 0 &&
+      !remainingTargets.some((target) => target.weight > 0);
     targetCount += removedTargets.length;
     aliases.push({
       aliasName: aliasName,
       removedTargets: removedTargets,
       remainingTargets: remainingTargets,
       removeAlias: remainingTargets.length === 0,
+      unroutable: unroutable,
     });
   });
   return {
     aliases: aliases,
     targetCount: targetCount,
     removedAliasCount: aliases.filter((item) => item.removeAlias).length,
+    unroutableAliasCount: aliases.filter((item) => item.unroutable).length,
   };
 }
 
@@ -1787,6 +1785,7 @@ function upstreamDeleteConfirm(triggerEl, upstreamName, impact) {
 
   const aliasCount = impact.aliases.length;
   const removedAliasCount = impact.removedAliasCount;
+  const unroutableAliasCount = impact.unroutableAliasCount || 0;
   let description =
     "该上游将从当前配置列表中移除，同时删除 " +
     impact.targetCount +
@@ -1798,6 +1797,12 @@ function upstreamDeleteConfirm(triggerEl, upstreamName, impact) {
       "其中 " +
       removedAliasCount +
       " 个别名删除这些映射后已无可用目标，也会一并删除。";
+  }
+  if (unroutableAliasCount) {
+    description +=
+      "另有 " +
+      unroutableAliasCount +
+      " 个别名的剩余模型权重均为 0，将保留配置并在模型映射列表中提醒。";
   }
   return showDangerConfirm(triggerEl, {
     title: "确认删除上游及关联模型映射？",
@@ -1812,7 +1817,11 @@ function upstreamDeleteConfirm(triggerEl, upstreamName, impact) {
         item.aliasName +
         " → " +
         models +
-        (item.removeAlias ? "（模型别名也将删除）" : "")
+        (item.removeAlias
+          ? "（模型别名也将删除）"
+          : item.unroutable
+            ? "（删除后权重均为 0）"
+            : "")
       );
     }),
     note: "删除后需保存配置才会生效；保存前可通过刷新页面恢复。",
@@ -1853,6 +1862,9 @@ async function delUpstream(btn) {
   ]);
   if (!(await upstreamDeleteConfirm(btn, upstreamName, impact))) return;
   const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
+  const deletedBaseURL = row.querySelector('[data-field="base_url"]');
+  if (deletedBaseURL?._upstreamNameTimer) clearTimeout(deletedBaseURL._upstreamNameTimer);
+  cancelUpstreamSiteInfoFetch(deletedBaseURL);
   row.remove();
   collectUpstreams();
   if (upstreamName) delete modelListByUpstream[upstreamName];
@@ -1869,21 +1881,42 @@ async function delUpstream(btn) {
   if (selectedAliasRemoved) showSelectedEffortMap();
 }
 
-function upstreamNameFromBaseURL(baseURL) {
+// Parse an upstream URL once and keep the URL used for site-level metadata
+// separate from the configured API path. An upstream is commonly entered as
+// `https://provider.example/v1`; the `/v1` suffix belongs to the API and must
+// not affect the display name or the site-info lookup.
+function parseUpstreamBaseURL(baseURL) {
   const raw = String(baseURL || "").trim();
-  let hostname = "";
-  let port = "";
-  try {
-    const parsed = new URL(raw);
-    hostname = parsed.hostname;
-    port = parsed.port;
-  } catch (e) {
-    try {
-      const parsed = new URL("https://" + raw.replace(/^\/+/, ""));
-      hostname = parsed.hostname;
-      port = parsed.port;
-    } catch (ignored) {}
+  if (!raw) return null;
+
+  const candidates = [raw];
+  // The form accepts host-only values for convenience (for example
+  // `api.example.com/v1`). URL requires a scheme, so retry with https.
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(raw)) {
+    candidates.push("https://" + raw.replace(/^\/+/, ""));
   }
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate);
+      if (!/^https?:$/.test(parsed.protocol) || !parsed.hostname) continue;
+      return parsed;
+    } catch (e) {}
+  }
+  return null;
+}
+
+// Return the site origin for metadata requests. Keeping this helper small
+// also makes it safe for callers to use when a Base URL contains `/v1` or a
+// deeper API path.
+function upstreamSiteInfoURL(baseURL) {
+  const parsed = parseUpstreamBaseURL(baseURL);
+  return parsed ? parsed.origin : "";
+}
+
+function upstreamNameFromBaseURL(baseURL) {
+  const parsed = parseUpstreamBaseURL(baseURL);
+  const hostname = parsed ? parsed.hostname : "";
+  const port = parsed ? parsed.port : "";
 
   const domain = String(hostname || "")
     .toLowerCase()
@@ -1893,6 +1926,194 @@ function upstreamNameFromBaseURL(baseURL) {
     .replace(/-{2,}/g, "-");
   const address = [domain || "upstream", port].filter(Boolean).join("-");
   return address + "-upstream";
+}
+
+function upstreamRowsUsedNames(exceptRow) {
+  const names = new Set();
+  document
+    .querySelectorAll("#upstreamTable tbody tr[data-upstream-row]")
+    .forEach((row) => {
+      if (row === exceptRow) return;
+      const name = String(
+        row.querySelector('[data-field="name"]')?.value || "",
+      ).trim();
+      if (name) names.add(name);
+    });
+  return names;
+}
+
+function autoFillUpstreamName(baseURLEl) {
+  const row = baseURLEl?.closest("tr[data-upstream-row]");
+  const nameEl = row?.querySelector('[data-field="name"]');
+  if (!row || !nameEl) return;
+
+  // Do not overwrite a name the administrator entered. A generated name is
+  // tagged so changing the URL can update it to the new host; clearing the
+  // field also opts back into automatic naming.
+  const currentName = String(nameEl.value || "").trim();
+  if (currentName && row.dataset.upstreamNameGenerated !== "1") return;
+  if (!parseUpstreamBaseURL(baseURLEl.value)) return;
+
+  const usedNames = upstreamRowsUsedNames(row);
+  const nextName = uniqueUpstreamName(baseURLEl.value, usedNames);
+  if (!nextName || nextName === "upstream-upstream") return;
+  if (nameEl.value !== nextName) nameEl.value = nextName;
+  row.dataset.upstreamNameGenerated = "1";
+  row.dataset.upstreamRow = nextName;
+}
+
+function scheduleUpstreamNameAutofill(baseURLEl, immediate) {
+  if (!baseURLEl) return;
+  if (baseURLEl._upstreamNameTimer) {
+    clearTimeout(baseURLEl._upstreamNameTimer);
+    baseURLEl._upstreamNameTimer = null;
+  }
+  if (immediate) {
+    autoFillUpstreamName(baseURLEl);
+    return;
+  }
+  // Debounce typing so transient, incomplete values are less likely to become
+  // a generated name before the user finishes entering the host.
+  baseURLEl._upstreamNameTimer = setTimeout(() => {
+    baseURLEl._upstreamNameTimer = null;
+    autoFillUpstreamName(baseURLEl);
+  }, 350);
+}
+
+function uniqueUpstreamDisplayName(baseName, usedNames) {
+  const clean = String(baseName || "").trim();
+  if (!clean) return "";
+  let name = clean;
+  let suffix = 2;
+  while (usedNames.has(name)) {
+    name = clean + "-" + suffix;
+    suffix += 1;
+  }
+  return name;
+}
+
+async function fetchUpstreamSiteName(baseURLEl) {
+  const row = baseURLEl?.closest("tr[data-upstream-row]");
+  const nameEl = row?.querySelector('[data-field="name"]');
+  const siteURL = upstreamSiteInfoURL(baseURLEl?.value || "");
+  if (!row || !nameEl || !siteURL) return;
+
+  // Names entered by an administrator are authoritative. Generated names can
+  // be replaced by the site's title when the metadata request succeeds.
+  if (String(nameEl.value || "").trim() && row.dataset.upstreamNameGenerated !== "1") {
+    return;
+  }
+  if (baseURLEl._upstreamSiteInfoOrigin === siteURL && baseURLEl._upstreamSiteInfoPending) {
+    return;
+  }
+  baseURLEl._upstreamSiteInfoOrigin = siteURL;
+  baseURLEl._upstreamSiteInfoPending = true;
+  baseURLEl._upstreamSiteInfoSequence = (baseURLEl._upstreamSiteInfoSequence || 0) + 1;
+  const sequence = baseURLEl._upstreamSiteInfoSequence;
+  baseURLEl._upstreamSiteInfoController?.abort();
+  const controller = new AbortController();
+  baseURLEl._upstreamSiteInfoController = controller;
+  try {
+    const result = await apiJSON(
+      "/api/site-info?url=" + encodeURIComponent(siteURL),
+      { signal: controller.signal },
+    );
+    if (
+      sequence !== baseURLEl._upstreamSiteInfoSequence ||
+      controller.signal.aborted ||
+      String(nameEl.value || "").trim() && row.dataset.upstreamNameGenerated !== "1"
+    ) {
+      return;
+    }
+    const siteName = String(result?.name || "").trim();
+    if (!siteName) return;
+    const nextName = uniqueUpstreamDisplayName(
+      siteName,
+      upstreamRowsUsedNames(row),
+    );
+    if (!nextName) return;
+    nameEl.value = nextName;
+    row.dataset.upstreamNameGenerated = "1";
+    row.dataset.upstreamRow = nextName;
+  } catch (e) {
+    // Metadata is an enhancement only. Keep the domain-based generated name
+    // when the site is unavailable, does not allow requests, or times out.
+    if (e?.name === "AbortError") return;
+    if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+  } finally {
+    if (sequence === baseURLEl._upstreamSiteInfoSequence) {
+      baseURLEl._upstreamSiteInfoPending = false;
+    }
+  }
+}
+
+function cancelUpstreamSiteInfoFetch(baseURLEl) {
+  if (!baseURLEl) return;
+  baseURLEl._upstreamSiteInfoController?.abort();
+  baseURLEl._upstreamSiteInfoController = null;
+  baseURLEl._upstreamSiteInfoPending = false;
+  baseURLEl._upstreamSiteInfoOrigin = "";
+  baseURLEl._upstreamSiteInfoSequence = (baseURLEl._upstreamSiteInfoSequence || 0) + 1;
+}
+
+function scheduleUpstreamSiteInfoFetch(baseURLEl, immediate) {
+  if (!baseURLEl) return;
+  if (baseURLEl._upstreamSiteInfoTimer) {
+    clearTimeout(baseURLEl._upstreamSiteInfoTimer);
+    baseURLEl._upstreamSiteInfoTimer = null;
+  }
+  const run = () => {
+    baseURLEl._upstreamSiteInfoTimer = null;
+    fetchUpstreamSiteName(baseURLEl);
+  };
+  if (!upstreamSiteInfoURL(baseURLEl.value || "")) {
+    cancelUpstreamSiteInfoFetch(baseURLEl);
+    return;
+  }
+  if (immediate) {
+    run();
+  } else {
+    baseURLEl._upstreamSiteInfoTimer = setTimeout(run, 650);
+  }
+}
+
+function initUpstreamNameAutofill() {
+  const tbody = document.querySelector("#upstreamTable tbody");
+  if (!tbody || tbody._upstreamNameAutofillBound) return;
+  tbody._upstreamNameAutofillBound = true;
+  tbody.addEventListener("input", (event) => {
+    const field = event.target;
+    if (!(field instanceof HTMLInputElement)) return;
+    if (field.matches('[data-field="base_url"]')) {
+      scheduleUpstreamNameAutofill(field, false);
+      scheduleUpstreamSiteInfoFetch(field, false);
+    } else if (field.matches('[data-field="name"]')) {
+      const row = field.closest("tr[data-upstream-row]");
+      if (!row) return;
+      if (String(field.value || "").trim()) {
+        delete row.dataset.upstreamNameGenerated;
+        cancelUpstreamSiteInfoFetch(row.querySelector('[data-field="base_url"]'));
+      }
+    }
+  });
+  tbody.addEventListener("change", (event) => {
+    const field = event.target;
+    if (field instanceof HTMLInputElement && field.matches('[data-field="base_url"]')) {
+      scheduleUpstreamNameAutofill(field, true);
+      scheduleUpstreamSiteInfoFetch(field, true);
+    }
+  });
+  tbody.addEventListener(
+    "blur",
+    (event) => {
+      const field = event.target;
+      if (field instanceof HTMLInputElement && field.matches('[data-field="base_url"]')) {
+        scheduleUpstreamNameAutofill(field, true);
+        scheduleUpstreamSiteInfoFetch(field, true);
+      }
+    },
+    true,
+  );
 }
 
 function uniqueUpstreamName(baseURL, usedNames) {
@@ -1931,7 +2152,10 @@ function collectUpstreams() {
     if (!name) {
       name = uniqueUpstreamName(baseURL, usedNames);
       usedNames.add(name);
-      if (nameEl) nameEl.value = name;
+      if (nameEl) {
+        nameEl.value = name;
+        tr.dataset.upstreamNameGenerated = "1";
+      }
       tr.dataset.upstreamRow = name;
     }
     if (originalName && originalName !== name) {
@@ -4326,11 +4550,50 @@ function aliasTargetsDisplay(targets) {
   );
 }
 
+function aliasTargetsHaveRoutableTarget(targets) {
+  const normalized = normalizeAliasTargets(targets);
+  return normalized.some((target) => target.weight > 0);
+}
+
+function aliasTargetsWeightWarningHtml(targets) {
+  const normalized = normalizeAliasTargets(targets);
+  if (!normalized.length || aliasTargetsHaveRoutableTarget(normalized)) return "";
+  return (
+    '<span class="alias-target-weight-warning" title="当前映射不会参与路由，请将至少一个上游模型的权重设为大于 0">' +
+    ICONS.alert +
+    "<span>权重均为 0</span></span>"
+  );
+}
+
+function updateAliasTargetsField(field, value) {
+  if (!field) return;
+  const targets = normalizeAliasTargets(value);
+  const unroutable = targets.length > 0 && !aliasTargetsHaveRoutableTarget(targets);
+  const title =
+    aliasTargetsTitle(targets) +
+    (unroutable ? "\n提醒：当前映射没有权重大于 0 的上游模型，不会参与路由" : "");
+  field.dataset.targets = JSON.stringify(targets);
+  field.title = title;
+  field.setAttribute("aria-label", title);
+  field.classList.toggle("is-unroutable", unroutable);
+  field.innerHTML =
+    aliasTargetsDisplay(targets) +
+    aliasTargetsWeightWarningHtml(targets) +
+    '<span class="field-edit-icon">' +
+    ICONS.layers +
+    "</span>";
+}
+
 function aliasTargetsFieldHtml(value) {
   const targets = normalizeAliasTargets(value);
-  const title = aliasTargetsTitle(targets);
+  const unroutable = targets.length > 0 && !aliasTargetsHaveRoutableTarget(targets);
+  const title =
+    aliasTargetsTitle(targets) +
+    (unroutable ? "\n提醒：当前映射没有权重大于 0 的上游模型，不会参与路由" : "");
   return (
-    '<div class="field-display alias-targets-field" data-field="targets" data-targets="' +
+    '<div class="field-display alias-targets-field' +
+    (unroutable ? " is-unroutable" : "") +
+    '" data-field="targets" data-targets="' +
     escAttr(JSON.stringify(targets)) +
     '" title="' +
     escAttr(title) +
@@ -4338,6 +4601,7 @@ function aliasTargetsFieldHtml(value) {
     escAttr(title) +
     '" onclick="openAliasTargetsEditor(this)">' +
     aliasTargetsDisplay(targets) +
+    aliasTargetsWeightWarningHtml(targets) +
     '<span class="field-edit-icon">' +
     ICONS.layers +
     "</span></div>"
@@ -4512,14 +4776,7 @@ function openAliasTargetsEditor(el) {
     buildAliasTargetsPopoverHtml(targets),
     function () {
       const nextTargets = readAliasTargetsFromPopover(pop);
-      el.dataset.targets = JSON.stringify(nextTargets);
-      el.title = aliasTargetsTitle(nextTargets);
-      el.setAttribute("aria-label", aliasTargetsTitle(nextTargets));
-      el.innerHTML =
-        aliasTargetsDisplay(nextTargets) +
-        '<span class="field-edit-icon">' +
-        ICONS.layers +
-        "</span>";
+      updateAliasTargetsField(el, nextTargets);
       collectAliases();
     },
   );
@@ -4984,12 +5241,6 @@ function validateAliasRows() {
     if (missing) {
       return {
         message: "上游不存在：" + missing.upstream,
-        element: targetsField,
-      };
-    }
-    if (!targets.some((target) => target.weight > 0)) {
-      return {
-        message: key + " 至少需要一个权重大于 0 的上游模型",
         element: targetsField,
       };
     }
@@ -5581,12 +5832,14 @@ function formatStatsDate(date) {
 function statsHeatmapRow(row) {
   const requests = Math.max(0, Number(row && row.request_count) || 0);
   const prompt = Math.max(0, Number(row && row.prompt_tokens) || 0);
+  const cached = Math.max(0, Number(row && row.cached_tokens) || 0);
   const completion = Math.max(0, Number(row && row.completion_tokens) || 0);
   const reportedTotal = Math.max(0, Number(row && row.total_tokens) || 0);
   const total = Math.max(reportedTotal, prompt + completion);
   return {
     requests,
     prompt,
+    cached,
     completion,
     total,
     intensity: total || requests,
@@ -5606,6 +5859,8 @@ function statsHeatmapCellLabel(date, value) {
     fmt(value.requests) +
     " 次，输入 " +
     fmt(value.prompt) +
+    " Token，缓存命中 " +
+    fmt(value.cached) +
     " Token，输出 " +
     fmt(value.completion) +
     " Token"
@@ -5617,6 +5872,7 @@ function statsHeatmapSummaryHtml(summary) {
     '<div class="stats-heatmap-summary" aria-label="最近一年汇总">' +
     '<span><b>' + fmt(summary.requests) + '</b><em>调用</em></span>' +
     '<span><b>' + fmt(summary.prompt) + '</b><em>输入</em></span>' +
+    '<span class="is-cached"><b>' + fmt(summary.cached) + '</b><em>缓存命中</em></span>' +
     '<span><b>' + fmt(summary.completion) + '</b><em>输出</em></span>' +
     "</div>"
   );
@@ -5646,6 +5902,7 @@ function statsTrendHtml(days, dateLabel) {
     const value = valuesByDate.get(statsDateKey(date)) || {
       requests: 0,
       prompt: 0,
+      cached: 0,
       completion: 0,
       total: 0,
       intensity: 0,
@@ -5744,7 +6001,7 @@ function statsHeatmapHtml(days, dateLabel) {
     })
     .map(([, value]) => value.intensity)
     .sort((a, b) => a - b);
-  const periodSummary = { requests: 0, prompt: 0, completion: 0 };
+  const periodSummary = { requests: 0, prompt: 0, cached: 0, completion: 0 };
   const monthLabels = [];
   let lastMonthColumn = 0;
   let monthCursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
@@ -5778,12 +6035,14 @@ function statsHeatmapHtml(days, dateLabel) {
       const value = valuesByDate.get(statsDateKey(date)) || {
         requests: 0,
         prompt: 0,
+        cached: 0,
         completion: 0,
         total: 0,
         intensity: 0,
       };
       periodSummary.requests += value.requests;
       periodSummary.prompt += value.prompt;
+      periodSummary.cached += value.cached;
       periodSummary.completion += value.completion;
       const label = statsHeatmapCellLabel(date, value);
       cells +=
@@ -5795,6 +6054,8 @@ function statsHeatmapHtml(days, dateLabel) {
         escAttr(value.requests) +
         '" data-prompt="' +
         escAttr(value.prompt) +
+        '" data-cached="' +
+        escAttr(value.cached) +
         '" data-completion="' +
         escAttr(value.completion) +
         '" aria-label="' +
@@ -5883,6 +6144,7 @@ function bindStatsHeatmap() {
     const value = {
       requests: Number(cell.dataset.requests) || 0,
       prompt: Number(cell.dataset.prompt) || 0,
+      cached: Number(cell.dataset.cached) || 0,
       completion: Number(cell.dataset.completion) || 0,
     };
     tooltip.innerHTML =
@@ -5894,6 +6156,9 @@ function bindStatsHeatmap() {
       " 次</b></div>" +
       '<div class="stats-heatmap-tooltip-row"><span>输入</span><b>' +
       fmt(value.prompt) +
+      " Token</b></div>" +
+      '<div class="stats-heatmap-tooltip-row is-cached"><span>缓存命中</span><b>' +
+      fmt(value.cached) +
       " Token</b></div>" +
       '<div class="stats-heatmap-tooltip-row"><span>输出</span><b>' +
       fmt(value.completion) +
@@ -5931,6 +6196,7 @@ function bindStatsHeatmap() {
 function sumModelStats(map, keys) {
   let requests = 0,
     prompt = 0,
+    cached = 0,
     completion = 0,
     total = 0;
   for (const k of keys) {
@@ -5938,16 +6204,18 @@ function sumModelStats(map, keys) {
     if (!m) continue;
     requests += m.request_count || 0;
     prompt += m.prompt_tokens || 0;
+    cached += m.cached_tokens || 0;
     completion += m.completion_tokens || 0;
     total += m.total_tokens || 0;
   }
-  return { requests, prompt, completion, total };
+  return { requests, prompt, cached, completion, total };
 }
 
 function emptyModelStat() {
   return {
     request_count: 0,
     prompt_tokens: 0,
+    cached_tokens: 0,
     completion_tokens: 0,
     total_tokens: 0,
   };
@@ -5956,16 +6224,19 @@ function emptyModelStat() {
 function modelStatCells(m) {
   const s = m || emptyModelStat();
   return (
-    '<td class="num-cell">' +
+    '<td class="num-cell stats-request-cell">' +
     fmt(s.request_count) +
     "</td>" +
-    '<td class="num-cell">' +
+    '<td class="num-cell stats-prompt-cell">' +
     fmt(s.prompt_tokens) +
     "</td>" +
-    '<td class="num-cell">' +
+    '<td class="num-cell stats-cache-cell">' +
+    fmt(s.cached_tokens) +
+    "</td>" +
+    '<td class="num-cell stats-completion-cell">' +
     fmt(s.completion_tokens) +
     "</td>" +
-    '<td class="num-cell">' +
+    '<td class="num-cell stats-token-total-cell">' +
     fmt(s.total_tokens) +
     "</td>"
   );
@@ -5979,14 +6250,14 @@ function statsTableHtml(rowsHtml, dateLabel) {
     "<thead>" +
     "<tr>" +
     '<th rowspan="2" class="stats-model-col">' + esc(dimensionLabel) + "</th>" +
-    '<th colspan="4" class="stats-group-head">' +
+    '<th colspan="5" class="stats-group-head">' +
     todayTitle +
     "</th>" +
-    '<th colspan="4" class="stats-group-head">累计用量</th>' +
+    '<th colspan="5" class="stats-group-head">累计用量</th>' +
     "</tr>" +
     '<tr class="stats-subhead">' +
-    "<th>请求</th><th>输入</th><th>输出</th><th>合计</th>" +
-    "<th>请求</th><th>输入</th><th>输出</th><th>合计</th>" +
+    "<th>请求</th><th>输入</th><th class=\"stats-cache-head\">缓存命中</th><th>输出</th><th>合计</th>" +
+    "<th>请求</th><th>输入</th><th class=\"stats-cache-head\">缓存命中</th><th>输出</th><th>合计</th>" +
     "</tr>" +
     "</thead>" +
     "<tbody>" +
@@ -6097,9 +6368,16 @@ async function loadStats() {
         h += emptyStateHtml(ICONS.chart, "暂无统计数据", "网关处理请求后会在此汇总每日 Token 用量");
       } else {
         const rows = days
-          .map((row) => "<tr><td>" + esc(row.date || "-") + "</td>" + modelStatCells(row) + "</tr>")
+          .map(
+            (row) =>
+              '<tr><td><span class="stats-dimension-label is-date">' +
+              esc(row.date || "-") +
+              "</span></td>" +
+              modelStatCells(row) +
+              "</tr>",
+          )
           .join("");
-        h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+        h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th class="stats-cache-head">缓存命中</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
       }
       document.getElementById("statsContent").innerHTML = h;
       injectButtonIcons();
@@ -6122,9 +6400,9 @@ async function loadStats() {
       let rows = "";
       for (const k of keys) {
         rows +=
-          "<tr><td>" +
+          '<tr><td><span class="stats-dimension-label">' +
           esc(displayLabels[k] || k) +
-          "</td>" +
+          "</span></td>" +
           modelStatCells(todayValues[k]) +
           modelStatCells(cumulative[k]) +
           "</tr>";
@@ -6132,16 +6410,18 @@ async function loadStats() {
       const cumulativeTotals = sumModelStats(cumulative, Object.keys(cumulative));
       const todayDimensionTotals = sumModelStats(todayValues, Object.keys(todayValues));
       rows +=
-        '<tr class="stats-total-row"><td>合计</td>' +
+        '<tr class="stats-total-row"><td><span class="stats-dimension-label is-total">合计</span></td>' +
         modelStatCells({
           request_count: todayDimensionTotals.requests,
           prompt_tokens: todayDimensionTotals.prompt,
+          cached_tokens: todayDimensionTotals.cached,
           completion_tokens: todayDimensionTotals.completion,
           total_tokens: todayDimensionTotals.total,
         }) +
         modelStatCells({
           request_count: cumulativeTotals.requests,
           prompt_tokens: cumulativeTotals.prompt,
+          cached_tokens: cumulativeTotals.cached,
           completion_tokens: cumulativeTotals.completion,
           total_tokens: cumulativeTotals.total,
         }) +
@@ -6234,6 +6514,111 @@ function formatUsageDuration(value) {
   return minutes + " m " + seconds + " s";
 }
 
+function usageTimeParts(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { date: value || "-", time: "" };
+  return {
+    date: date.toLocaleDateString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }),
+    time: date.toLocaleTimeString("zh-CN", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }),
+  };
+}
+
+function usageLatencyTone(value, kind) {
+  const milliseconds = Number(value) || 0;
+  if (!milliseconds) return "is-empty";
+  const fastLimit = kind === "first" ? 800 : 3000;
+  const slowLimit = kind === "first" ? 2500 : 10000;
+  if (milliseconds <= fastLimit) return "is-fast";
+  if (milliseconds >= slowLimit) return "is-slow";
+  return "is-normal";
+}
+
+function usageRecordRowHtml(item) {
+  const time = usageTimeParts(item.called_at);
+  const requestCount = Math.max(1, Number(item.request_count) || 1);
+  const aggregate =
+    requestCount > 1
+      ? '<span class="usage-aggregate">历史聚合 × ' + fmt(requestCount) + "</span>"
+      : "";
+  const keyName = item.api_key_name || "未记录密钥";
+  const requestModel = item.request_model || "-";
+  const upstreamName = item.upstream_name || "-";
+  const upstreamModel = item.upstream_model || "-";
+  const prompt = Math.max(0, Number(item.prompt_tokens) || 0);
+  const cached = Math.max(0, Number(item.cached_tokens) || 0);
+  const completion = Math.max(0, Number(item.completion_tokens) || 0);
+  const total = Math.max(0, Number(item.total_tokens) || 0, prompt + completion);
+  const firstByte = formatUsageDuration(item.first_byte_ms);
+  const duration = formatUsageDuration(item.duration_ms);
+
+  return (
+    '<tr class="usage-record-row">' +
+    '<td class="usage-call-cell"><div class="usage-call-line"><span class="usage-call-time"><strong>' +
+    esc(time.date) +
+    "</strong><span>" +
+    esc(time.time) +
+    '</span></span><span class="usage-key-chip" title="' +
+    escAttr(keyName) +
+    '"><i></i>' +
+    "<span>" +
+    esc(keyName) +
+    "</span></span>" +
+    aggregate +
+    "</div></td>" +
+    '<td class="usage-route-cell"><div class="usage-route-flow"><span class="usage-route-model is-request" title="' +
+    escAttr(requestModel) +
+    '">' +
+    esc(requestModel) +
+    '</span><span class="usage-route-arrow" aria-hidden="true">' +
+    ICONS.arrowRight +
+    '</span><span class="usage-route-model is-upstream" title="' +
+    escAttr(upstreamModel) +
+    '">' +
+    esc(upstreamModel) +
+    '</span><span class="usage-route-provider">' +
+    ICONS.server +
+    '<span title="' +
+    escAttr(upstreamName) +
+    '">' +
+    esc(upstreamName) +
+    "</span></span></div></td>" +
+    '<td class="usage-performance-cell"><div class="usage-performance-grid"><span><em>首字</em><b class="' +
+    usageLatencyTone(item.first_byte_ms, "first") +
+    '">' +
+    esc(firstByte) +
+    '</b></span><span><em>总耗时</em><b class="' +
+    usageLatencyTone(item.duration_ms, "total") +
+    '">' +
+    esc(duration) +
+    "</b></span></div></td>" +
+    '<td class="usage-token-cell"><div class="usage-token-line"><span class="usage-token-metric is-total"><em>合计</em><b>' +
+    fmt(total) +
+    '</b></span><span class="usage-token-metric is-prompt"><i></i><em>输入</em><b>' +
+    fmt(prompt) +
+    '</b></span><span class="usage-token-metric is-cached' +
+    (cached > 0 ? " has-value" : "") +
+    '"><i></i><em>缓存命中</em><b>' +
+    fmt(cached) +
+    '</b></span><span class="usage-token-metric is-completion"><i></i><em>输出</em><b>' +
+    fmt(completion) +
+    "</b></span></div></td>" +
+    '<td class="usage-action"><button class="btn-icon btn-icon-danger" type="button" title="删除使用记录" aria-label="删除使用记录" onclick="deleteUsageRecord(' +
+    Number(item.id) +
+    ',this)">' +
+    ICONS.trash +
+    "</button></td></tr>"
+  );
+}
+
 async function loadUsageRecords(offset) {
   if (typeof offset === "number") usagePageOffset = Math.max(0, offset);
   const loadSequence = ++usageLoadSequence;
@@ -6260,14 +6645,9 @@ async function loadUsageRecords(offset) {
       return;
     }
     if (!items.length) {
-      tbody.innerHTML = emptyRowHtml(11, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
+      tbody.innerHTML = emptyRowHtml(5, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
     } else {
-      tbody.innerHTML = items
-        .map((item) => {
-          const aggregate = (item.request_count || 1) > 1 ? '<span class="usage-aggregate">历史聚合 × ' + fmt(item.request_count) + "</span>" : "";
-          return "<tr><td class=\"usage-time\">" + esc(formatUsageTime(item.called_at)) + aggregate + "</td><td class=\"usage-key-name\">" + esc(item.api_key_name || "未记录") + "</td><td>" + esc(item.request_model || "-") + "</td><td>" + esc(item.upstream_name || "-") + "</td><td>" + esc(item.upstream_model || "-") + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.first_byte_ms)) + '</td><td class="num-cell usage-duration">' + esc(formatUsageDuration(item.duration_ms)) + '</td><td class="num-cell">' + fmt(item.prompt_tokens) + '</td><td class="num-cell">' + fmt(item.completion_tokens) + '</td><td class="num-cell usage-total">' + fmt(item.total_tokens) + '</td><td class="usage-action"><button class="btn-icon btn-icon-danger" type="button" title="删除使用记录" aria-label="删除使用记录" onclick="deleteUsageRecord(' + Number(item.id) + ',this)">' + ICONS.trash + "</button></td></tr>";
-        })
-        .join("");
+      tbody.innerHTML = items.map(usageRecordRowHtml).join("");
     }
     const keyNames = Array.from(
       new Set([
@@ -6284,6 +6664,7 @@ async function loadUsageRecords(offset) {
     const summary = page.summary || {};
     document.getElementById("usageSummaryRequests").textContent = fmt(summary.request_count);
     document.getElementById("usageSummaryPrompt").textContent = fmt(summary.prompt_tokens);
+    document.getElementById("usageSummaryCached").textContent = fmt(summary.cached_tokens);
     document.getElementById("usageSummaryCompletion").textContent = fmt(summary.completion_tokens);
     document.getElementById("usageSummaryTotal").textContent = fmt(summary.total_tokens);
     const start = usageTotal ? usagePageOffset + 1 : 0;
@@ -6294,9 +6675,10 @@ async function loadUsageRecords(offset) {
     if (loadSequence !== usageLoadSequence) return;
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     usageRecords = [];
-    tbody.innerHTML = emptyRowHtml(11, ICONS.alert, "加载失败", e.message || "请稍后重试");
+    tbody.innerHTML = emptyRowHtml(5, ICONS.alert, "加载失败", e.message || "请稍后重试");
     document.getElementById("usageSummaryRequests").textContent = "0";
     document.getElementById("usageSummaryPrompt").textContent = "0";
+    document.getElementById("usageSummaryCached").textContent = "0";
     document.getElementById("usageSummaryCompletion").textContent = "0";
     document.getElementById("usageSummaryTotal").textContent = "0";
     updateUsagePagination();
@@ -6353,6 +6735,7 @@ function initAdminPage() {
   ssEnhanceSelect(document.getElementById("usageUpstreamFilter"));
   ssEnhanceSelect(document.getElementById("usageAPIKeyFilter"));
   initUpstreamDragSort();
+  initUpstreamNameAutofill();
   const baseURL = document.getElementById("webSearchBaseURL");
   if (baseURL) {
     baseURL.addEventListener("input", fitWebSearchBaseURLWidth);
