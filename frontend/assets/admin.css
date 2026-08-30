@@ -504,24 +504,41 @@ header {
 }
 
 /* Custom scrollbar */
+.table-scroll,
+.usage-table-scroll,
+.stats-content {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) var(--surface-2);
+}
+
 .table-scroll::-webkit-scrollbar,
+.usage-table-scroll::-webkit-scrollbar,
 .stats-content::-webkit-scrollbar {
   height: 7px;
   width: 7px;
 }
 .table-scroll::-webkit-scrollbar-track,
+.usage-table-scroll::-webkit-scrollbar-track,
 .stats-content::-webkit-scrollbar-track {
   background: var(--surface-2);
   border-radius: 4px;
 }
 .table-scroll::-webkit-scrollbar-thumb,
+.usage-table-scroll::-webkit-scrollbar-thumb,
 .stats-content::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border-radius: 4px;
 }
 .table-scroll::-webkit-scrollbar-thumb:hover,
+.usage-table-scroll::-webkit-scrollbar-thumb:hover,
 .stats-content::-webkit-scrollbar-thumb:hover {
   background: var(--text-ter);
+}
+
+.table-scroll::-webkit-scrollbar-corner,
+.usage-table-scroll::-webkit-scrollbar-corner,
+.stats-content::-webkit-scrollbar-corner {
+  background: var(--surface-2);
 }
 
 /* ===== Stats Content ===== */
