@@ -89,8 +89,8 @@ func TestReconcileDeletedUpstreamKeepsInactiveRemainingAlias(t *testing.T) {
 		},
 		ModelAlias: map[string]ModelAlias{
 			"chat": {Targets: []ModelAliasTarget{
-				{Upstream: "primary", TargetModel: "standby-model", Weight: 0},
-				{Upstream: "backup", TargetModel: "active-model", Weight: 1},
+				{Upstream: "primary", TargetModel: "standby-model", Weight: 5, Enabled: false},
+				{Upstream: "backup", TargetModel: "active-model", Weight: 1, Enabled: true},
 			}},
 		},
 	}
@@ -100,7 +100,7 @@ func TestReconcileDeletedUpstreamKeepsInactiveRemainingAlias(t *testing.T) {
 		t.Fatalf("cleanup = %#v, want one removed target and retained alias", cleanup)
 	}
 	remaining := next.ModelAlias["chat"].Targets
-	if len(remaining) != 1 || remaining[0].Upstream != "primary" || remaining[0].Weight != 0 {
+	if len(remaining) != 1 || remaining[0].Upstream != "primary" || remaining[0].Weight != 5 || remaining[0].Enabled {
 		t.Fatalf("remaining inactive targets = %#v", remaining)
 	}
 	if err := ValidateConfig(&next); err != nil {

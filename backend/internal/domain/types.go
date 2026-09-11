@@ -109,15 +109,18 @@ type ModelAliasTarget struct {
 	TargetModel string `json:"target_model"`
 	Upstream    string `json:"upstream"`
 	Weight      int    `json:"weight"`
+	Enabled     bool   `json:"enabled"`
 }
 
 // UnmarshalJSON keeps legacy targets without a weight at the historical
-// default of 1 while preserving an explicitly configured zero weight.
+// default of 1 and targets without an enabled flag active. Explicit values
+// stay available to validation and legacy migration.
 func (target *ModelAliasTarget) UnmarshalJSON(data []byte) error {
 	var value struct {
 		TargetModel string `json:"target_model"`
 		Upstream    string `json:"upstream"`
 		Weight      *int   `json:"weight"`
+		Enabled     *bool  `json:"enabled"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
@@ -125,8 +128,16 @@ func (target *ModelAliasTarget) UnmarshalJSON(data []byte) error {
 	target.TargetModel = value.TargetModel
 	target.Upstream = value.Upstream
 	target.Weight = 1
+	target.Enabled = true
 	if value.Weight != nil {
 		target.Weight = *value.Weight
+	}
+	if value.Enabled != nil {
+		target.Enabled = *value.Enabled
+	} else if value.Weight != nil && *value.Weight == 0 {
+		// Before Enabled existed, zero weight was the only way to disable a
+		// target. Preserve that state while NormalizeConfig upgrades its weight.
+		target.Enabled = false
 	}
 	return nil
 }

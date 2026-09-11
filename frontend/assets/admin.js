@@ -4475,13 +4475,17 @@ function normalizeAliasTargets(value) {
     if (seen.has(identity)) return;
     seen.add(identity);
     const parsedWeight = Number.parseInt(raw.weight, 10);
+    const hasEnabled = typeof raw.enabled === "boolean";
     targets.push({
       upstream: upstream,
       target_model: targetModel,
       weight:
         Number.isFinite(parsedWeight)
-          ? Math.min(Math.max(parsedWeight, 0), 1000000)
+          ? Math.min(Math.max(parsedWeight, 1), 1000000)
           : 1,
+      enabled: hasEnabled
+        ? raw.enabled
+        : !Number.isFinite(parsedWeight) || parsedWeight !== 0,
     });
   });
   return targets;
@@ -4506,7 +4510,11 @@ function aliasTargetsTitle(targets) {
     " 个上游\n" +
     targets
       .map(
-        (target) => target.upstream + " / " + target.target_model,
+        (target) =>
+          target.upstream +
+          " / " +
+          target.target_model +
+          (target.enabled ? "" : "（已禁用）"),
       )
       .join("\n")
   );
@@ -4515,7 +4523,8 @@ function aliasTargetsTitle(targets) {
 function aliasTargetsDisplay(targets) {
   if (!targets.length)
     return '<span class="field-placeholder">点击添加上游模型</span>';
-  const first = targets[0];
+  const sortedTargets = sortAliasTargetsForDisplay(targets);
+  const first = sortedTargets[0];
   const remaining = targets.length - 1;
   const upstreamCount = new Set(targets.map((target) => target.upstream)).size;
   return (
@@ -4552,16 +4561,16 @@ function aliasTargetsDisplay(targets) {
 
 function aliasTargetsHaveRoutableTarget(targets) {
   const normalized = normalizeAliasTargets(targets);
-  return normalized.some((target) => target.weight > 0);
+  return normalized.some((target) => target.enabled && target.weight > 0);
 }
 
 function aliasTargetsWeightWarningHtml(targets) {
   const normalized = normalizeAliasTargets(targets);
   if (!normalized.length || aliasTargetsHaveRoutableTarget(normalized)) return "";
   return (
-    '<span class="alias-target-weight-warning" title="当前映射不会参与路由，请将至少一个上游模型的权重设为大于 0">' +
+    '<span class="alias-target-weight-warning" title="当前映射不会参与路由，请启用至少一个上游模型">' +
     ICONS.alert +
-    "<span>权重均为 0</span></span>"
+    "<span>无可用模型</span></span>"
   );
 }
 
@@ -4571,7 +4580,7 @@ function updateAliasTargetsField(field, value) {
   const unroutable = targets.length > 0 && !aliasTargetsHaveRoutableTarget(targets);
   const title =
     aliasTargetsTitle(targets) +
-    (unroutable ? "\n提醒：当前映射没有权重大于 0 的上游模型，不会参与路由" : "");
+    (unroutable ? "\n提醒：当前映射没有已启用的上游模型，不会参与路由" : "");
   field.dataset.targets = JSON.stringify(targets);
   field.title = title;
   field.setAttribute("aria-label", title);
@@ -4589,7 +4598,7 @@ function aliasTargetsFieldHtml(value) {
   const unroutable = targets.length > 0 && !aliasTargetsHaveRoutableTarget(targets);
   const title =
     aliasTargetsTitle(targets) +
-    (unroutable ? "\n提醒：当前映射没有权重大于 0 的上游模型，不会参与路由" : "");
+    (unroutable ? "\n提醒：当前映射没有已启用的上游模型，不会参与路由" : "");
   return (
     '<div class="field-display alias-targets-field' +
     (unroutable ? " is-unroutable" : "") +
@@ -4684,17 +4693,20 @@ function buildAliasTargetOptionsHtml(candidates, selected) {
     .join("");
 }
 
-function sortAliasTargetsByWeight(targets) {
+function sortAliasTargetsForDisplay(targets) {
   return normalizeAliasTargets(targets)
     .map((target, index) => ({ target: target, index: index }))
     .sort(
-      (a, b) => b.target.weight - a.target.weight || a.index - b.index,
+      (a, b) =>
+        Number(b.target.enabled) - Number(a.target.enabled) ||
+        b.target.weight - a.target.weight ||
+        a.index - b.index,
     )
     .map((item) => item.target);
 }
 
 function buildAliasTargetSelectedRows(targets) {
-  const sortedTargets = sortAliasTargetsByWeight(targets);
+  const sortedTargets = sortAliasTargetsForDisplay(targets);
   if (!sortedTargets.length) {
     return (
       '<div class="alias-target-selected-empty">' +
@@ -4722,7 +4734,12 @@ function buildAliasTargetSelectedRows(targets) {
         '">' +
         esc(target.target_model) +
         "</span></span>" +
-        '<label class="alias-target-weight"><span>权重</span><input type="number" min="0" max="1000000" step="1" value="' +
+        '<label class="alias-target-enabled" title="启用后参与路由，禁用时保留当前权重"><span>启用</span><span class="switch"><input type="checkbox" data-field="enabled" aria-label="启用 ' +
+        escAttr(target.upstream + " / " + target.target_model) +
+        '" onchange="toggleAliasTargetEnabled(this)"' +
+        (target.enabled ? " checked" : "") +
+        '><span class="switch-slider"></span></span></label>' +
+        '<label class="alias-target-weight"><span>权重</span><input type="number" min="1" max="1000000" step="1" value="' +
         target.weight +
         '" oninput="updateAliasTargetEditorState(this, false)" onkeydown="handleAliasTargetWeightKeydown(event)" onblur="commitAliasTargetWeightInput(this)"></label>' +
         '<span class="alias-target-percent">0%</span>' +
@@ -4742,6 +4759,7 @@ function readAliasTargetsFromPopover(pop) {
         upstream: row.dataset.upstream || "",
         target_model: row.dataset.model || "",
         weight: row.querySelector('input[type="number"]')?.value || 1,
+        enabled: row.querySelector('[data-field="enabled"]')?.checked !== false,
       }),
     ),
   );
@@ -4761,7 +4779,7 @@ function buildAliasTargetsPopoverHtml(targets) {
     ICONS.search +
     '<input type="search" role="combobox" aria-expanded="false" aria-controls="aliasTargetOptions" aria-autocomplete="list" autocomplete="off" placeholder="搜索上游名称或模型 ID" onfocus="openAliasTargetOptions(this)" onclick="openAliasTargetOptions(this)" oninput="filterAliasTargetOptions(this)" onkeydown="handleAliasTargetSearchKeydown(event)"></label>' +
     '<div class="alias-target-options" id="aliasTargetOptions" role="listbox" hidden></div></div>' +
-    '<div class="alias-target-selected-head"><span>已添加模型</span><span>权重修改后按 Enter 或失焦保存 · 按权重降序</span></div>' +
+    '<div class="alias-target-selected-head"><span>已添加模型</span><span>按启用状态、权重从高到低排序</span></div>' +
     '<div class="alias-target-selected-list">' +
     buildAliasTargetSelectedRows(targets) +
     "</div>"
@@ -5007,8 +5025,8 @@ function sanitizeAliasTargetWeightInput(input) {
   const weight = Number(input.value);
   input.value = String(
     Number.isFinite(weight)
-      ? Math.min(Math.max(Math.trunc(weight), 0), 1000000)
-      : 0,
+      ? Math.min(Math.max(Math.trunc(weight), 1), 1000000)
+      : 1,
   );
 }
 
@@ -5032,11 +5050,15 @@ function aliasTargetWeightFromRow(row) {
     10,
   );
   return Number.isFinite(parsedWeight)
-    ? Math.min(Math.max(parsedWeight, 0), 1000000)
+    ? Math.min(Math.max(parsedWeight, 1), 1000000)
     : 1;
 }
 
-function sortAliasTargetSelectedRowsByWeight(pop) {
+function aliasTargetEnabledFromRow(row) {
+  return row?.querySelector('[data-field="enabled"]')?.checked !== false;
+}
+
+function sortAliasTargetSelectedRows(pop) {
   const list = pop?.querySelector(".alias-target-selected-list");
   if (!list) return;
   Array.from(list.querySelectorAll(".alias-target-selected-row"))
@@ -5044,9 +5066,24 @@ function sortAliasTargetSelectedRowsByWeight(pop) {
       row: row,
       index: index,
       weight: aliasTargetWeightFromRow(row),
+      enabled: aliasTargetEnabledFromRow(row),
     }))
-    .sort((a, b) => b.weight - a.weight || a.index - b.index)
+    .sort(
+      (a, b) =>
+        Number(b.enabled) - Number(a.enabled) ||
+        b.weight - a.weight ||
+        a.index - b.index,
+    )
     .forEach((item) => list.appendChild(item.row));
+}
+
+function toggleAliasTargetEnabled(input) {
+  const row = input?.closest?.(".alias-target-selected-row");
+  const weightInput = row?.querySelector('input[type="number"]');
+  if (input?.checked && weightInput && Number(weightInput.value) < 1) {
+    weightInput.value = "1";
+  }
+  updateAliasTargetEditorState(input);
 }
 
 function updateAliasTargetEditorState(source, sortRows) {
@@ -5054,23 +5091,25 @@ function updateAliasTargetEditorState(source, sortRows) {
     ? source
     : source?.closest?.(".alias-target-popover");
   if (!pop) return;
-  if (sortRows !== false) sortAliasTargetSelectedRowsByWeight(pop);
+  if (sortRows !== false) sortAliasTargetSelectedRows(pop);
   const targets = readAliasTargetsFromPopover(pop);
   const selected = new Set(
     targets.map((target) =>
       aliasTargetIdentity(target.upstream, target.target_model),
     ),
   );
-  const totalWeight = targets.reduce((sum, target) => sum + target.weight, 0);
+  const enabledTargets = targets.filter((target) => target.enabled);
+  const totalWeight = enabledTargets.reduce((sum, target) => sum + target.weight, 0);
   pop.querySelectorAll(".alias-target-selected-row").forEach((row) => {
     const weight = aliasTargetWeightFromRow(row);
-    const percent = totalWeight ? (weight / totalWeight) * 100 : 0;
+    const enabled = aliasTargetEnabledFromRow(row);
+    const percent = enabled && totalWeight ? (weight / totalWeight) * 100 : 0;
     const label = row.querySelector(".alias-target-percent");
-    row.classList.toggle("is-inactive", weight === 0);
+    row.classList.toggle("is-disabled", !enabled);
     if (label)
       label.textContent =
-        weight === 0
-          ? "不参与"
+        !enabled
+          ? "已禁用"
           : percent.toFixed(percent >= 10 ? 0 : 1) + "%";
   });
   pop.querySelectorAll(".alias-target-option").forEach((option) => {
@@ -5089,7 +5128,11 @@ function updateAliasTargetEditorState(source, sortRows) {
   const summary = pop.querySelector(".model-selection-summary");
   if (summary)
     summary.textContent =
-      "已选 " + targets.length + (targets.length ? " · 总权重 " + totalWeight : "");
+      "已选 " +
+      targets.length +
+      (targets.length
+        ? " · 已启用 " + enabledTargets.length + " · 路由权重 " + totalWeight
+        : "");
 }
 
 function renderAliasTable() {

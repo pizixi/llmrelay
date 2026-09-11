@@ -90,6 +90,7 @@ func ReconcileRemovedUpstreamModels(previous AppConfig, next *AppConfig) ModelMa
 				TargetModel: strings.TrimSpace(alias.TargetModel),
 				Upstream:    strings.TrimSpace(alias.Upstream),
 				Weight:      1,
+				Enabled:     true,
 			})
 			delete(next.ModelAlias, aliasName)
 			aliasRemoved = true

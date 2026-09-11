@@ -41,7 +41,7 @@ func TestResolveRequestModelMappingWinsOverAutomaticModelBalance(t *testing.T) {
 		},
 		UpstreamOrder: []string{"primary", "backup"},
 		ModelAlias: map[string]ModelAlias{
-			"request-model": {Targets: []ModelAliasTarget{{Upstream: "backup", TargetModel: "target-model", Weight: 1}}},
+			"request-model": {Targets: []ModelAliasTarget{{Upstream: "backup", TargetModel: "target-model", Weight: 1, Enabled: true}}},
 		},
 	})
 
@@ -63,8 +63,8 @@ func TestResolveRequestModelDoesNotFallbackForInactiveAlias(t *testing.T) {
 		UpstreamOrder: []string{"primary", "backup"},
 		ModelAlias: map[string]ModelAlias{
 			"request-model": {Targets: []ModelAliasTarget{
-				{Upstream: "primary", TargetModel: "target-a", Weight: 0},
-				{Upstream: "backup", TargetModel: "target-b", Weight: 0},
+				{Upstream: "primary", TargetModel: "target-a", Weight: 3, Enabled: false},
+				{Upstream: "backup", TargetModel: "target-b", Weight: 1, Enabled: false},
 			}},
 		},
 	})

@@ -148,8 +148,8 @@ func ValidateConfig(cfg *AppConfig) error {
 			if !upstreamExists(upstreamName) {
 				return fmt.Errorf("model alias %q references unknown upstream %q", model, upstreamName)
 			}
-			if target.Weight < 0 || target.Weight > 1000000 {
-				return fmt.Errorf("model alias %q target %d weight must be between 0 and 1000000", model, index+1)
+			if target.Weight < 1 || target.Weight > 1000000 {
+				return fmt.Errorf("model alias %q target %d weight must be between 1 and 1000000", model, index+1)
 			}
 			key := upstreamName + "\x00" + targetModel
 			if _, exists := seenTargets[key]; exists {
@@ -181,6 +181,12 @@ func NormalizeConfig(cfg *AppConfig) {
 			for _, target := range alias.Targets {
 				target.TargetModel = strings.TrimSpace(target.TargetModel)
 				target.Upstream = strings.TrimSpace(target.Upstream)
+				// Weight zero represented a disabled target before Enabled was added.
+				// Preserve upgrade compatibility by giving it the minimum valid weight;
+				// its independent enabled state now controls routing participation.
+				if target.Weight == 0 {
+					target.Weight = 1
+				}
 				if target.TargetModel == "" || target.Upstream == "" {
 					continue
 				}
@@ -552,7 +558,8 @@ func modelAliasesEqual(left, right ModelAlias) bool {
 	for index := range left.Targets {
 		lt, rt := left.Targets[index], right.Targets[index]
 		if strings.TrimSpace(lt.TargetModel) != strings.TrimSpace(rt.TargetModel) ||
-			strings.TrimSpace(lt.Upstream) != strings.TrimSpace(rt.Upstream) || lt.Weight != rt.Weight {
+			strings.TrimSpace(lt.Upstream) != strings.TrimSpace(rt.Upstream) ||
+			lt.Weight != rt.Weight || lt.Enabled != rt.Enabled {
 			return false
 		}
 	}
@@ -609,7 +616,7 @@ func ResolveRequestModel(model string) (string, ModelAlias, string, *UpstreamCon
 			counter := counterValue.(*atomic.Uint64)
 			target := SelectWeightedAliasTarget(alias.Targets, counter.Add(1)-1)
 			if strings.TrimSpace(target.TargetModel) == "" || strings.TrimSpace(target.Upstream) == "" {
-				// A saved mapping whose targets all have weight 0 is intentionally
+				// A saved mapping whose targets are all disabled is intentionally
 				// inactive. Do not silently fall back to the first upstream; report
 				// it as unavailable until an operator enables a target again.
 				configMu.RUnlock()
@@ -793,7 +800,7 @@ func SelectWeightedAliasTarget(targets []ModelAliasTarget, sequence uint64) Mode
 	}
 	var total uint64
 	for _, target := range targets {
-		if target.Weight <= 0 {
+		if !target.Enabled || target.Weight <= 0 {
 			continue
 		}
 		total += uint64(target.Weight)
@@ -803,7 +810,7 @@ func SelectWeightedAliasTarget(targets []ModelAliasTarget, sequence uint64) Mode
 	}
 	position := sequence % total
 	for _, target := range targets {
-		if target.Weight <= 0 {
+		if !target.Enabled || target.Weight <= 0 {
 			continue
 		}
 		if position < uint64(target.Weight) {

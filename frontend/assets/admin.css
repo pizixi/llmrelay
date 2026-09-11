@@ -2051,7 +2051,7 @@ select.m-select {
   text-align: center;
 }
 
-/* Compact switch for 启用思维链 */
+/* 通用紧凑开关 */
 .switch {
   position: relative;
   display: inline-flex;
@@ -2623,7 +2623,7 @@ select.m-select {
 
 .alias-target-selected-row {
   display: grid;
-  grid-template-columns: minmax(230px, 1fr) 118px 48px 32px;
+  grid-template-columns: minmax(210px, 1fr) 72px 118px 58px 32px;
   align-items: center;
   gap: 9px;
   min-height: 45px;
@@ -2638,6 +2638,22 @@ select.m-select {
 .alias-target-selected-route {
   width: 100%;
   min-width: 0;
+}
+
+.alias-target-enabled {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  color: var(--text-ter);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.alias-target-enabled .switch {
+  flex: 0 0 36px;
+  margin: 0;
 }
 
 .alias-target-weight {
@@ -2676,8 +2692,8 @@ select.m-select {
   text-align: right;
 }
 
-.alias-target-selected-row.is-inactive .alias-target-selected-route,
-.alias-target-selected-row.is-inactive .alias-target-percent {
+.alias-target-selected-row.is-disabled .alias-target-selected-route,
+.alias-target-selected-row.is-disabled .alias-target-percent {
   color: var(--text-ter);
   opacity: 0.72;
 }
@@ -5944,6 +5960,11 @@ select.m-select {
   .alias-target-weight {
     grid-column: 1;
     grid-row: 2;
+  }
+  .alias-target-enabled {
+    grid-column: 1;
+    grid-row: 3;
+    justify-content: flex-start;
   }
   .alias-target-percent {
     grid-column: 2;

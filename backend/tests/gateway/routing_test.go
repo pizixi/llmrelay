@@ -79,9 +79,9 @@ func TestResolveRequestModelUsesWeightedAliasTargets(t *testing.T) {
 	installRoutingTestConfig(t, "https://example.test/v1")
 	configMu.Lock()
 	modelAlias["weighted"] = ModelAlias{Targets: []ModelAliasTarget{
-		{TargetModel: "disabled-model", Upstream: "mapped", Weight: 0},
-		{TargetModel: "primary-model", Upstream: "default", Weight: 3},
-		{TargetModel: "backup-model", Upstream: "mapped", Weight: 1},
+		{TargetModel: "disabled-model", Upstream: "mapped", Weight: 100, Enabled: false},
+		{TargetModel: "primary-model", Upstream: "default", Weight: 3, Enabled: true},
+		{TargetModel: "backup-model", Upstream: "mapped", Weight: 1, Enabled: true},
 	}}
 	configMu.Unlock()
 	syncLegacyConfig()

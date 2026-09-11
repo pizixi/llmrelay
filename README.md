@@ -39,15 +39,15 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 
 显式模型别名的优先级高于按模型名自动选择。核心解析逻辑位于 `backend/internal/routing/resolver.go` 和 `backend/internal/config/`。
 
-多目标映射使用按别名独立计数的加权周期分配。例如下面的 `3:1` 配置每四个请求会将三个请求路由到主上游、一个请求路由到备用上游。权重为 `0` 的目标会保留在配置中但不参与轮询；全部目标权重均为 `0` 时，该映射会保留为停用状态并在管理页提醒，请求不会回退到其他上游。旧版单目标 `target_model/upstream` 配置仍可读取，并会在管理页保存时转换为 `targets`：
+多目标映射使用按别名独立计数的加权周期分配。例如下面的 `3:1` 配置每四个请求会将三个请求路由到主上游、一个请求路由到备用上游。权重必须是正整数；`enabled` 为 `false` 的目标会保留权重但不参与轮询。全部目标均被禁用时，该映射会保留为停用状态并在管理页提醒，请求不会回退到其他上游。旧版单目标 `target_model/upstream` 配置仍可读取，并会在管理页保存时转换为 `targets`：
 
 ```json
 {
   "model_alias": {
     "balanced-chat": {
       "targets": [
-        { "upstream": "primary", "target_model": "gpt-5.1", "weight": 3 },
-        { "upstream": "backup", "target_model": "claude-sonnet-4-5", "weight": 1 }
+        { "upstream": "primary", "target_model": "gpt-5.1", "weight": 3, "enabled": true },
+        { "upstream": "backup", "target_model": "claude-sonnet-4-5", "weight": 1, "enabled": true }
       ],
       "with_reasoning": true
     }

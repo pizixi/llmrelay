@@ -856,10 +856,19 @@ func TestValidateConfigRejectsUnknownRoutes(t *testing.T) {
 	if err := validateConfig(badWeight); err == nil {
 		t.Fatal("validateConfig accepted a negative model target weight")
 	}
+	zeroWeight := &AppConfig{
+		Upstreams: map[string]*UpstreamConfig{"good": {BaseURL: "https://example.test/v1", APIType: UpstreamOpenAI}},
+		ModelAlias: map[string]ModelAlias{"model": {Targets: []ModelAliasTarget{
+			{TargetModel: "target", Upstream: "good", Weight: 0, Enabled: true},
+		}}},
+	}
+	if err := validateConfig(zeroWeight); err == nil {
+		t.Fatal("validateConfig accepted a zero model target weight")
+	}
 	allDisabled := &AppConfig{
 		Upstreams: map[string]*UpstreamConfig{"good": {BaseURL: "https://example.test/v1", APIType: UpstreamOpenAI}},
 		ModelAlias: map[string]ModelAlias{"model": {Targets: []ModelAliasTarget{
-			{TargetModel: "target", Upstream: "good", Weight: 0},
+			{TargetModel: "target", Upstream: "good", Weight: 1, Enabled: false},
 		}}},
 	}
 	if err := validateConfig(allDisabled); err != nil {
@@ -955,7 +964,7 @@ func TestNormalizeConfigPreservesUpstreamOrderAndAppendsMissingNames(t *testing.
 				TargetModel: "legacy-target",
 				Upstream:    "alpha",
 				Targets: []ModelAliasTarget{
-					{TargetModel: " target ", Upstream: " bravo ", Weight: 0},
+					{TargetModel: " target ", Upstream: " bravo ", Weight: 0, Enabled: false},
 				},
 				ReasoningEffortMap: map[string]string{" low ": " high "},
 			},
@@ -971,34 +980,41 @@ func TestNormalizeConfigPreservesUpstreamOrderAndAppendsMissingNames(t *testing.
 	requireTestEqual(t, "upstream order", cfg.UpstreamOrder, []string{"bravo", "alpha", "charlie"})
 	requireTestEqual(t, "default follows order", cfg.DefaultUpstream, "bravo")
 	requireTestEqual(t, "normalized model effort map", cfg.ModelAlias["model"].ReasoningEffortMap, map[string]string{"low": "high"})
-	requireTestEqual(t, "normalized weighted targets", cfg.ModelAlias["model"].Targets, []ModelAliasTarget{{TargetModel: "target", Upstream: "bravo", Weight: 0}})
+	requireTestEqual(t, "normalized weighted targets", cfg.ModelAlias["model"].Targets, []ModelAliasTarget{{TargetModel: "target", Upstream: "bravo", Weight: 1, Enabled: false}})
 	if cfg.ModelAlias["model"].TargetModel != "" || cfg.ModelAlias["model"].Upstream != "" {
 		t.Fatal("normalized weighted alias retained legacy target fields")
 	}
 }
 
-func TestModelAliasTargetWeightJSONCompatibility(t *testing.T) {
+func TestModelAliasTargetJSONCompatibility(t *testing.T) {
 	var legacyTarget ModelAliasTarget
 	if err := json.Unmarshal([]byte(`{"target_model":"legacy","upstream":"primary"}`), &legacyTarget); err != nil {
 		t.Fatalf("unmarshal legacy target: %v", err)
 	}
-	if legacyTarget.Weight != 1 {
-		t.Fatalf("legacy target weight=%d, want 1", legacyTarget.Weight)
+	if legacyTarget.Weight != 1 || !legacyTarget.Enabled {
+		t.Fatalf("legacy target=%#v, want weight 1 and enabled", legacyTarget)
+	}
+	var legacyInactiveTarget ModelAliasTarget
+	if err := json.Unmarshal([]byte(`{"target_model":"inactive","upstream":"primary","weight":0}`), &legacyInactiveTarget); err != nil {
+		t.Fatalf("unmarshal legacy inactive target: %v", err)
+	}
+	if legacyInactiveTarget.Weight != 0 || legacyInactiveTarget.Enabled {
+		t.Fatalf("legacy inactive target=%#v, want zero weight and disabled migration state", legacyInactiveTarget)
 	}
 
 	var disabledTarget ModelAliasTarget
-	if err := json.Unmarshal([]byte(`{"target_model":"disabled","upstream":"backup","weight":0}`), &disabledTarget); err != nil {
+	if err := json.Unmarshal([]byte(`{"target_model":"disabled","upstream":"backup","weight":7,"enabled":false}`), &disabledTarget); err != nil {
 		t.Fatalf("unmarshal disabled target: %v", err)
 	}
-	if disabledTarget.Weight != 0 {
-		t.Fatalf("disabled target weight=%d, want 0", disabledTarget.Weight)
+	if disabledTarget.Weight != 7 || disabledTarget.Enabled {
+		t.Fatalf("disabled target=%#v, want preserved weight and disabled state", disabledTarget)
 	}
 	encoded, err := json.Marshal(disabledTarget)
 	if err != nil {
 		t.Fatalf("marshal disabled target: %v", err)
 	}
-	if !strings.Contains(string(encoded), `"weight":0`) {
-		t.Fatalf("disabled target JSON %s does not preserve zero weight", encoded)
+	if !strings.Contains(string(encoded), `"weight":7`) || !strings.Contains(string(encoded), `"enabled":false`) {
+		t.Fatalf("disabled target JSON %s does not preserve weight and enabled state", encoded)
 	}
 }
 

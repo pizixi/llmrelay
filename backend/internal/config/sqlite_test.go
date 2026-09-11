@@ -36,8 +36,8 @@ func TestSQLiteConfigRoundTripUsesNormalizedTables(t *testing.T) {
 			"chat": {
 				WithReasoning: true,
 				Targets: []ModelAliasTarget{
-					{Upstream: "primary", TargetModel: "gpt-test", Weight: 2},
-					{Upstream: "backup", TargetModel: "backup-model", Weight: 1},
+					{Upstream: "primary", TargetModel: "gpt-test", Weight: 2, Enabled: true},
+					{Upstream: "backup", TargetModel: "backup-model", Weight: 7, Enabled: false},
 				},
 				ReasoningEffortMap: map[string]string{"high": "max"},
 			},
@@ -80,7 +80,7 @@ func TestSQLiteConfigRoundTripUsesNormalizedTables(t *testing.T) {
 	if got.Upstreams["primary"].Capabilities["streaming"] != true || got.Upstreams["primary"].Capabilities["hosted_web_search"] != false {
 		t.Fatalf("upstream capability declaration was not preserved: %#v", got.Upstreams["primary"].Capabilities)
 	}
-	if target := got.ModelAlias["chat"].Targets; len(target) != 2 || target[0].Weight != 2 || target[1].Upstream != "backup" {
+	if target := got.ModelAlias["chat"].Targets; len(target) != 2 || target[0].Weight != 2 || !target[0].Enabled || target[1].Upstream != "backup" || target[1].Weight != 7 || target[1].Enabled {
 		t.Fatalf("unexpected alias targets: %#v", target)
 	}
 	if got.ActiveSocks5 != "127.0.0.1:1080" || got.APIKeys[0].Key != "client-secret" || !got.WebSearch.Enabled {
@@ -230,6 +230,69 @@ VALUES (7, 'legacy', 'https://legacy.example/v1', 'openai', 'compatible', 0);
 	}
 	if columnCount != 1 {
 		t.Fatal("capabilities_json column was not added")
+	}
+}
+
+func TestSQLiteConfigMigratesAliasTargetEnabledStateAndZeroWeight(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "llmrelay.db")
+	db, err := storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create the target table in its old shape before initializing the rest of
+	// the current schema. CREATE TABLE IF NOT EXISTS must leave this table and
+	// its data in place for the idempotent column migration.
+	if _, err := db.Exec(`
+CREATE TABLE model_alias_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias_id INTEGER NOT NULL REFERENCES model_aliases(id) ON DELETE CASCADE,
+    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+    target_model TEXT NOT NULL,
+    weight INTEGER NOT NULL DEFAULT 1 CHECK (weight BETWEEN 0 AND 1000000),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (alias_id, upstream_id, target_model)
+);`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(configSchema); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO upstreams(id, name, base_url, api_type, bridge_mode, sort_order)
+VALUES (1, 'primary', 'https://primary.example/v1', 'openai', 'compatible', 0);
+INSERT INTO model_aliases(id, alias, with_reasoning, sort_order)
+VALUES (1, 'chat', 0, 0);
+INSERT INTO model_alias_targets(alias_id, upstream_id, target_model, weight, sort_order)
+VALUES (1, 1, 'gpt-test', 0, 0);`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadConfig(databasePath)
+	if err != nil {
+		t.Fatalf("load older alias target schema: %v", err)
+	}
+	targets := got.ModelAlias["chat"].Targets
+	if len(targets) != 1 || targets[0].Weight != 1 || targets[0].Enabled {
+		t.Fatalf("migrated alias targets = %#v, want disabled target with weight 1", targets)
+	}
+
+	db, err = storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var enabled, weight int
+	if err := db.QueryRow(`SELECT enabled, weight FROM model_alias_targets WHERE id = 1`).Scan(&enabled, &weight); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 || weight != 1 {
+		t.Fatalf("stored enabled=%d weight=%d, want 0 and 1", enabled, weight)
 	}
 }
 

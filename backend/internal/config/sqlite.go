@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS model_alias_targets (
     alias_id INTEGER NOT NULL REFERENCES model_aliases(id) ON DELETE CASCADE,
     upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
     target_model TEXT NOT NULL,
-    weight INTEGER NOT NULL DEFAULT 1 CHECK (weight BETWEEN 0 AND 1000000),
+    weight INTEGER NOT NULL DEFAULT 1 CHECK (weight BETWEEN 1 AND 1000000),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     sort_order INTEGER NOT NULL DEFAULT 0,
     UNIQUE (alias_id, upstream_id, target_model)
 );
@@ -164,7 +165,10 @@ func ensureConfigSchema(db *sql.DB) error {
 		if err := ensureUpstreamCapabilitiesColumn(db); err != nil {
 			return err
 		}
-		return ensureUpstreamProxyColumn(db)
+		if err := ensureUpstreamProxyColumn(db); err != nil {
+			return err
+		}
+		return ensureModelAliasTargetEnabledColumn(db)
 	}
 	if err != nil {
 		return fmt.Errorf("read config schema version: %w", err)
@@ -175,7 +179,10 @@ func ensureConfigSchema(db *sql.DB) error {
 	if err := ensureUpstreamCapabilitiesColumn(db); err != nil {
 		return err
 	}
-	return ensureUpstreamProxyColumn(db)
+	if err := ensureUpstreamProxyColumn(db); err != nil {
+		return err
+	}
+	return ensureModelAliasTargetEnabledColumn(db)
 }
 
 // ensureUpstreamCapabilitiesColumn keeps databases created by older releases
@@ -246,6 +253,50 @@ func ensureUpstreamProxyColumn(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE upstreams ADD COLUMN proxy_addr TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add upstream proxy column: %w", err)
+	}
+	return nil
+}
+
+// ensureModelAliasTargetEnabledColumn upgrades normalized databases created
+// before model targets had an independent enabled state. Positive-weight
+// targets stay enabled, while legacy zero-weight targets become disabled with
+// the minimum valid weight.
+func ensureModelAliasTargetEnabledColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(model_alias_targets)")
+	if err != nil {
+		return fmt.Errorf("inspect model alias target enabled column: %w", err)
+	}
+	defer rows.Close()
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan model alias target schema: %w", err)
+		}
+		if name == "enabled" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read model alias target schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close model alias target schema rows: %w", err)
+	}
+	if !hasColumn {
+		if _, err := db.Exec(`ALTER TABLE model_alias_targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))`); err != nil {
+			return fmt.Errorf("add model alias target enabled column: %w", err)
+		}
+		if _, err := db.Exec(`UPDATE model_alias_targets SET enabled = 0, weight = 1 WHERE weight = 0`); err != nil {
+			return fmt.Errorf("migrate disabled model alias targets: %w", err)
+		}
+		return nil
+	}
+	if _, err := db.Exec(`UPDATE model_alias_targets SET weight = 1 WHERE weight = 0`); err != nil {
+		return fmt.Errorf("migrate zero model alias target weights: %w", err)
 	}
 	return nil
 }
@@ -354,9 +405,6 @@ func migrateLegacyConfigTable(db *sql.DB) error {
 	var cfg AppConfig
 	if err := json.Unmarshal([]byte(data), &cfg); err != nil {
 		return fmt.Errorf("parse legacy sqlite config: %w", err)
-	}
-	if err := ValidateConfig(&cfg); err != nil {
-		return fmt.Errorf("validate legacy sqlite config: %w", err)
 	}
 	NormalizeConfig(&cfg)
 	if err := ValidateConfig(&cfg); err != nil {
@@ -515,7 +563,7 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 		return cfg, err
 	}
 
-	rows, err = db.Query(`SELECT alias_id, upstream_id, target_model, weight
+	rows, err = db.Query(`SELECT alias_id, upstream_id, target_model, weight, enabled
 		FROM model_alias_targets ORDER BY alias_id, sort_order, id`)
 	if err != nil {
 		return cfg, err
@@ -523,8 +571,8 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 	for rows.Next() {
 		var aliasID, upstreamID int64
 		var targetModel string
-		var weight int
-		if err := rows.Scan(&aliasID, &upstreamID, &targetModel, &weight); err != nil {
+		var weight, enabled int
+		if err := rows.Scan(&aliasID, &upstreamID, &targetModel, &weight, &enabled); err != nil {
 			_ = rows.Close()
 			return cfg, err
 		}
@@ -538,6 +586,7 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 			TargetModel: targetModel,
 			Upstream:    upstreamName,
 			Weight:      weight,
+			Enabled:     enabled != 0,
 		})
 		cfg.ModelAlias[aliasName] = alias
 	}
@@ -801,8 +850,8 @@ func writeNormalizedConfig(tx *sql.Tx, cfg AppConfig) error {
 				return fmt.Errorf("alias %q references unknown upstream %q", aliasName, target.Upstream)
 			}
 			if _, err := tx.Exec(`INSERT INTO model_alias_targets
-				(alias_id, upstream_id, target_model, weight, sort_order)
-				VALUES (?, ?, ?, ?, ?)`, aliasID, upstreamID, strings.TrimSpace(target.TargetModel), target.Weight, targetIndex); err != nil {
+				(alias_id, upstream_id, target_model, weight, enabled, sort_order)
+				VALUES (?, ?, ?, ?, ?, ?)`, aliasID, upstreamID, strings.TrimSpace(target.TargetModel), target.Weight, boolToSQLite(target.Enabled), targetIndex); err != nil {
 				return err
 			}
 		}
@@ -921,6 +970,7 @@ func aliasTargetsForStorage(alias ModelAlias) []ModelAliasTarget {
 			TargetModel: strings.TrimSpace(alias.TargetModel),
 			Upstream:    strings.TrimSpace(alias.Upstream),
 			Weight:      1,
+			Enabled:     true,
 		}}
 	}
 	return nil
