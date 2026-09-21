@@ -4706,15 +4706,15 @@ function sortAliasTargetsForDisplay(targets) {
 }
 
 function buildAliasTargetSelectedRows(targets) {
-  const sortedTargets = sortAliasTargetsForDisplay(targets);
-  if (!sortedTargets.length) {
+  const normalizedTargets = normalizeAliasTargets(targets);
+  if (!normalizedTargets.length) {
     return (
       '<div class="alias-target-selected-empty">' +
       ICONS.layers +
       "<span>尚未添加上游模型</span></div>"
     );
   }
-  return sortedTargets
+  return normalizedTargets
     .map(
       (target) =>
         '<div class="alias-target-selected-row" data-upstream="' +
@@ -4741,7 +4741,7 @@ function buildAliasTargetSelectedRows(targets) {
         '><span class="switch-slider"></span></span></label>' +
         '<label class="alias-target-weight"><span>权重</span><input type="number" min="1" max="1000000" step="1" value="' +
         target.weight +
-        '" oninput="updateAliasTargetEditorState(this, false)" onkeydown="handleAliasTargetWeightKeydown(event)" onblur="commitAliasTargetWeightInput(this)"></label>' +
+        '" oninput="updateAliasTargetEditorState(this)" onkeydown="handleAliasTargetWeightKeydown(event)" onblur="commitAliasTargetWeightInput(this)"></label>' +
         '<span class="alias-target-percent">0%</span>' +
         '<button type="button" class="btn-icon btn-icon-danger" onclick="removeAliasTarget(this)" title="删除此上游模型" aria-label="删除 ' +
         escAttr(target.upstream + " / " + target.target_model) +
@@ -4779,9 +4779,9 @@ function buildAliasTargetsPopoverHtml(targets) {
     ICONS.search +
     '<input type="search" role="combobox" aria-expanded="false" aria-controls="aliasTargetOptions" aria-autocomplete="list" autocomplete="off" placeholder="搜索上游名称或模型 ID" onfocus="openAliasTargetOptions(this)" onclick="openAliasTargetOptions(this)" oninput="filterAliasTargetOptions(this)" onkeydown="handleAliasTargetSearchKeydown(event)"></label>' +
     '<div class="alias-target-options" id="aliasTargetOptions" role="listbox" hidden></div></div>' +
-    '<div class="alias-target-selected-head"><span>已添加模型</span><span>按启用状态、权重从高到低排序</span></div>' +
+    '<div class="alias-target-selected-head"><span>已添加模型</span><span>加载时按启用状态、权重从高到低排序</span></div>' +
     '<div class="alias-target-selected-list">' +
-    buildAliasTargetSelectedRows(targets) +
+    buildAliasTargetSelectedRows(sortAliasTargetsForDisplay(targets)) +
     "</div>"
   );
 }
@@ -4988,7 +4988,7 @@ function handleAliasTargetSearchKeydown(event) {
 function renderAliasTargetSelectedList(pop, targets) {
   const list = pop?.querySelector(".alias-target-selected-list");
   if (!list) return;
-  list.innerHTML = buildAliasTargetSelectedRows(normalizeAliasTargets(targets));
+  list.innerHTML = buildAliasTargetSelectedRows(targets);
   updateAliasTargetEditorState(pop);
   const options = pop.querySelector(".alias-target-options");
   const input = pop.querySelector(".alias-target-search input");
@@ -5058,25 +5058,6 @@ function aliasTargetEnabledFromRow(row) {
   return row?.querySelector('[data-field="enabled"]')?.checked !== false;
 }
 
-function sortAliasTargetSelectedRows(pop) {
-  const list = pop?.querySelector(".alias-target-selected-list");
-  if (!list) return;
-  Array.from(list.querySelectorAll(".alias-target-selected-row"))
-    .map((row, index) => ({
-      row: row,
-      index: index,
-      weight: aliasTargetWeightFromRow(row),
-      enabled: aliasTargetEnabledFromRow(row),
-    }))
-    .sort(
-      (a, b) =>
-        Number(b.enabled) - Number(a.enabled) ||
-        b.weight - a.weight ||
-        a.index - b.index,
-    )
-    .forEach((item) => list.appendChild(item.row));
-}
-
 function toggleAliasTargetEnabled(input) {
   const row = input?.closest?.(".alias-target-selected-row");
   const weightInput = row?.querySelector('input[type="number"]');
@@ -5086,12 +5067,11 @@ function toggleAliasTargetEnabled(input) {
   updateAliasTargetEditorState(input);
 }
 
-function updateAliasTargetEditorState(source, sortRows) {
+function updateAliasTargetEditorState(source) {
   const pop = source?.classList?.contains("alias-target-popover")
     ? source
     : source?.closest?.(".alias-target-popover");
   if (!pop) return;
-  if (sortRows !== false) sortAliasTargetSelectedRows(pop);
   const targets = readAliasTargetsFromPopover(pop);
   const selected = new Set(
     targets.map((target) =>
