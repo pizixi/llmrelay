@@ -85,6 +85,18 @@ func TestSQLiteUsageRecordsAndDimensions(t *testing.T) {
 	if len(snapshot.ModelUpstreams) != 2 || len(snapshot.Days) != 1 {
 		t.Fatalf("unexpected dimensions: model_upstreams=%#v days=%#v", snapshot.ModelUpstreams, snapshot.Days)
 	}
+	if len(snapshot.ModelDays) != 1 {
+		t.Fatalf("unexpected model-day dimensions: %#v", snapshot.ModelDays)
+	}
+	if snapshot.ModelDays[0].Date == "" || snapshot.ModelDays[0].Model != "chat" || snapshot.ModelDays[0].TotalTokens != 26 {
+		t.Fatalf("unexpected model-day rows: %#v", snapshot.ModelDays)
+	}
+	if len(snapshot.ModelUpstreamDays) != 2 {
+		t.Fatalf("unexpected model-upstream-day dimensions: %#v", snapshot.ModelUpstreamDays)
+	}
+	if first := snapshot.ModelUpstreamDays[0]; first.Date == "" || first.Model != "chat" || first.Upstream != "primary" || first.TotalTokens != 18 {
+		t.Fatalf("unexpected model-upstream-day rows: %#v", snapshot.ModelUpstreamDays)
+	}
 
 	page, err := ListUsageRecords(UsageQuery{Limit: 10, Upstream: "primary"})
 	if err != nil {

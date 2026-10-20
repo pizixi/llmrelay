@@ -148,16 +148,8 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list usage: %v", err)
 	}
-	if page.Total != int64(len(tests)) || len(page.Items) != len(tests) {
-		t.Fatalf("usage records=%#v, want %d records", page, len(tests))
-	}
-	if page.Summary.RequestCount != int64(len(tests)) || page.Summary.PromptTokens != 3 || page.Summary.CompletionTokens != 6 || page.Summary.TotalTokens != 9 {
-		t.Fatalf("usage summary=%#v", page.Summary)
-	}
-	for _, item := range page.Items {
-		if item.RequestModel != "test-model" || item.UpstreamName != "target" || item.UpstreamModel != "test-model" {
-			t.Fatalf("usage identity=%#v", item)
-		}
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("model test should not record usage: %#v", page)
 	}
 }
 

@@ -271,7 +271,7 @@ func modelTestErrorMessage(body []byte, callErr error) string {
 func proxyAdminModelTestStream(w http.ResponseWriter, body io.ReadCloser, model string) {
 	setSSEHeaders(w.Header())
 	w.WriteHeader(http.StatusOK)
-	if err := proxyChatPassthroughStream(w, body, model, true); err != nil {
+	if err := proxyChatPassthroughStream(w, body, model, false); err != nil {
 		flusher, _ := w.(http.Flusher)
 		emitOpenAIStreamError(w, flusher, map[string]any{"message": err.Error()}, "failed to read upstream model test stream")
 	}
@@ -336,14 +336,15 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("X-Model-Test-Protocol", string(upstream.APIType))
 	w.Header().Set("X-Upstream-Status", strconv.Itoa(status))
-	usageModel := stats.UsageIdentity(input.Model, input.Upstream, input.Model)
+	// 管理页模型测试只用于连通性/效果验证，不属于真实业务调用，
+	// 因此显式关闭用量统计，避免写入“使用记录”。
 	switch upstream.APIType {
 	case UpstreamAnthropic:
-		anthropicStreamToChatHandler(w, body, input.Model, usageModel, true)
+		anthropicStreamToChatHandler(w, body, input.Model, "", false)
 	case UpstreamResponses:
-		responsesStreamToChatHandler(w, body, input.Model, usageModel, true)
+		responsesStreamToChatHandler(w, body, input.Model, "", false)
 	default:
-		proxyAdminModelTestStream(w, body, usageModel)
+		proxyAdminModelTestStream(w, body, input.Model)
 	}
 }
 

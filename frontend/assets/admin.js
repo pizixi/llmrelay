@@ -5816,6 +5816,10 @@ function statsSkeletonHtml() {
 const STATS_HEATMAP_DAY_COUNT = 365;
 const STATS_HEATMAP_DAY_MS = 24 * 60 * 60 * 1000;
 
+/* 单日 / 累计通过两个页签切换，刷新页面后仍默认展示单日 */
+let statsPeriod = "today";
+let statsSnapshot = null;
+
 function statsDateFromKey(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
   if (!match) return null;
@@ -5979,16 +5983,56 @@ function statsOverviewHtml(days, dateLabel) {
   return statsTrendHtml(days, dateLabel);
 }
 
+function statsPeriodTabsHtml(dimension) {
+  if (dimension === "day") return "";
+  const tab = (value, label) => {
+    const active = statsPeriod === value;
+    return (
+      '<button type="button" class="stats-period-tab' +
+      (active ? " is-active" : "") +
+      '" aria-pressed="' +
+      String(active) +
+      '" data-stats-period="' +
+      value +
+      '" onclick="setStatsPeriod(\'' +
+      value +
+      "')\">" +
+      label +
+      "</button>"
+    );
+  };
+  return (
+    '<div class="stats-period-tabs" role="group" aria-label="统计周期">' +
+    tab("today", "单日") +
+    tab("total", "累计") +
+    "</div>"
+  );
+}
+
+function setStatsPeriod(period) {
+  if (period !== "today" && period !== "total") return;
+  if (period === statsPeriod) return;
+  statsPeriod = period;
+  if (statsSnapshot) {
+    renderStats(statsSnapshot);
+  } else {
+    loadStats();
+  }
+}
+
 function statsControlsHtml(dimension) {
   const selected = (value) => (value === dimension ? " selected" : "");
   return (
     '<div class="stats-heading-actions" aria-label="统计操作">' +
+    statsPeriodTabsHtml(dimension) +
     '<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>' +
     '<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>' +
     '<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="loadStats()">' +
     '<option value="model"' + selected("model") + ">按模型</option>" +
     '<option value="upstream"' + selected("upstream") + ">按上游</option>" +
     '<option value="model_upstream"' + selected("model_upstream") + ">模型 × 上游</option>" +
+    '<option value="model_day"' + selected("model_day") + ">按日期 + 模型</option>" +
+    '<option value="model_upstream_day"' + selected("model_upstream_day") + ">按日期 + 上游 + 模型</option>" +
     '<option value="day"' + selected("day") + ">按日期</option>" +
     "</select>" +
     '<span id="resetStatus" class="stats-reset-status" aria-live="polite"></span>' +
@@ -6265,21 +6309,28 @@ function modelStatCells(m) {
   );
 }
 
-function statsTableHtml(rowsHtml, dateLabel) {
-  const dimensionLabel = arguments.length > 2 ? arguments[2] : "模型";
-  const todayTitle = dateLabel ? "今日用量 · " + esc(dateLabel) : "今日用量";
+function statsTableHtml(rowsHtml, dateLabel, dimensionLabel, period) {
+  const isToday = period !== "total";
+  const title = isToday
+    ? dateLabel
+      ? "单日用量 · " + esc(dateLabel)
+      : "单日用量"
+    : "累计用量";
+  const tableClass = "tbl stats-period-table " + (isToday ? "is-today" : "is-total");
   return (
-    '<div class="stats-table-wrap"><table class="tbl" id="statsTable">' +
+    '<div class="stats-table-wrap"><table class="' +
+    tableClass +
+    '" id="statsTable">' +
     "<thead>" +
     "<tr>" +
-    '<th rowspan="2" class="stats-model-col">' + esc(dimensionLabel) + "</th>" +
-    '<th colspan="5" class="stats-group-head">' +
-    todayTitle +
+    '<th class="stats-model-col">' +
+    esc(dimensionLabel) +
     "</th>" +
-    '<th colspan="5" class="stats-group-head">累计用量</th>' +
+    '<th colspan="5" class="stats-group-head">' +
+    title +
+    "</th>" +
     "</tr>" +
     '<tr class="stats-subhead">' +
-    "<th>请求</th><th>输入</th><th class=\"stats-cache-head\">缓存命中</th><th>输出</th><th>合计</th>" +
     "<th>请求</th><th>输入</th><th class=\"stats-cache-head\">缓存命中</th><th>输出</th><th>合计</th>" +
     "</tr>" +
     "</thead>" +
@@ -6294,6 +6345,31 @@ function statsRowMap(rows) {
   (rows || []).forEach((row) => {
     const key = (row.model || "") + "\u0000" + (row.upstream || "");
     result[key] = row;
+  });
+  return result;
+}
+
+function statsModelDayMap(rows, dateFilter) {
+  const result = {};
+  (rows || []).forEach((row) => {
+    const date = row.date || "";
+    const model = row.model || "";
+    if (!date || !model) return;
+    if (dateFilter && date !== dateFilter) return;
+    result[date + "\u0000" + model] = row;
+  });
+  return result;
+}
+
+function statsModelUpstreamDayMap(rows, dateFilter) {
+  const result = {};
+  (rows || []).forEach((row) => {
+    const date = row.date || "";
+    const upstream = row.upstream || "";
+    const model = row.model || "";
+    if (!date || !upstream || !model) return;
+    if (dateFilter && date !== dateFilter) return;
+    result[date + "\u0000" + upstream + "\u0000" + model] = row;
   });
   return result;
 }
@@ -6342,119 +6418,8 @@ async function resetStats(btn) {
 async function loadStats() {
   try {
     const d = await apiJSON("/api/stats");
-    const ms = d.models || {};
-    const dm = d.daily ? d.daily.models || {} : {};
-    const dateLabel = d.daily && d.daily.date ? d.daily.date : "";
-    const dimension = document.getElementById("statsDimension")?.value || "model";
-
-    setUsageFilterOptions("usageModelFilter", Object.keys(ms), "全部模型");
-    setUsageFilterOptions("usageUpstreamFilter", Object.keys(d.upstreams || {}), "全部上游");
-
-    let h = "";
-    h +=
-      '<div class="stats-top-grid">' +
-      statsOverviewHtml(d.days || [], dateLabel) +
-      statsHeatmapHtml(d.days || [], dateLabel) +
-      "</div>";
-
-    let cumulative = ms;
-    let todayValues = dm;
-    let dimensionLabel = "模型";
-    let heading = "模型用量";
-    const displayLabels = {};
-    if (dimension === "upstream") {
-      cumulative = d.upstreams || {};
-      todayValues = d.daily_upstreams || {};
-      dimensionLabel = "上游";
-      heading = "上游用量";
-    } else if (dimension === "model_upstream") {
-      cumulative = statsRowMap(d.model_upstreams);
-      todayValues = statsRowMap(d.daily_model_upstreams);
-      Object.keys(cumulative).forEach((key) => {
-        const row = cumulative[key] || {};
-        displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
-      });
-      Object.keys(todayValues).forEach((key) => {
-        const row = todayValues[key] || {};
-        if (!displayLabels[key]) displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
-      });
-      dimensionLabel = "模型 / 上游";
-      heading = "模型与上游用量";
-    } else if (dimension === "day") {
-      heading = "每日用量明细";
-    }
-
-    h += statsHeadingHtml(heading, dateLabel, dimension);
-    if (dimension === "day") {
-      const days = d.days || [];
-      if (!days.length) {
-        h += emptyStateHtml(ICONS.chart, "暂无统计数据", "网关处理请求后会在此汇总每日 Token 用量");
-      } else {
-        const rows = days
-          .map(
-            (row) =>
-              '<tr><td><span class="stats-dimension-label is-date">' +
-              esc(row.date || "-") +
-              "</span></td>" +
-              modelStatCells(row) +
-              "</tr>",
-          )
-          .join("");
-        h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th class="stats-cache-head">缓存命中</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
-      }
-      document.getElementById("statsContent").innerHTML = h;
-      injectButtonIcons();
-      ssEnhanceSelect(document.getElementById("statsDimension"));
-      bindStatsHeatmap();
-      return;
-    }
-
-    const keys = Array.from(new Set([...Object.keys(cumulative), ...Object.keys(todayValues)])).sort((a, b) => {
-      const totalDiff = ((cumulative[b] || {}).total_tokens || 0) - ((cumulative[a] || {}).total_tokens || 0);
-      return totalDiff || a.localeCompare(b);
-    });
-    if (!keys.length) {
-      h += emptyStateHtml(
-        ICONS.chart,
-        "暂无统计数据",
-        "网关处理请求后会在此汇总 Token 用量",
-      );
-    } else {
-      let rows = "";
-      for (const k of keys) {
-        rows +=
-          '<tr><td><span class="stats-dimension-label">' +
-          esc(displayLabels[k] || k) +
-          "</span></td>" +
-          modelStatCells(todayValues[k]) +
-          modelStatCells(cumulative[k]) +
-          "</tr>";
-      }
-      const cumulativeTotals = sumModelStats(cumulative, Object.keys(cumulative));
-      const todayDimensionTotals = sumModelStats(todayValues, Object.keys(todayValues));
-      rows +=
-        '<tr class="stats-total-row"><td><span class="stats-dimension-label is-total">合计</span></td>' +
-        modelStatCells({
-          request_count: todayDimensionTotals.requests,
-          prompt_tokens: todayDimensionTotals.prompt,
-          cached_tokens: todayDimensionTotals.cached,
-          completion_tokens: todayDimensionTotals.completion,
-          total_tokens: todayDimensionTotals.total,
-        }) +
-        modelStatCells({
-          request_count: cumulativeTotals.requests,
-          prompt_tokens: cumulativeTotals.prompt,
-          cached_tokens: cumulativeTotals.cached,
-          completion_tokens: cumulativeTotals.completion,
-          total_tokens: cumulativeTotals.total,
-        }) +
-        "</tr>";
-      h += statsTableHtml(rows, dateLabel, dimensionLabel);
-    }
-    document.getElementById("statsContent").innerHTML = h;
-    injectButtonIcons();
-    ssEnhanceSelect(document.getElementById("statsDimension"));
-    bindStatsHeatmap();
+    statsSnapshot = d;
+    renderStats(d);
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     const currentDimension = document.getElementById("statsDimension")?.value || "model";
@@ -6464,6 +6429,156 @@ async function loadStats() {
     injectButtonIcons();
     ssEnhanceSelect(document.getElementById("statsDimension"));
   }
+}
+
+function renderStats(d) {
+  const ms = d.models || {};
+  const dm = d.daily ? d.daily.models || {} : {};
+  const dateLabel = d.daily && d.daily.date ? d.daily.date : "";
+  const dimension = document.getElementById("statsDimension")?.value || "model";
+
+  setUsageFilterOptions("usageModelFilter", Object.keys(ms), "全部模型");
+  setUsageFilterOptions("usageUpstreamFilter", Object.keys(d.upstreams || {}), "全部上游");
+
+  let h = "";
+  h +=
+    '<div class="stats-top-grid">' +
+    statsOverviewHtml(d.days || [], dateLabel) +
+    statsHeatmapHtml(d.days || [], dateLabel) +
+    "</div>";
+
+  let cumulative = ms;
+  let todayValues = dm;
+  let dimensionLabel = "模型";
+  let heading = "模型用量";
+  const displayLabels = {};
+  if (dimension === "upstream") {
+    cumulative = d.upstreams || {};
+    todayValues = d.daily_upstreams || {};
+    dimensionLabel = "上游";
+    heading = "上游用量";
+  } else if (dimension === "model_upstream") {
+    cumulative = statsRowMap(d.model_upstreams);
+    todayValues = statsRowMap(d.daily_model_upstreams);
+    Object.keys(cumulative).forEach((key) => {
+      const row = cumulative[key] || {};
+      displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
+    });
+    Object.keys(todayValues).forEach((key) => {
+      const row = todayValues[key] || {};
+      if (!displayLabels[key]) displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
+    });
+    dimensionLabel = "模型 / 上游";
+    heading = "模型与上游用量";
+  } else if (dimension === "model_day") {
+    cumulative = statsModelDayMap(d.model_days);
+    todayValues = statsModelDayMap(d.model_days, dateLabel);
+    Object.keys(cumulative).forEach((key) => {
+      const parts = key.split("\u0000");
+      displayLabels[key] = (parts[0] || "-") + " / " + (parts[1] || "-");
+    });
+    dimensionLabel = "日期 / 模型";
+    heading = "日期与模型用量";
+  } else if (dimension === "model_upstream_day") {
+    cumulative = statsModelUpstreamDayMap(d.model_upstream_days);
+    todayValues = statsModelUpstreamDayMap(d.model_upstream_days, dateLabel);
+    Object.keys(cumulative).forEach((key) => {
+      const parts = key.split("\u0000");
+      displayLabels[key] =
+        (parts[0] || "-") + " / " + (parts[1] || "-") + " / " + (parts[2] || "-");
+    });
+    dimensionLabel = "日期 / 上游 / 模型";
+    heading = "日期、上游与模型用量";
+  } else if (dimension === "day") {
+    heading = "每日用量明细";
+  }
+
+  h += statsHeadingHtml(
+    heading,
+    statsPeriod === "today" && dimension !== "day" ? dateLabel : "",
+    dimension,
+  );
+  if (dimension === "day") {
+    const days = d.days || [];
+    if (!days.length) {
+      h += emptyStateHtml(ICONS.chart, "暂无统计数据", "网关处理请求后会在此汇总每日 Token 用量");
+    } else {
+      const rows = days
+        .map(
+          (row) =>
+            '<tr><td><span class="stats-dimension-label is-date">' +
+            esc(row.date || "-") +
+            "</span></td>" +
+            modelStatCells(row) +
+            "</tr>",
+        )
+        .join("");
+      h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th class="stats-cache-head">缓存命中</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+    }
+    document.getElementById("statsContent").innerHTML = h;
+    injectButtonIcons();
+    ssEnhanceSelect(document.getElementById("statsDimension"));
+    bindStatsHeatmap();
+    return;
+  }
+
+  const showCumulative = statsPeriod === "total";
+  const values = showCumulative ? cumulative : todayValues;
+  const keys = Object.keys(values);
+  if (dimension === "model_day" || dimension === "model_upstream_day") {
+    keys.sort((a, b) => {
+      const dateA = a.split("\u0000")[0] || "";
+      const dateB = b.split("\u0000")[0] || "";
+      if (dateA !== dateB) return dateB.localeCompare(dateA);
+      const totalDiff = ((values[b] || {}).total_tokens || 0) - ((values[a] || {}).total_tokens || 0);
+      return totalDiff || a.localeCompare(b);
+    });
+  } else {
+    keys.sort((a, b) => {
+      const totalDiff = ((values[b] || {}).total_tokens || 0) - ((values[a] || {}).total_tokens || 0);
+      return totalDiff || a.localeCompare(b);
+    });
+  }
+  if (!keys.length) {
+    h += emptyStateHtml(
+      ICONS.chart,
+      "暂无统计数据",
+      "网关处理请求后会在此汇总 Token 用量",
+    );
+  } else {
+    let rows = "";
+    const isDateDimension =
+      dimension === "model_day" || dimension === "model_upstream_day";
+    const labelClass = isDateDimension
+      ? "stats-dimension-label is-date-model"
+      : "stats-dimension-label";
+    for (const k of keys) {
+      rows +=
+        '<tr><td><span class="' +
+        labelClass +
+        '">' +
+        esc(displayLabels[k] || k) +
+        "</span></td>" +
+        modelStatCells(values[k]) +
+        "</tr>";
+    }
+    const totals = sumModelStats(values, Object.keys(values));
+    rows +=
+      '<tr class="stats-total-row"><td><span class="stats-dimension-label is-total">合计</span></td>' +
+      modelStatCells({
+        request_count: totals.requests,
+        prompt_tokens: totals.prompt,
+        cached_tokens: totals.cached,
+        completion_tokens: totals.completion,
+        total_tokens: totals.total,
+      }) +
+      "</tr>";
+    h += statsTableHtml(rows, dateLabel, dimensionLabel, statsPeriod);
+  }
+  document.getElementById("statsContent").innerHTML = h;
+  injectButtonIcons();
+  ssEnhanceSelect(document.getElementById("statsDimension"));
+  bindStatsHeatmap();
 }
 
 let usageTotal = 0;

@@ -323,6 +323,12 @@ func sqliteSnapshot() TokenStatsData {
 		DailyModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, '', COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 			FROM usage_records WHERE called_date = '`+today+`' GROUP BY request_model, upstream_name ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
+		ModelDays: breakdownQuery(db, `SELECT request_model, '', called_date, COALESCE(SUM(request_count), 0),
+			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+			FROM usage_records GROUP BY called_date, request_model ORDER BY called_date DESC, COALESCE(SUM(total_tokens), 0) DESC`),
+		ModelUpstreamDays: breakdownQuery(db, `SELECT request_model, upstream_name, called_date, COALESCE(SUM(request_count), 0),
+			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+			FROM usage_records GROUP BY called_date, upstream_name, request_model ORDER BY called_date DESC, COALESCE(SUM(total_tokens), 0) DESC`),
 		Days: breakdownQuery(db, `SELECT '', '', called_date, COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 			FROM usage_records GROUP BY called_date ORDER BY called_date DESC`),

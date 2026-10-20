@@ -37,6 +37,8 @@ type TokenStatsData struct {
 	DailyUpstreams      map[string]*ModelStats `json:"daily_upstreams,omitempty"`
 	ModelUpstreams      []BreakdownStats       `json:"model_upstreams,omitempty"`
 	DailyModelUpstreams []BreakdownStats       `json:"daily_model_upstreams,omitempty"`
+	ModelDays           []BreakdownStats       `json:"model_days,omitempty"`
+	ModelUpstreamDays   []BreakdownStats       `json:"model_upstream_days,omitempty"`
 	Days                []BreakdownStats       `json:"days,omitempty"`
 }
 
