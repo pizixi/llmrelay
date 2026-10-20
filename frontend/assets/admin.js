@@ -6323,7 +6323,7 @@ function statsTableHtml(rowsHtml, dateLabel, dimensionLabel, period) {
     '" id="statsTable">' +
     "<thead>" +
     "<tr>" +
-    '<th class="stats-model-col">' +
+    '<th class="stats-model-col" rowspan="2">' +
     esc(dimensionLabel) +
     "</th>" +
     '<th colspan="5" class="stats-group-head">' +
@@ -6415,19 +6415,60 @@ async function resetStats(btn) {
   }
 }
 
+let statsRenderKey = "";
+
+function statsSignature(d, dimension) {
+  return dimension + "|" + statsPeriod + "|" + JSON.stringify(d);
+}
+
+// 统计区每 5 秒自动刷新。重绘时保留已增强的维度下拉框节点，
+// 避免下拉菜单打开期间被整体替换，导致点击选项后选中值丢失。
+function mountStatsContent(html) {
+  const content = document.getElementById("statsContent");
+  if (!content) return;
+  const prevWrapper = content.querySelector(
+    ".stats-heading-actions > .ss-wrapper",
+  );
+  content.innerHTML = html;
+  const nextSelect = document.getElementById("statsDimension");
+  ssEnhanceSelect(nextSelect);
+  const nextWrapper = nextSelect && nextSelect.closest(".ss-wrapper");
+  if (!prevWrapper || prevWrapper === nextWrapper) return;
+  if (!nextWrapper) {
+    const actions = content.querySelector(".stats-heading-actions");
+    if (actions) actions.appendChild(prevWrapper);
+    return;
+  }
+  const prevSelect = prevWrapper.querySelector("select");
+  if (prevSelect && nextSelect) {
+    prevSelect.value = nextSelect.value;
+    ssSyncLabel(prevSelect);
+  }
+  nextWrapper.replaceWith(prevWrapper);
+  const trigger = prevWrapper.querySelector(".ss-trigger");
+  if (trigger && ssActiveDropdown && ssActiveWrapper === prevWrapper) {
+    ssPositionDropdown(trigger, ssActiveDropdown);
+  }
+}
+
 async function loadStats() {
   try {
     const d = await apiJSON("/api/stats");
     statsSnapshot = d;
+    const dimension =
+      document.getElementById("statsDimension")?.value || "model";
+    // 数据与视图状态都没变时不重绘，减少无谓的 DOM 重建。
+    if (statsSignature(d, dimension) === statsRenderKey) return;
     renderStats(d);
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
+    statsRenderKey = "";
     const currentDimension = document.getElementById("statsDimension")?.value || "model";
-    document.getElementById("statsContent").innerHTML =
+    mountStatsContent(
       statsHeadingHtml("加载失败", "", currentDimension) +
-      emptyStateHtml(ICONS.alert, "加载失败", e.message || "请稍后重试");
+        emptyStateHtml(ICONS.alert, "加载失败", e.message || "请稍后重试"),
+    );
     injectButtonIcons();
-    ssEnhanceSelect(document.getElementById("statsDimension"));
   }
 }
 
@@ -6436,7 +6477,7 @@ function renderStats(d) {
   const dm = d.daily ? d.daily.models || {} : {};
   const dateLabel = d.daily && d.daily.date ? d.daily.date : "";
   const dimension = document.getElementById("statsDimension")?.value || "model";
-
+  statsRenderKey = statsSignature(d, dimension);
   setUsageFilterOptions("usageModelFilter", Object.keys(ms), "全部模型");
   setUsageFilterOptions("usageUpstreamFilter", Object.keys(d.upstreams || {}), "全部上游");
 
@@ -6515,9 +6556,8 @@ function renderStats(d) {
         .join("");
       h += '<div class="stats-table-wrap"><table class="tbl stats-daily-table"><thead><tr><th>日期</th><th>请求</th><th>输入</th><th class="stats-cache-head">缓存命中</th><th>输出</th><th>合计</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
     }
-    document.getElementById("statsContent").innerHTML = h;
+    mountStatsContent(h);
     injectButtonIcons();
-    ssEnhanceSelect(document.getElementById("statsDimension"));
     bindStatsHeatmap();
     return;
   }
@@ -6575,9 +6615,8 @@ function renderStats(d) {
       "</tr>";
     h += statsTableHtml(rows, dateLabel, dimensionLabel, statsPeriod);
   }
-  document.getElementById("statsContent").innerHTML = h;
+  mountStatsContent(h);
   injectButtonIcons();
-  ssEnhanceSelect(document.getElementById("statsDimension"));
   bindStatsHeatmap();
 }
 

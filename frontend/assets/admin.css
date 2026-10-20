@@ -5229,7 +5229,7 @@ select.m-select {
 
 #statsTable thead tr.stats-subhead th {
   height: 35px;
-  padding: 7px 13px;
+  padding: 7px 14px;
   font-size: 11.5px;
   font-weight: 700;
   color: var(--text-ter);
@@ -5348,6 +5348,11 @@ select.m-select {
 .stats-table-wrap .tbl th:first-child,
 .stats-table-wrap .tbl th:last-child {
   border-radius: 0;
+}
+
+/* 覆盖通用表格对末列的固定宽度，避免统计表列宽被压缩后表头与数据错位 */
+.stats-table-wrap .tbl th:last-child {
+  width: auto;
 }
 
 .stats-table-wrap .tbl th {
