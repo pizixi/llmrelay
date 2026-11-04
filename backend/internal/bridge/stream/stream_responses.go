@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"llmrelay/backend/internal/sse"
 )
 
 func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.Response, model, usageModel string, tools any, toolChoice any, parallelToolCalls *bool, toolNameMappings map[string]ResponseToolNameMapping, responseEcho map[string]any, warningGroups ...[]BridgeWarning) {
@@ -22,7 +23,7 @@ func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.R
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(resp.Body)
+	reader := sse.NewReader(resp.Body)
 
 	responseID := "resp_" + time.Now().Format("20060102150405") + "_" + RandomString(8)
 	reasoningID := "rs_" + responseID
@@ -288,7 +289,8 @@ func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.R
 	}
 
 	for {
-		line, err := reader.ReadString('\n')
+		frame, err := reader.Next()
+		line := frame.Data
 		if err != nil {
 			if err == io.EOF {
 				if line == "" {
@@ -307,7 +309,7 @@ func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.R
 				break
 			}
 		}
-		payload, isDataLine := SseDataPayload(line)
+		payload, isDataLine := frame.Data, frame.Data != ""
 		if debugMode && debugLogBodies && isDataLine {
 			log.Printf("[上游原始数据块] %s", strings.TrimSpace(payload))
 		}
@@ -678,56 +680,7 @@ func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.R
 	ApplyResponsesRequestEcho(completedResponse, responseEcho)
 	ApplyBridgeWarnings(completedResponse, bridgeWarnings)
 
-	usage := map[string]any{}
-	if len(totalUsage) > 0 {
-		if v, ok := totalUsage["prompt_tokens"]; ok {
-			usage["input_tokens"] = v
-		}
-		if v, ok := totalUsage["prompt_tokens_details"]; ok {
-			usage["input_tokens_details"] = v
-		} else {
-			usage["input_tokens_details"] = map[string]any{"cached_tokens": 0}
-		}
-		if v, ok := totalUsage["completion_tokens"]; ok {
-			usage["output_tokens"] = v
-		}
-		if v, ok := totalUsage["completion_tokens_details"]; ok {
-			usage["output_tokens_details"] = v
-		}
-		if v, ok := totalUsage["total_tokens"]; ok {
-			usage["total_tokens"] = v
-		}
-		if v, ok := totalUsage["input_tokens"]; ok && usage["input_tokens"] == nil {
-			usage["input_tokens"] = v
-		}
-		if v, ok := totalUsage["output_tokens"]; ok && usage["output_tokens"] == nil {
-			usage["output_tokens"] = v
-		}
-	}
-	// 始终确保存在 total_tokens。
-	if _, ok := usage["total_tokens"]; !ok {
-		pt := float64(0)
-		ct := float64(0)
-		if v, ok := usage["input_tokens"].(float64); ok {
-			pt = v
-		} else if v, ok := usage["input_tokens"].(int64); ok {
-			pt = float64(v)
-		}
-		if v, ok := usage["output_tokens"].(float64); ok {
-			ct = v
-		} else if v, ok := usage["output_tokens"].(int64); ok {
-			ct = float64(v)
-		}
-		usage["total_tokens"] = pt + ct
-	}
-	// 确保 usage 字段完整
-	if _, ok := usage["input_tokens"]; !ok {
-		usage["input_tokens"] = float64(0)
-	}
-	if _, ok := usage["output_tokens"]; !ok {
-		usage["output_tokens"] = float64(0)
-	}
-	completedResponse["usage"] = usage
+	completedResponse["usage"] = ChatUsageToResponsesUsage(totalUsage)
 
 	usageStats.observeMap(totalUsage)
 

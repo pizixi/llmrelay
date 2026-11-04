@@ -285,6 +285,13 @@ func ResponsesInputToMessagesWithWarnings(input any, instructions string, mappin
 							flushPendingAssistant()
 						}
 						appendPendingText(text)
+						if refusal := ExtractRefusalFromContentParts(elem["content"]); refusal != "" {
+							msg := ensurePendingAssistant()
+							if msg.AdditionalFields == nil {
+								msg.AdditionalFields = map[string]any{}
+							}
+							msg.AdditionalFields["refusal"] = BridgeString(msg.AdditionalFields["refusal"]) + refusal
+						}
 					} else {
 						flushPendingAssistant()
 						content := ResponsesContentToChatContent(elem["content"])
@@ -1069,6 +1076,16 @@ func ExtractTextFromContentParts(content any) string {
 	return strings.Join(texts, "\n")
 }
 
+func ExtractRefusalFromContentParts(content any) string {
+	var refusal strings.Builder
+	for _, raw := range BridgeArray(content) {
+		if part, ok := raw.(map[string]any); ok && part["type"] == "refusal" {
+			refusal.WriteString(BridgeString(part["refusal"]))
+		}
+	}
+	return refusal.String()
+}
+
 func ValidateResponsesBridgeRequest(fields map[string]any) error {
 	warnings := ResponsesBridgeRequestWarnings(fields)
 	if len(warnings) == 0 {
@@ -1388,6 +1405,9 @@ func ConvertChatToResponsesObject(chatBody []byte, model string, tools any, tool
 	if len(chat.Choices) > 0 {
 		text = ExtractTextFromContentParts(chat.Choices[0].Message.Content)
 		refusal = chat.Choices[0].Message.Refusal
+		if refusal == "" {
+			refusal = ExtractRefusalFromContentParts(chat.Choices[0].Message.Content)
+		}
 		reasoning = chat.Choices[0].Message.ReasoningContent
 		if reasoning == "" {
 			reasoning = chat.Choices[0].Message.Reasoning

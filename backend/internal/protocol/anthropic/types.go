@@ -41,6 +41,7 @@ type Tool struct {
 	Name         string `json:"name"`
 	Description  string `json:"description,omitempty"`
 	InputSchema  any    `json:"input_schema"`
+	Strict       *bool  `json:"strict,omitempty"`
 	UserLocation any    `json:"user_location,omitempty"`
 }
 

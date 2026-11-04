@@ -189,27 +189,7 @@ func BuildOpenAIResponse(anthropicMsg map[string]any, text string, reasoning str
 		"choices": []map[string]any{choice},
 	}
 	if usage, ok := anthropicMsg["usage"].(map[string]any); ok {
-		openAIUsage := map[string]any{}
-		if v, ok := usage["input_tokens"]; ok {
-			openAIUsage["prompt_tokens"] = v
-		}
-		if v, ok := usage["output_tokens"]; ok {
-			openAIUsage["completion_tokens"] = v
-		}
-		if cached, ok := usage["cache_read_input_tokens"]; ok {
-			openAIUsage["prompt_tokens_details"] = map[string]any{"cached_tokens": cached}
-		}
-		if created, ok := usage["cache_creation_input_tokens"]; ok {
-			openAIUsage["cache_creation_input_tokens"] = created
-		}
-		if pt, ok1 := openAIUsage["prompt_tokens"]; ok1 {
-			if ct, ok2 := openAIUsage["completion_tokens"]; ok2 {
-				ptF, _ := pt.(float64)
-				ctF, _ := ct.(float64)
-				openAIUsage["total_tokens"] = int64(ptF + ctF)
-			}
-		}
-		resp["usage"] = openAIUsage
+		resp["usage"] = AnthropicUsageToChatUsage(usage)
 	}
 	result, _ := json.Marshal(resp)
 	return result
@@ -405,14 +385,6 @@ func ConvertResponse(data []byte) ([]byte, error) {
 			}
 		}
 		raw["choices"] = choices
-	}
-	if usage, ok := raw["usage"].(map[string]any); ok {
-		cleanU := map[string]any{
-			"prompt_tokens":     usage["prompt_tokens"],
-			"completion_tokens": usage["completion_tokens"],
-			"total_tokens":      usage["total_tokens"],
-		}
-		raw["usage"] = cleanU
 	}
 	delete(raw, "cost")
 	delete(raw, "system_fingerprint")

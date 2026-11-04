@@ -70,6 +70,10 @@ var reBillingHeader = regexp.MustCompile(`(?m)^x-anthropic-billing-header:\s*.*$
 
 func OpenAIToAnthropicRequest(body []byte) []byte { return convert.OpenAIToAnthropicRequest(body) }
 
+func OpenAIToAnthropicRequestWithError(body []byte) ([]byte, error) {
+	return convert.OpenAIToAnthropicRequestWithError(body)
+}
+
 func OpenAIToResponsesRequest(body []byte, upstream *UpstreamConfig) []byte {
 	return convert.OpenAIToResponsesRequest(body, upstream)
 }

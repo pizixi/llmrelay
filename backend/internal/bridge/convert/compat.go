@@ -248,17 +248,7 @@ func HasWebSearchAnnotations(annotations []any) bool {
 }
 
 func AnthropicUsageToResponsesUsage(usage map[string]any) map[string]any {
-	input, _ := GetFloat(usage, "input_tokens", "prompt_tokens")
-	output, _ := GetFloat(usage, "output_tokens", "completion_tokens")
-	cached, _ := GetFloat(usage, "cache_read_input_tokens", "cached_tokens")
-	return map[string]any{
-		"input_tokens":  int64(input),
-		"output_tokens": int64(output),
-		"total_tokens":  int64(input + output),
-		"input_tokens_details": map[string]any{
-			"cached_tokens": int64(cached),
-		},
-	}
+	return ChatUsageToResponsesUsage(AnthropicUsageToChatUsage(usage))
 }
 
 func ResponsesIncompleteToAnthropicStopReason(response map[string]any) string {

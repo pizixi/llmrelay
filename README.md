@@ -73,6 +73,8 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 
 流式回程统一由 `dispatchClientStream` 分发。非流式请求继续由各入口 Handler 调用现有转换函数处理。
 
+流式上游每次等待数据的空闲时限为 120 秒，覆盖响应头已返回但迟迟没有正文、输出中途停滞和错误正文未结束的情况；持续输出的长回答没有总时长限制。读取超时会取消该次上游请求，并记录 `[上游流读取超时]` 日志，包含上游、模型、密钥槽位和出口。收到协议结束事件后，透传和转换会及时收尾，无需等待上游关闭连接；Chat 的 `finish_reason` 后仍会保留独立的用量分块，直到 `[DONE]` 或流结束。
+
 响应会附带以下可观测头：
 
 - `X-Llm2api-Bridge-Path`：`passthrough`、`pairwise` 或 `pivot`

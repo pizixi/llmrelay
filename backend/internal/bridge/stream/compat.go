@@ -131,6 +131,18 @@ func GetFloat(values map[string]any, keys ...string) (float64, bool) {
 	return convert.GetFloat(values, keys...)
 }
 
+func AnthropicUsageToChatUsage(usage map[string]any) map[string]any {
+	return convert.AnthropicUsageToChatUsage(usage)
+}
+
+func ChatUsageToResponsesUsage(usage map[string]any) map[string]any {
+	return convert.ChatUsageToResponsesUsage(usage)
+}
+
+func OpenAIUsageToAnthropicUsage(usage map[string]any) map[string]any {
+	return convert.OpenAIUsageToAnthropicUsage(usage)
+}
+
 func StreamErrorObject(payload map[string]any, fallbackMessage string) map[string]any {
 	return upstream.StreamErrorObject(payload, fallbackMessage)
 }

@@ -117,8 +117,7 @@ func ClaudeToOpenAIMessages(claudeMsgs []ClaudeMessage, system any) []Message {
 			var reasoningParts []string
 			var toolCalls []ToolCall
 			var toolResults []Message
-			var imageParts []map[string]any
-			var fileParts []map[string]any
+			var contentParts []any
 			for _, item := range content {
 				block, ok := item.(map[string]any)
 				if !ok {
@@ -129,37 +128,11 @@ func ClaudeToOpenAIMessages(claudeMsgs []ClaudeMessage, system any) []Message {
 				case "text":
 					if text, ok := block["text"].(string); ok && text != "" {
 						textParts = append(textParts, text)
+						contentParts = append(contentParts, map[string]any{"type": "text", "text": text})
 					}
-				case "image":
-					source, _ := block["source"].(map[string]any)
-					if source != nil {
-						srcType, _ := source["type"].(string)
-						mediaType, _ := source["media_type"].(string)
-						data, _ := source["data"].(string)
-						if srcType == "base64" && data != "" {
-							if mediaType == "" {
-								mediaType = "image/png"
-							}
-							imageParts = append(imageParts, map[string]any{
-								"type": "image_url",
-								"image_url": map[string]string{
-									"url": "data:" + mediaType + ";base64," + data,
-								},
-							})
-						} else if srcType == "url" {
-							if url, ok := source["url"].(string); ok && url != "" {
-								imageParts = append(imageParts, map[string]any{
-									"type": "image_url",
-									"image_url": map[string]string{
-										"url": url,
-									},
-								})
-							}
-						}
-					}
-				case "document":
-					if filePart, ok := ClaudeMediaBlockToChat(block); ok {
-						fileParts = append(fileParts, filePart)
+				case "image", "document":
+					if part, ok := ClaudeMediaBlockToChat(block); ok {
+						contentParts = append(contentParts, part)
 					}
 				case "thinking":
 					if thinking, ok := block["thinking"].(string); ok && thinking != "" {
@@ -256,23 +229,11 @@ func ClaudeToOpenAIMessages(claudeMsgs []ClaudeMessage, system any) []Message {
 				}
 			}
 			om := Message{Role: msg.Role}
-			if len(imageParts) > 0 || len(fileParts) > 0 {
-				var contentArr []any
-				for _, img := range imageParts {
-					contentArr = append(contentArr, img)
-				}
-				for _, file := range fileParts {
-					contentArr = append(contentArr, file)
-				}
-				if len(textParts) > 0 {
-					contentArr = append(contentArr, map[string]any{
-						"type": "text",
-						"text": strings.Join(textParts, "\n"),
-					})
-				}
-				om.Content = contentArr
-			} else if len(textParts) > 0 {
-				om.Content = strings.Join(textParts, "\n")
+			if len(contentParts) == 1 && len(textParts) == 1 {
+				om.Content = textParts[0]
+			} else if len(contentParts) > 0 {
+				// 按原始次序保留图文、文件和相邻文本，不插入额外换行。
+				om.Content = contentParts
 			} else if len(toolCalls) == 0 {
 				om.Content = ""
 			}
@@ -283,7 +244,7 @@ func ClaudeToOpenAIMessages(claudeMsgs []ClaudeMessage, system any) []Message {
 			if len(toolCalls) > 0 {
 				om.ToolCalls = toolCalls
 			}
-			hasPrimaryContent := len(textParts) > 0 || len(imageParts) > 0 || len(fileParts) > 0 || len(reasoningParts) > 0 || len(toolCalls) > 0
+			hasPrimaryContent := len(contentParts) > 0 || len(reasoningParts) > 0 || len(toolCalls) > 0
 			if msg.Role == "user" && len(toolResults) > 0 {
 				// Chat 要求工具结果紧跟助手的 tool_calls 消息。Claude 的单个用户轮次
 				// 可能同时包含 tool_result 和普通文本，因此先输出全部工具消息，
@@ -314,7 +275,7 @@ func ClaudeToOpenAIToolsDetailed(claudeTools []ClaudeTool, enableHostedSearchFal
 	var warnings []BridgeWarning
 	allowHostedSearchFallback := len(enableHostedSearchFallback) > 0 && enableHostedSearchFallback[0]
 	for i, ct := range claudeTools {
-		if strings.TrimSpace(ct.Type) != "" {
+		if toolType := strings.TrimSpace(ct.Type); toolType != "" && toolType != "custom" {
 			if allowHostedSearchFallback && strings.Contains(strings.ToLower(ct.Type), "web_search") {
 				tools = append(tools, Tool{Type: "function", Function: WebSearchFallbackToolFunction(ResponsesTool{Type: "web_search"})})
 				warnings = AppendBridgeWarning(warnings, BridgeWarning{
@@ -347,6 +308,7 @@ func ClaudeToOpenAIToolsDetailed(claudeTools []ClaudeTool, enableHostedSearchFal
 				Name:        ct.Name,
 				Description: ct.Description,
 				Parameters:  paramsMap,
+				Strict:      ct.Strict,
 			},
 		})
 	}
@@ -410,7 +372,8 @@ func OpenAIToClaudeResponseWithError(chatBody []byte, model string) ([]byte, err
 		Created int64  `json:"created"`
 		Choices []struct {
 			Message struct {
-				Content                   string     `json:"content"`
+				Content                   any        `json:"content"`
+				Refusal                   string     `json:"refusal"`
 				ReasoningContent          string     `json:"reasoning_content"`
 				Reasoning                 string     `json:"reasoning"`
 				ReasoningSignature        string     `json:"reasoning_signature"`
@@ -455,11 +418,18 @@ func OpenAIToClaudeResponseWithError(chatBody []byte, model string) ([]byte, err
 				Data: msg.ReasoningEncryptedContent,
 			})
 		}
-		if msg.Content != "" {
+		if text := ExtractTextFromContentParts(msg.Content); text != "" {
 			content = append(content, ClaudeContent{
 				Type: "text",
-				Text: msg.Content,
+				Text: text,
 			})
+		}
+		refusal := msg.Refusal
+		if refusal == "" {
+			refusal = ExtractRefusalFromContentParts(msg.Content)
+		}
+		if refusal != "" {
+			content = append(content, ClaudeContent{Type: "text", Text: refusal})
 		}
 		for _, tc := range msg.ToolCalls {
 			normalizedArguments, err := NormalizeToolCallArguments(tc.Function.Arguments)
@@ -487,6 +457,9 @@ func OpenAIToClaudeResponseWithError(chatBody []byte, model string) ([]byte, err
 		case "content_filter":
 			stopReason = "refusal"
 		}
+		if refusal != "" && (fr == "stop" || fr == "") {
+			stopReason = "refusal"
+		}
 	}
 
 	if len(content) == 0 {
@@ -503,15 +476,12 @@ func OpenAIToClaudeResponseWithError(chatBody []byte, model string) ([]byte, err
 		Usage:      &ClaudeUsage{},
 	}
 	if chat.Usage != nil {
-		inputTokens, _ := GetFloat(chat.Usage, "input_tokens", "prompt_tokens")
-		outputTokens, _ := GetFloat(chat.Usage, "output_tokens", "completion_tokens")
-		resp.Usage.InputTokens = int(ToFloat64(inputTokens))
-		resp.Usage.OutputTokens = int(ToFloat64(outputTokens))
-		if promptDetails, ok := chat.Usage["prompt_tokens_details"].(map[string]any); ok {
-			cached, _ := GetFloat(promptDetails, "cached_tokens")
-			resp.Usage.CacheReadInputTokens = int(cached)
-		}
-		created, _ := GetFloat(chat.Usage, "cache_creation_input_tokens")
+		converted := OpenAIUsageToAnthropicUsage(chat.Usage)
+		resp.Usage.InputTokens = int(converted["input_tokens"].(int64))
+		resp.Usage.OutputTokens = int(converted["output_tokens"].(int64))
+		cached, _ := GetFloat(converted, "cache_read_input_tokens")
+		created, _ := GetFloat(converted, "cache_creation_input_tokens")
+		resp.Usage.CacheReadInputTokens = int(cached)
 		resp.Usage.CacheCreationInputTokens = int(created)
 	}
 	webSearchRequests := ChatWebSearchEvidenceCount(
@@ -544,17 +514,8 @@ func ToFloat64(v any) float64 {
 func GetFloat(m map[string]any, keys ...string) (float64, bool) {
 	for _, k := range keys {
 		if v, ok := m[k]; ok {
-			switch n := v.(type) {
-			case float64:
-				return n, true
-			case float32:
-				return float64(n), true
-			case int:
-				return float64(n), true
-			case int64:
-				return float64(n), true
-			case int32:
-				return float64(n), true
+			if number, ok := NumberFromAny(v); ok {
+				return number, true
 			}
 		}
 	}

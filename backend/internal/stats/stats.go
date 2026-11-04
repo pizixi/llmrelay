@@ -287,6 +287,15 @@ func (a *RequestUsageAccumulator) ObserveMap(usage map[string]any) {
 		return
 	}
 	promptTokens, _ := getFloat(usage, "prompt_tokens", "input_tokens")
+	// Anthropic 的缓存读写量不包含在 input_tokens 中。已转换的 Chat 和
+	// Responses 用量已包含缓存，按字段形状区分，避免二次累计。
+	if _, chat := usage["prompt_tokens"]; !chat {
+		if _, responses := usage["input_tokens_details"]; !responses {
+			read, _ := getFloat(usage, "cache_read_input_tokens")
+			created, _ := getFloat(usage, "cache_creation_input_tokens")
+			promptTokens += read + created
+		}
+	}
 	completionTokens, _ := getFloat(usage, "completion_tokens", "output_tokens")
 	totalTokens, _ := getFloat(usage, "total_tokens")
 	cachedTokens := cachedTokensFromUsage(usage)

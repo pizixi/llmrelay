@@ -114,6 +114,7 @@ func AnthropicSupportsAdaptiveThinking(model string) bool {
 	normalized := strings.NewReplacer(".", "-", "_", "-").Replace(strings.ToLower(strings.TrimSpace(model)))
 	for _, marker := range []string{
 		"fable-5", "mythos-5", "mythos-preview",
+		"opus-5", "haiku-5-5",
 		"opus-4-6", "opus-4-7", "opus-4-8",
 		"sonnet-4-6", "sonnet-5",
 	} {
@@ -122,6 +123,31 @@ func AnthropicSupportsAdaptiveThinking(model string) bool {
 		}
 	}
 	return false
+}
+
+// FitAnthropicThinkingBudget 在两条请求转换路径中执行相同的手动思考约束。
+// 显式 max_tokens 始终保留；无法容纳最小思考预算时由调用方返回请求错误。
+func FitAnthropicThinkingBudget(request map[string]any, explicitMax bool) error {
+	thinking, _ := request["thinking"].(map[string]any)
+	if !strings.EqualFold(BridgeString(thinking["type"]), "enabled") {
+		return nil
+	}
+	budget, _ := NumberFromAny(thinking["budget_tokens"])
+	budget = max(1024, budget)
+	maxTokens, _ := NumberFromAny(request["max_tokens"])
+	if !explicitMax {
+		maxTokens = min(65536, budget+4096)
+		request["max_tokens"] = int(maxTokens)
+	}
+	if maxTokens <= 1024 {
+		return fmt.Errorf("manual Anthropic thinking requires max_tokens greater than 1024; received %.0f", maxTokens)
+	}
+	if budget >= maxTokens {
+		budget = max(1024, maxTokens-1024)
+	}
+	thinking["budget_tokens"] = int(budget)
+	delete(request, "temperature")
+	return nil
 }
 
 // ApplyAdaptiveAnthropicReasoning uses Anthropic's current reasoning shape on
@@ -267,9 +293,18 @@ func BuildAnthropicThinking(req map[string]any) any {
 
 // OpenAIToAnthropicRequest 将 OpenAI Chat 请求转为 Anthropic Messages 格式
 func OpenAIToAnthropicRequest(body []byte) []byte {
+	result, err := OpenAIToAnthropicRequestWithError(body)
+	if err != nil {
+		log.Printf("警告：Chat 请求转换为 Anthropic 请求失败：%v", err)
+		return nil
+	}
+	return result
+}
+
+func OpenAIToAnthropicRequestWithError(body []byte) ([]byte, error) {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		return body
+		return body, nil
 	}
 
 	model, _ := req["model"].(string)
@@ -289,7 +324,7 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 				}
 				result, marshalErr := json.Marshal(native)
 				if marshalErr == nil {
-					return result
+					return result, nil
 				}
 			}
 		}
@@ -312,6 +347,10 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 					case "text":
 						if t, ok := p["text"].(string); ok && t != "" {
 							blocks = append(blocks, map[string]any{"type": "text", "text": t})
+						}
+					case "refusal":
+						if refusal := BridgeString(p["refusal"]); refusal != "" {
+							blocks = append(blocks, map[string]any{"type": "text", "text": refusal})
 						}
 					case "image_url":
 						blocks = append(blocks, ConvertOpenAIImageToAnthropic(p))
@@ -370,6 +409,9 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 			}
 
 			blocks = append(blocks, handleContent(content, role)...)
+			if refusal := BridgeString(msg["refusal"]); refusal != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": refusal})
+			}
 
 			if tcs, ok := msg["tool_calls"].([]any); ok && len(tcs) > 0 {
 				for _, tc := range tcs {
@@ -410,17 +452,18 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 
 		if role == "tool" {
 			toolCallID, _ := msg["tool_call_id"].(string)
-			var resultText string
+			var resultContent any
 			if s, ok := content.(string); ok {
-				resultText = s
+				resultContent = s
+			} else if _, ok := content.([]any); ok {
+				resultContent = handleContent(content, "user")
 			} else {
-				b, _ := json.Marshal(content)
-				resultText = string(b)
+				resultContent = JsonStringValue(content, "")
 			}
 			anthropicMsgs = append(anthropicMsgs, map[string]any{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "tool_result", "tool_use_id": toolCallID, "content": resultText},
+					{"type": "tool_result", "tool_use_id": toolCallID, "content": resultContent},
 				},
 			})
 			continue
@@ -436,7 +479,7 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 	}
 
 	if len(anthropicMsgs) == 0 {
-		return body
+		return body, nil
 	}
 
 	claudeReq := map[string]any{
@@ -456,9 +499,9 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 	if topP, ok := req["top_p"]; ok && topP != nil {
 		claudeReq["top_p"] = topP
 	}
-	if mt, _ := req["max_tokens"].(float64); mt > 0 {
+	if mt, _ := req["max_completion_tokens"].(float64); mt > 0 {
 		claudeReq["max_tokens"] = int(mt)
-	} else if mt, _ := req["max_completion_tokens"].(float64); mt > 0 {
+	} else if mt, _ := req["max_tokens"].(float64); mt > 0 {
 		claudeReq["max_tokens"] = int(mt)
 	}
 	if stop, ok := req["stop"]; ok && stop != nil {
@@ -544,37 +587,14 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 		}
 	}
 	if t := BuildAnthropicThinking(req); t != nil && !adaptiveApplied {
-		if thinking, ok := t.(map[string]any); ok {
-			if thinkingType, _ := thinking["type"].(string); strings.EqualFold(thinkingType, "enabled") {
-				budget, _ := NumberFromAny(thinking["budget_tokens"])
-				maxTokens, _ := NumberFromAny(claudeReq["max_tokens"])
-				_, explicitMaxTokens := req["max_tokens"]
-				if _, exists := req["max_completion_tokens"]; exists {
-					explicitMaxTokens = true
-				}
-				if budget < 1024 {
-					budget = 1024
-				}
-				if !explicitMaxTokens {
-					maxTokens = budget + 4096
-					if maxTokens > 65536 {
-						maxTokens = 65536
-					}
-				}
-				if maxTokens <= budget {
-					if maxTokens < 2048 {
-						maxTokens = 2048
-					}
-					budget = maxTokens - 1024
-				}
-				thinking["budget_tokens"] = int(budget)
-				claudeReq["max_tokens"] = int(maxTokens)
-				// 启用扩展思考时，Anthropic 只接受默认 temperature。
-				// 省略该字段可让上游应用有效默认值，避免显式的不兼容值被拒绝。
-				delete(claudeReq, "temperature")
-			}
-		}
 		claudeReq["thinking"] = t
+		_, explicitMax := req["max_tokens"]
+		if _, exists := req["max_completion_tokens"]; exists {
+			explicitMax = true
+		}
+		if err := FitAnthropicThinkingBudget(claudeReq, explicitMax); err != nil {
+			return nil, err
+		}
 		if thinking, ok := t.(map[string]any); ok && strings.EqualFold(BridgeString(thinking["type"]), "adaptive") {
 			if outputConfig, exists := req["output_config"]; exists {
 				claudeReq["output_config"] = outputConfig
@@ -583,7 +603,7 @@ func OpenAIToAnthropicRequest(body []byte) []byte {
 	}
 
 	result, _ := json.Marshal(claudeReq)
-	return result
+	return result, nil
 }
 
 func ConvertOpenAIImageToAnthropic(part map[string]any) map[string]any {
@@ -675,9 +695,13 @@ func ConvertOpenAIToolsToAnthropic(tools []any) []map[string]any {
 		if params == nil {
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
-		result = append(result, map[string]any{
+		tool := map[string]any{
 			"name": name, "description": desc, "input_schema": params,
-		})
+		}
+		if strict, ok := fn["strict"].(bool); ok {
+			tool["strict"] = strict
+		}
+		result = append(result, tool)
 	}
 	return result
 }
@@ -719,7 +743,18 @@ func OpenAIToResponsesRequest(body []byte, upstream *UpstreamConfig) []byte {
 					"summary": []any{map[string]any{"type": "summary_text", "text": rc}},
 				})
 			}
-			if responsesContent, ok := ChatContentToResponsesContent(content); ok {
+			responsesContent, hasContent := ChatContentToResponsesContent(content)
+			if refusal := BridgeString(msg["refusal"]); refusal != "" {
+				var parts []any
+				if text, ok := responsesContent.(string); ok && text != "" {
+					parts = append(parts, map[string]any{"type": "output_text", "text": text})
+				} else if array, ok := responsesContent.([]any); ok {
+					parts = append(parts, array...)
+				}
+				responsesContent = append(parts, map[string]any{"type": "refusal", "refusal": refusal})
+				hasContent = true
+			}
+			if hasContent {
 				input = append(input, map[string]any{
 					"role":    "assistant",
 					"content": responsesContent,
@@ -799,9 +834,9 @@ func OpenAIToResponsesRequest(body []byte, upstream *UpstreamConfig) []byte {
 	if topP, ok := req["top_p"]; ok && topP != nil {
 		respReq["top_p"] = topP
 	}
-	if mt, _ := req["max_tokens"].(float64); mt > 0 {
+	if mt, _ := req["max_completion_tokens"].(float64); mt > 0 {
 		respReq["max_output_tokens"] = int(mt)
-	} else if mt, _ := req["max_completion_tokens"].(float64); mt > 0 {
+	} else if mt, _ := req["max_tokens"].(float64); mt > 0 {
 		respReq["max_output_tokens"] = int(mt)
 	}
 	if tools, ok := req["tools"].([]any); ok && len(tools) > 0 {
@@ -876,6 +911,8 @@ func ChatContentToResponsesContent(content any) (any, bool) {
 		}
 		partType, _ := part["type"].(string)
 		switch partType {
+		case "refusal":
+			converted = append(converted, map[string]any{"type": "refusal", "refusal": BridgeString(part["refusal"])})
 		case "text", "input_text", "output_text":
 			if text, ok := part["text"].(string); ok {
 				converted = append(converted, map[string]any{"type": "input_text", "text": text})
@@ -946,6 +983,11 @@ func ChatToolsToResponsesTools(tools []any) []any {
 		}
 		if _, exists := flat["parameters"]; !exists {
 			flat["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
+		// Chat 省略 strict 表示尽力调用；Responses 会尝试自动收紧 Schema。
+		// 显式关闭其默认推断，避免转换后可选参数变成必填参数。
+		if flat["strict"] == nil {
+			flat["strict"] = false
 		}
 		converted = append(converted, flat)
 	}

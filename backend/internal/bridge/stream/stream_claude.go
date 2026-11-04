@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"llmrelay/backend/internal/sse"
 )
 
 func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, usageModel string) {
@@ -20,7 +21,7 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(respBody)
+	reader := sse.NewReader(respBody)
 
 	msgID := fmt.Sprintf("msg_%s", RandomString(24))
 	blockIndex := 0
@@ -36,6 +37,7 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 	webSearchRequests := 0
 	terminalFinishSeen := false
 	pendingFinishReason := ""
+	refusalSeen := false
 	defer func() { usageStats.observeMap(fullUsage) }()
 
 	emitClaudeEvent := func(event string, data any) {
@@ -115,11 +117,13 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 		case "content_filter":
 			stopReason = "refusal"
 		}
-		outputTokens, _ := GetFloat(fullUsage, "completion_tokens", "output_tokens")
+		if refusalSeen && finishReason == "stop" {
+			stopReason = "refusal"
+		}
 		if upstreamRequests := AnthropicWebSearchRequestsFromUsage(fullUsage); upstreamRequests > webSearchRequests {
 			webSearchRequests = upstreamRequests
 		}
-		terminalUsage := map[string]any{"output_tokens": int64(outputTokens)}
+		terminalUsage := OpenAIUsageToAnthropicUsage(fullUsage)
 		terminalUsage = WithAnthropicWebSearchUsage(terminalUsage, webSearchRequests)
 		emitClaudeEvent("message_delta", map[string]any{
 			"type": "message_delta",
@@ -132,7 +136,8 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 	}
 
 	for {
-		line, err := reader.ReadString('\n')
+		frame, err := reader.Next()
+		line := frame.Data
 		if err != nil {
 			if err == io.EOF {
 				if line == "" {
@@ -150,7 +155,7 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 				return
 			}
 		}
-		payload, isDataLine := SseDataPayload(line)
+		payload, isDataLine := frame.Data, frame.Data != ""
 		if debugMode && debugLogBodies && isDataLine {
 			log.Printf("[上游原始数据块] %s", strings.TrimSpace(payload))
 		}
@@ -268,32 +273,34 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 			})
 		}
 
-		if c, ok := delta["content"]; ok && c != nil {
-			contentStr, _ := c.(string)
-			if contentStr != "" {
-				closeThinkingBlock()
-				if !textBlockOpen {
-					textBlockIndex = blockIndex
-					emitClaudeEvent("content_block_start", map[string]any{
-						"type":  "content_block_start",
-						"index": textBlockIndex,
-						"content_block": map[string]any{
-							"type": "text",
-							"text": "",
-						},
-					})
-					textBlockOpen = true
-					blockIndex++
-				}
-				emitClaudeEvent("content_block_delta", map[string]any{
-					"type":  "content_block_delta",
+		contentStr, _ := delta["content"].(string)
+		if refusal, _ := delta["refusal"].(string); refusal != "" {
+			contentStr += refusal
+			refusalSeen = true
+		}
+		if contentStr != "" {
+			closeThinkingBlock()
+			if !textBlockOpen {
+				textBlockIndex = blockIndex
+				emitClaudeEvent("content_block_start", map[string]any{
+					"type":  "content_block_start",
 					"index": textBlockIndex,
-					"delta": map[string]any{
-						"type": "text_delta",
-						"text": contentStr,
+					"content_block": map[string]any{
+						"type": "text",
+						"text": "",
 					},
 				})
+				textBlockOpen = true
+				blockIndex++
 			}
+			emitClaudeEvent("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": textBlockIndex,
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": contentStr,
+				},
+			})
 		}
 
 		if rawToolCalls, ok := delta["tool_calls"].([]any); ok {

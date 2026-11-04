@@ -1,10 +1,10 @@
 package upstream
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -67,28 +67,59 @@ func GetUpstreamModelsEndpoint(upstream *UpstreamConfig) string {
 	return base + "/models"
 }
 
-// ttfbReadCloser 包装 io.ReadCloser，在首次 Read 时记录首字节耗时，
-// 后续调用全部委托给内部 ReadCloser。
+const upstreamStreamIdleTimeout = 120 * time.Second
+
+var errUpstreamStreamIdleTimeout = errors.New("upstream stream idle timeout")
+
+// ttfbReadCloser 记录实际首字节耗时，并限制每次等待上游数据的时间。
+// 不限制流的总时长，也不把向慢速客户端写数据的时间计入上游空闲时间。
 type ttfbReadCloser struct {
-	inner     io.ReadCloser
-	once      sync.Once
-	start     time.Time
-	upstream  string
-	model     string
-	keySlot   string
-	exitLabel string
+	inner       io.ReadCloser
+	once        sync.Once
+	timeoutOnce sync.Once
+	ctx         context.Context
+	cancel      context.CancelCauseFunc
+	idleTimeout time.Duration
+	start       time.Time
+	upstream    string
+	model       string
+	keySlot     string
+	exitLabel   string
 }
 
 func (r *ttfbReadCloser) Read(p []byte) (int, error) {
-	n, err := r.inner.Read(p)
-	r.once.Do(func() {
-		ttfb := time.Since(r.start)
-		log.Printf("[首字节耗时] 上游=%s 模型=%s 密钥=%s 出口=%s 耗时=%s", r.upstream, r.model, r.keySlot, r.exitLabel, ttfb.Round(time.Millisecond))
+	if len(p) == 0 {
+		return 0, nil
+	}
+	// 取消本次 HTTP 请求能同时中断 HTTP/1.1 和 HTTP/2 的阻塞读取，
+	// 无需为每个 Read 创建可能残留的读取 goroutine。
+	timedOut := make(chan struct{})
+	timer := time.AfterFunc(r.idleTimeout, func() {
+		r.cancel(errUpstreamStreamIdleTimeout)
+		close(timedOut)
 	})
+	n, err := r.inner.Read(p)
+	if !timer.Stop() {
+		<-timedOut
+	}
+	if n > 0 {
+		r.once.Do(func() {
+			ttfb := time.Since(r.start)
+			log.Printf("[首字节耗时] 上游=%s 模型=%s 密钥=%s 出口=%s 耗时=%s", r.upstream, r.model, r.keySlot, r.exitLabel, ttfb.Round(time.Millisecond))
+		})
+	}
+	if errors.Is(context.Cause(r.ctx), errUpstreamStreamIdleTimeout) {
+		r.timeoutOnce.Do(func() {
+			log.Printf("[上游流读取超时] 上游=%s 模型=%s 密钥=%s 出口=%s 空闲时限=%s", r.upstream, r.model, r.keySlot, r.exitLabel, r.idleTimeout)
+		})
+		// 保留独立的超时原因，避免流转换器把它误判为客户端主动取消而静默退出。
+		return n, fmt.Errorf("%w: no data received for %s", errUpstreamStreamIdleTimeout, r.idleTimeout)
+	}
 	return n, err
 }
 
 func (r *ttfbReadCloser) Close() error {
+	r.cancel(nil)
 	return r.inner.Close()
 }
 
@@ -161,7 +192,7 @@ func PrepareOpenAIUpstreamBody(reqBody []byte, modelID string, upstream *Upstrea
 	if upstream != nil {
 		switch upstream.APIType {
 		case UpstreamAnthropic:
-			tryBody = OpenAIToAnthropicRequest(marshaled)
+			return OpenAIToAnthropicRequestWithError(marshaled)
 		case UpstreamResponses:
 			tryBody = OpenAIToResponsesRequest(marshaled, upstream)
 		}
@@ -275,12 +306,16 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 func CallUpstream(ctx context.Context, reqBody []byte, upstreamName, modelID string, upstream *UpstreamConfig, rawResponse ...bool) ([]byte, int, http.Header, error) {
 	tryBody, err := PrepareOpenAIUpstreamBody(reqBody, modelID, upstream)
 	if err != nil {
-		return nil, 500, nil, err
+		return nil, http.StatusBadRequest, nil, err
 	}
 	return CallPreparedUpstream(ctx, tryBody, upstreamName, modelID, upstream, rawResponse...)
 }
 
 func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstreamName, modelID string, upstream *UpstreamConfig, rawErrors ...bool) (io.ReadCloser, int, http.Header, error) {
+	return callPreparedUpstreamStream(ctx, preparedBody, upstreamName, modelID, upstream, upstreamStreamIdleTimeout, rawErrors...)
+}
+
+func callPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstreamName, modelID string, upstream *UpstreamConfig, idleTimeout time.Duration, rawErrors ...bool) (io.ReadCloser, int, http.Header, error) {
 	if upstream == nil || upstream.BaseURL == "" {
 		return nil, 500, nil, fmt.Errorf("upstream not configured")
 	}
@@ -299,9 +334,8 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 		if err != nil {
 			return nil, http.StatusInternalServerError, nil, fmt.Errorf("build upstream request: %w", err)
 		}
-		// 每次尝试都将请求重新绑定到当前调用的 context。BuildUpstreamRequest 已绑定 ctx，
-		// 但这样即使辅助函数以后发生变化，取消信号仍具有最终决定权。
-		up = up.WithContext(ctx)
+		attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
+		up = up.WithContext(attemptCtx)
 		ApplyNativeProtocolHeadersFromContext(up)
 		if upstream.APIType == UpstreamAnthropic {
 			ApplyAnthropicProtocolHeadersFromContext(up)
@@ -310,6 +344,11 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 		client, exitLabel := GetHTTPClientForUpstream(true, upstream)
 		resp, err := client.Do(up)
 		if err != nil {
+			cancelAttempt(nil)
+			if ctx.Err() != nil {
+				return nil, 0, nil, ctx.Err()
+			}
+			log.Printf("[上游流连接失败] 上游=%s 模型=%s 密钥=%s 出口=%s 尝试=%d/%d 错误=%v", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, attempt+1, attemptLimit, err)
 			if attempt+1 >= attemptLimit {
 				return nil, http.StatusBadGateway, nil, fmt.Errorf("upstream stream request failed after %d attempt(s): %w", attempt+1, err)
 			}
@@ -319,20 +358,29 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 			retryDelay = NextRetryDelay(retryDelay)
 			continue
 		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			wrappedBody := &ttfbReadCloser{
-				inner:     resp.Body,
-				start:     startTTFB,
-				upstream:  EffectiveUpstreamName(upstreamName),
-				model:     modelID,
-				keySlot:   FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)),
-				exitLabel: exitLabel,
-			}
-			return wrappedBody, resp.StatusCode, resp.Header, nil
+		resp.Body = &ttfbReadCloser{
+			inner:       resp.Body,
+			ctx:         attemptCtx,
+			cancel:      cancelAttempt,
+			idleTimeout: idleTimeout,
+			start:       startTTFB,
+			upstream:    EffectiveUpstreamName(upstreamName),
+			model:       modelID,
+			keySlot:     FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)),
+			exitLabel:   exitLabel,
 		}
-		errBody, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return resp.Body, resp.StatusCode, resp.Header, nil
+		}
+		errBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		preserveRaw := len(rawErrors) > 0 && rawErrors[0]
+		if readErr != nil {
+			if !preserveRaw {
+				errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
+			}
+			return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("read upstream stream error response: %w", readErr)
+		}
 		if ShouldRetryUpstreamStatus(resp.StatusCode) {
 			log.Printf("[上游重试] 上游=%s 模型=%s 密钥=%s 出口=%s 状态码=%d Retry-After=%q", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, resp.StatusCode, resp.Header.Get("Retry-After"))
 			if debugMode && debugLogBodies {
@@ -379,7 +427,7 @@ func CallPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 func CallUpstreamStream(ctx context.Context, reqBody []byte, upstreamName, modelID string, upstream *UpstreamConfig) (io.ReadCloser, int, http.Header, error) {
 	tryBody, err := PrepareOpenAIUpstreamBody(reqBody, modelID, upstream)
 	if err != nil {
-		return nil, 500, nil, err
+		return nil, http.StatusBadRequest, nil, err
 	}
 	return CallPreparedUpstreamStream(ctx, tryBody, upstreamName, modelID, upstream)
 }
@@ -568,7 +616,7 @@ func EnsureChatToolMessageContent(rawMessages any) bool {
 func ProxyResponsesPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model string) error {
 	usageStats := NewRequestUsageAccumulator(model)
 	defer usageStats.commit()
-	return proxyNativePassthroughStream(w, body, func(event sse.Event) {
+	return proxyNativePassthroughStream(w, body, UpstreamResponses, func(event sse.Event) {
 		if event.Data == "" || event.Data == "[DONE]" {
 			return
 		}
@@ -603,7 +651,7 @@ func ProxyChatPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model
 		usageStats = NewRequestUsageAccumulator(model)
 		defer usageStats.commit()
 	}
-	return proxyNativePassthroughStream(w, body, func(event sse.Event) {
+	return proxyNativePassthroughStream(w, body, UpstreamOpenAI, func(event sse.Event) {
 		if usageStats == nil || event.Data == "" || event.Data == "[DONE]" {
 			return
 		}
@@ -620,7 +668,7 @@ func ProxyChatPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model
 func ProxyAnthropicPassthroughStream(w http.ResponseWriter, body io.ReadCloser, model string) error {
 	usageStats := NewRequestUsageAccumulator(model)
 	defer usageStats.commit()
-	return proxyNativePassthroughStream(w, body, func(event sse.Event) {
+	return proxyNativePassthroughStream(w, body, UpstreamAnthropic, func(event sse.Event) {
 		if event.Data == "" {
 			return
 		}
@@ -639,10 +687,9 @@ func ProxyAnthropicPassthroughStream(w http.ResponseWriter, body io.ReadCloser, 
 	})
 }
 
-// proxyNativePassthroughStream forwards every upstream read chunk immediately and
-// feeds a bounded SSE observer as a side operation. Observation must never decide
-// whether a raw chunk is written to the client.
-func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, observe func(sse.Event)) error {
+// proxyNativePassthroughStream 立即转发每个原始数据块，再旁路观察用量和终态。
+// 终态只决定是否继续读取，不改写已经收到的字节，也不等待上游关闭连接。
+func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, protocol UpstreamType, observe func(sse.Event)) error {
 	if body == nil {
 		return nil
 	}
@@ -652,13 +699,15 @@ func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, obs
 	clientGone := false
 	disconnectedBytes := 0
 	buffer := make([]byte, 32*1024)
-	consume := func(events []sse.Event) {
-		if observe == nil {
-			return
-		}
+	consume := func(events []sse.Event) bool {
+		terminal := false
 		for _, event := range events {
-			observe(event)
+			if observe != nil {
+				observe(event)
+			}
+			terminal = isNativeStreamTerminal(event, protocol) || terminal
 		}
+		return terminal
 	}
 	for {
 		n, err := body.Read(buffer)
@@ -674,9 +723,12 @@ func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, obs
 					clientGone = true
 				}
 			}
-			consume(parser.Feed(chunk))
+			terminal := consume(parser.Feed(chunk))
 			if !clientGone && flusher != nil {
 				flusher.Flush()
+			}
+			if terminal {
+				return nil
 			}
 		}
 		if err != nil {
@@ -687,6 +739,31 @@ func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, obs
 			return err
 		}
 	}
+}
+
+func isNativeStreamTerminal(event sse.Event, protocol UpstreamType) bool {
+	if event.Data == "[DONE]" {
+		return true
+	}
+	if protocol == UpstreamOpenAI {
+		// finish_reason 后还可能有独立的 usage 分块，必须继续读取。
+		return false
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(event.Data), &payload) != nil {
+		return false
+	}
+	kind, _ := payload["type"].(string)
+	if kind == "" {
+		kind = event.Name
+	}
+	if kind == "error" {
+		return true
+	}
+	if protocol == UpstreamAnthropic {
+		return kind == "message_stop"
+	}
+	return kind == "response.completed" || kind == "response.incomplete" || kind == "response.failed" || kind == "response.error"
 }
 
 // 下游断开连接后，允许有限地继续读取尾部，以统计最终用量，
@@ -769,10 +846,9 @@ func ResponsesStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(respBody)
+	reader := sse.NewReader(respBody)
 	chunkID := "chatcmpl-" + RandomString(16)
 	created := time.Now().Unix()
-	currentEvent := ""
 	roleSent := false
 	doneSent := false
 	terminalSeen := false
@@ -834,13 +910,9 @@ func ResponsesStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 
 readLoop:
 	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "event:") {
-				currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
-			} else if strings.HasPrefix(trimmed, "data:") {
-				data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		frame, err := reader.Next()
+		if frame.Data != "" {
+			if data := frame.Data; data != "" {
 				if data == "[DONE]" {
 					if terminalSeen {
 						w.Write([]byte("data: [DONE]\n\n"))
@@ -859,12 +931,16 @@ readLoop:
 					if json.Unmarshal([]byte(data), &payload) == nil {
 						eventType, _ := payload["type"].(string)
 						if eventType == "" {
-							eventType = currentEvent
+							eventType = frame.Name
 						}
 						switch eventType {
 						case "response.output_text.delta":
 							if text, _ := payload["delta"].(string); text != "" {
 								emit(map[string]any{"content": text}, nil, nil)
+							}
+						case "response.refusal.delta":
+							if refusal, _ := payload["delta"].(string); refusal != "" {
+								emit(map[string]any{"refusal": refusal}, nil, nil)
 							}
 						case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 							if text, _ := payload["delta"].(string); text != "" {
@@ -951,6 +1027,11 @@ readLoop:
 							}
 							if eventType == "response.incomplete" {
 								finishReason = "length"
+								response, _ := payload["response"].(map[string]any)
+								details, _ := response["incomplete_details"].(map[string]any)
+								if details["reason"] == "content_filter" {
+									finishReason = "content_filter"
+								}
 							}
 							emit(map[string]any{}, finishReason, usage)
 						case "response.failed", "error", "response.error":
@@ -962,7 +1043,7 @@ readLoop:
 							EmitOpenAIStreamError(w, flusher, payload, "upstream Responses stream failed")
 							streamFailed = true
 						}
-						if streamFailed {
+						if terminalSeen || streamFailed {
 							break readLoop
 						}
 					}

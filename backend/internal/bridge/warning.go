@@ -187,7 +187,7 @@ func anthropicServerToolGuidance(tools []ClaudeTool) []string {
 	var guidance []string
 	for _, tool := range tools {
 		toolType := strings.TrimSpace(tool.Type)
-		if toolType == "" {
+		if toolType == "" || toolType == "custom" {
 			continue
 		}
 		if strings.Contains(strings.ToLower(toolType), "web_search") {

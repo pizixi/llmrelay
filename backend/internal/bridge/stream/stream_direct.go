@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"llmrelay/backend/internal/sse"
 )
 
 type directStreamBlock struct {
@@ -29,17 +30,7 @@ type directStreamBlock struct {
 }
 
 func AnthropicUsageToResponsesUsage(usage map[string]any) map[string]any {
-	input, _ := GetFloat(usage, "input_tokens", "prompt_tokens")
-	output, _ := GetFloat(usage, "output_tokens", "completion_tokens")
-	cached, _ := GetFloat(usage, "cache_read_input_tokens", "cached_tokens")
-	return map[string]any{
-		"input_tokens":  int64(input),
-		"output_tokens": int64(output),
-		"total_tokens":  int64(input + output),
-		"input_tokens_details": map[string]any{
-			"cached_tokens": int64(cached),
-		},
-	}
+	return ChatUsageToResponsesUsage(AnthropicUsageToChatUsage(usage))
 }
 
 func ResponsesIncompleteToAnthropicStopReason(response map[string]any) string {
@@ -83,7 +74,7 @@ func AnthropicStreamToResponsesDirectHandler(
 	WriteBridgeWarningHeaders(w.Header(), bridgeWarnings)
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(respBody)
+	reader := sse.NewReader(respBody)
 
 	responseID := "resp_" + RandomString(24)
 	createdAt := time.Now().Unix()
@@ -315,19 +306,15 @@ func AnthropicStreamToResponsesDirectHandler(
 		block.done = true
 	}
 
-	currentEvent := ""
 	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "event:") {
-				currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
-			} else if payload, ok := SseDataPayload(line); ok && payload != "" {
+		frame, err := reader.Next()
+		if frame.Data != "" {
+			if payload := frame.Data; payload != "" {
 				var event map[string]any
 				if json.Unmarshal([]byte(payload), &event) == nil {
 					eventType, _ := event["type"].(string)
 					if eventType == "" {
-						eventType = currentEvent
+						eventType = frame.Name
 					}
 					switch eventType {
 					case "message_start":
@@ -479,7 +466,7 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 	SetSSEHeaders(w.Header())
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(respBody)
+	reader := sse.NewReader(respBody)
 
 	messageID := "msg_" + RandomString(24)
 	messageStarted := false
@@ -490,6 +477,8 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 	blocksByItem := map[string]*directStreamBlock{}
 	blocksByOutput := map[int]*directStreamBlock{}
 	hasToolUse := false
+	hasRefusal := false
+	messageBlocks := map[string]map[int]*directStreamBlock{}
 	webSearchRequests := 0
 	completedWebSearchCalls := map[string]bool{}
 
@@ -500,14 +489,15 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 		if messageStarted {
 			return
 		}
-		input, _ := GetFloat(totalUsage, "input_tokens", "prompt_tokens")
+		initialUsage := OpenAIUsageToAnthropicUsage(totalUsage)
+		initialUsage["output_tokens"] = 0
 		emit("message_start", map[string]any{
 			"type": "message_start",
 			"message": map[string]any{
 				"id": messageID, "type": "message", "role": "assistant",
 				"content": []any{}, "model": model, "stop_reason": nil,
 				"stop_sequence": nil,
-				"usage":         map[string]any{"input_tokens": int64(input), "output_tokens": 0},
+				"usage":         initialUsage,
 			},
 		})
 		messageStarted = true
@@ -555,6 +545,21 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 		})
 		blocksByItem[itemID] = block
 		blocksByOutput[outputIndex] = block
+		return block
+	}
+	startContentBlock := func(itemID string, outputIndex, contentIndex int, kind string) *directStreamBlock {
+		if messageBlocks[itemID] == nil {
+			messageBlocks[itemID] = map[int]*directStreamBlock{}
+		}
+		if block := messageBlocks[itemID][contentIndex]; block != nil {
+			return block
+		}
+		key := fmt.Sprintf("%s:content:%d", itemID, contentIndex)
+		block := startBlock(key, kind, "", "", outputIndex)
+		messageBlocks[itemID][contentIndex] = block
+		if kind == "refusal" {
+			hasRefusal = true
+		}
 		return block
 	}
 	finishBlock := func(block *directStreamBlock) {
@@ -644,8 +649,7 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 		for _, block := range orderedBlocks {
 			finishBlock(block)
 		}
-		outputTokens, _ := GetFloat(totalUsage, "output_tokens", "completion_tokens")
-		terminalUsage := map[string]any{"output_tokens": int64(outputTokens)}
+		terminalUsage := OpenAIUsageToAnthropicUsage(totalUsage)
 		terminalUsage = WithAnthropicWebSearchUsage(terminalUsage, webSearchRequests)
 		emit("message_delta", map[string]any{
 			"type":  "message_delta",
@@ -663,19 +667,15 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 		})
 	}
 
-	currentEvent := ""
 	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "event:") {
-				currentEvent = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
-			} else if payload, ok := SseDataPayload(line); ok && payload != "" && payload != "[DONE]" {
+		frame, err := reader.Next()
+		if frame.Data != "" {
+			if payload := frame.Data; payload != "" && payload != "[DONE]" {
 				var event map[string]any
 				if json.Unmarshal([]byte(payload), &event) == nil {
 					eventType, _ := event["type"].(string)
 					if eventType == "" {
-						eventType = currentEvent
+						eventType = frame.Name
 					}
 					switch eventType {
 					case "response.created", "response.in_progress":
@@ -724,26 +724,48 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 					case "response.content_part.added":
 						itemID, _ := event["item_id"].(string)
 						index, _ := GetFloat(event, "output_index")
+						contentIndex, _ := GetFloat(event, "content_index")
 						part, _ := event["part"].(map[string]any)
 						partType, _ := part["type"].(string)
-						if partType != "" && partType != "output_text" {
+						if partType != "" && partType != "output_text" && partType != "refusal" {
 							emitMessageStart()
 							log.Printf("[协议桥接警告] Responses->Anthropic 不支持内容分段类型=%q 项目=%q", partType, itemID)
 							emitError(event, "unsupported Responses content part type: "+partType)
 							failed = true
 						} else {
-							startBlock(itemID, "message", "", "", int(index))
+							startContentBlock(itemID, int(index), int(contentIndex), partType)
 						}
-					case "response.output_text.delta":
+					case "response.output_text.delta", "response.refusal.delta", "response.output_text.done", "response.refusal.done":
 						itemID, _ := event["item_id"].(string)
 						index, _ := GetFloat(event, "output_index")
-						block := startBlock(itemID, "message", "", "", int(index))
+						contentIndex, _ := GetFloat(event, "content_index")
+						kind := "message"
+						if strings.HasPrefix(eventType, "response.refusal.") {
+							kind = "refusal"
+						}
+						block := startContentBlock(itemID, int(index), int(contentIndex), kind)
 						text, _ := event["delta"].(string)
+						if strings.HasSuffix(eventType, ".done") {
+							field := "text"
+							if kind == "refusal" {
+								field = "refusal"
+							}
+							complete, _ := event[field].(string)
+							if strings.HasPrefix(complete, block.text) {
+								text = strings.TrimPrefix(complete, block.text)
+							}
+						}
 						block.text += text
-						emit("content_block_delta", map[string]any{
-							"type": "content_block_delta", "index": block.contentIndex,
-							"delta": map[string]any{"type": "text_delta", "text": text},
-						})
+						if text != "" && !block.done {
+							emit("content_block_delta", map[string]any{
+								"type": "content_block_delta", "index": block.contentIndex,
+								"delta": map[string]any{"type": "text_delta", "text": text},
+							})
+						}
+					case "response.content_part.done":
+						itemID, _ := event["item_id"].(string)
+						contentIndex, _ := GetFloat(event, "content_index")
+						finishBlock(messageBlocks[itemID][int(contentIndex)])
 					case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 						itemID, _ := event["item_id"].(string)
 						index, _ := GetFloat(event, "output_index")
@@ -777,7 +799,16 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 						itemID, _ := item["id"].(string)
 						block := blocksByItem[itemID]
 						kind, _ := item["type"].(string)
-						if kind == "web_search_call" {
+						if kind == "message" {
+							indexes := make([]int, 0, len(messageBlocks[itemID]))
+							for index := range messageBlocks[itemID] {
+								indexes = append(indexes, index)
+							}
+							sort.Ints(indexes)
+							for _, index := range indexes {
+								finishBlock(messageBlocks[itemID][index])
+							}
+						} else if kind == "web_search_call" {
 							index, _ := GetFloat(event, "output_index")
 							block = emitWebSearchCall(item, int(index))
 						} else if kind == "reasoning" && (block == nil || !block.started) {
@@ -815,6 +846,8 @@ func ResponsesStreamToAnthropicDirectHandler(w http.ResponseWriter, respBody io.
 							stopReason = ResponsesIncompleteToAnthropicStopReason(terminalResponse)
 						} else if hasToolUse {
 							stopReason = "tool_use"
+						} else if hasRefusal {
+							stopReason = "refusal"
 						}
 						if terminalMessage(stopReason) {
 							terminal = true

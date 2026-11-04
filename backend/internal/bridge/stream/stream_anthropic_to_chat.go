@@ -1,13 +1,14 @@
 package stream
 
 import (
-	"bufio"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"llmrelay/backend/internal/sse"
 )
 
 type pipeResponseWriter struct {
@@ -46,7 +47,7 @@ func AnthropicStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(respBody)
+	reader := sse.NewReader(respBody)
 
 	chunkID := "chatcmpl-" + RandomString(16)
 	created := time.Now().Unix()
@@ -95,8 +96,10 @@ func AnthropicStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 		}
 	}
 
+readLoop:
 	for {
-		line, err := reader.ReadString('\n')
+		frame, err := reader.Next()
+		line := frame.Data
 		if err != nil {
 			if err == io.EOF {
 				if line == "" {
@@ -115,7 +118,7 @@ func AnthropicStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 		if trimmed == "" {
 			continue
 		}
-		payload, isDataLine := SseDataPayload(line)
+		payload, isDataLine := frame.Data, frame.Data != ""
 		if (isDataLine && payload == "[DONE]") || trimmed == "[DONE]" {
 			if !terminalSeen {
 				EmitOpenAIStreamError(w, flusher, nil, "upstream Anthropic stream ended before a terminal event")
@@ -135,6 +138,9 @@ func AnthropicStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 		}
 
 		eventType, _ := event["type"].(string)
+		if eventType == "" {
+			eventType = frame.Name
+		}
 		if event["error"] != nil && (eventType == "" || eventType == "error") {
 			EmitOpenAIStreamError(w, flusher, event, "upstream Anthropic stream failed")
 			return
@@ -277,43 +283,10 @@ func AnthropicStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 					}
 				}
 				usage, _ := event["usage"].(map[string]any)
-				if usage != nil {
-					if ot, ok := usage["output_tokens"].(float64); ok {
-						fullUsage["output_tokens"] = ot
-					}
+				for key, value := range usage {
+					fullUsage[key] = value
 				}
-				chatUsage := map[string]any{}
-				if pt, ok := fullUsage["input_tokens"].(float64); ok {
-					chatUsage["prompt_tokens"] = int64(pt)
-				}
-				if ot, ok := fullUsage["output_tokens"].(float64); ok {
-					chatUsage["completion_tokens"] = int64(ot)
-				}
-				if _, ok := chatUsage["prompt_tokens"]; !ok {
-					if u, ok2 := event["usage"].(map[string]any); ok2 {
-						if it, ok3 := u["input_tokens"].(float64); ok3 {
-							chatUsage["prompt_tokens"] = int64(it)
-							fullUsage["input_tokens"] = it
-						}
-					}
-				}
-				if _, ok := chatUsage["completion_tokens"]; !ok {
-					if u, ok2 := event["usage"].(map[string]any); ok2 {
-						if ot, ok3 := u["output_tokens"].(float64); ok3 {
-							chatUsage["completion_tokens"] = int64(ot)
-							fullUsage["output_tokens"] = ot
-						}
-					}
-				}
-				pt := float64(0)
-				if v, ok := chatUsage["prompt_tokens"].(int64); ok {
-					pt = float64(v)
-				}
-				ct := float64(0)
-				if v, ok := chatUsage["completion_tokens"].(int64); ok {
-					ct = float64(v)
-				}
-				chatUsage["total_tokens"] = int64(pt + ct)
+				chatUsage := AnthropicUsageToChatUsage(fullUsage)
 				if !roleSent {
 					emitChatChunk(map[string]any{"role": "assistant", "content": ""}, nil, nil)
 					roleSent = true
@@ -333,6 +306,7 @@ func AnthropicStreamToChatHandler(w http.ResponseWriter, respBody io.ReadCloser,
 				emitChatChunk(map[string]any{}, "stop", nil)
 			}
 			terminalSeen = true
+			break readLoop
 		case "ping":
 			// 忽略。
 		}

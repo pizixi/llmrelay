@@ -112,9 +112,14 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	applyDecisionHeaders(w.Header(), decision, bridgeWarnings)
 	logBridgeWarnings("chat", upstreamName, req.Model, bridgeWarnings)
 	upstreamBody := buildUpstreamBody(&req, forwardReasoning)
+	preparedBody, prepareErr := prepareOpenAIUpstreamBody(upstreamBody, req.Model, upstream)
+	if prepareErr != nil {
+		writeExternalAPIError(w, r.URL.Path, http.StatusBadRequest, "invalid_request_error", prepareErr.Error())
+		return
+	}
 
 	if req.Stream {
-		upResp, status, upHeader, err := callUpstreamStream(r.Context(), upstreamBody, upstreamName, req.Model, upstream)
+		upResp, status, upHeader, err := callPreparedUpstreamStream(r.Context(), preparedBody, upstreamName, req.Model, upstream)
 		if err != nil || status < 200 || status >= 300 {
 			w.Header().Set("Content-Type", "application/json")
 			status = applyUpstreamErrorHeaders(w, upHeader, status)
@@ -135,7 +140,7 @@ func ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respBody, status, upHeader, err := callUpstream(r.Context(), upstreamBody, upstreamName, req.Model, upstream)
+	respBody, status, upHeader, err := callPreparedUpstream(r.Context(), preparedBody, upstreamName, req.Model, upstream)
 	if err != nil || status < 200 || status >= 300 {
 		w.Header().Set("Content-Type", "application/json")
 		status = applyUpstreamErrorHeaders(w, upHeader, status)

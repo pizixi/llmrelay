@@ -108,6 +108,7 @@ func usageSnapshot() TokenStatsData {
 		cp.Models[k] = &ModelStats{
 			RequestCount:     v.RequestCount,
 			PromptTokens:     v.PromptTokens,
+			CachedTokens:     v.CachedTokens,
 			CompletionTokens: v.CompletionTokens,
 			TotalTokens:      v.TotalTokens,
 		}
@@ -122,6 +123,7 @@ func usageSnapshot() TokenStatsData {
 			cp.Daily.Models[k] = &ModelStats{
 				RequestCount:     v.RequestCount,
 				PromptTokens:     v.PromptTokens,
+				CachedTokens:     v.CachedTokens,
 				CompletionTokens: v.CompletionTokens,
 				TotalTokens:      v.TotalTokens,
 			}

@@ -209,8 +209,11 @@ func AnthropicContentToResponsesItems(role string, content any, path string) ([]
 				warnings = AppendBridgeWarnings(warnings, outputWarnings)
 			}
 			if isError, _ := block["is_error"].(bool); isError {
-				if text, ok := output.(string); ok {
-					output = "[tool_error] " + text
+				switch value := output.(type) {
+				case string:
+					output = "[tool_error] " + value
+				case []any:
+					output = append([]any{map[string]any{"type": "input_text", "text": "[tool_error]"}}, value...)
 				}
 			}
 			items = append(items, map[string]any{"type": "function_call_output", "call_id": BridgeString(block["tool_use_id"]), "output": output})
@@ -325,7 +328,7 @@ func ConvertAnthropicRequestToResponsesDirect(body []byte, model string, forward
 			if tool == nil || BridgeString(tool["name"]) == "" {
 				return nil, warnings, fmt.Errorf("tools[%d].name is required", index)
 			}
-			if toolType := BridgeString(tool["type"]); toolType != "" {
+			if toolType := BridgeString(tool["type"]); toolType != "" && toolType != "custom" {
 				if strings.HasPrefix(strings.ToLower(toolType), "web_search_") {
 					webSearch := map[string]any{"type": "web_search"}
 					filters := map[string]any{}
@@ -359,8 +362,8 @@ func ConvertAnthropicRequestToResponsesDirect(body []byte, model string, forward
 			if parameters == nil {
 				parameters = map[string]any{"type": "object", "properties": map[string]any{}}
 			}
-			functionTool := map[string]any{"type": "function", "name": tool["name"], "description": tool["description"], "parameters": parameters}
-			if strict, exists := tool["strict"]; exists {
+			functionTool := map[string]any{"type": "function", "name": tool["name"], "description": tool["description"], "parameters": parameters, "strict": false}
+			if strict, ok := tool["strict"].(bool); ok {
 				functionTool["strict"] = strict
 			}
 			converted = append(converted, functionTool)
@@ -444,6 +447,8 @@ func ResponsesContentToAnthropicBlocks(content any, path string) ([]any, []Bridg
 		switch partType := BridgeString(part["type"]); partType {
 		case "input_text", "output_text", "summary_text", "text":
 			blocks = append(blocks, map[string]any{"type": "text", "text": BridgeString(part["text"])})
+		case "refusal":
+			blocks = append(blocks, map[string]any{"type": "text", "text": BridgeString(part["refusal"])})
 		case "input_image", "image_url":
 			image := ResponsesImageURLFromPart(part)
 			if image != nil {
@@ -452,15 +457,8 @@ func ResponsesContentToAnthropicBlocks(content any, path string) ([]any, []Bridg
 				warnings = AppendPairwiseWarning(warnings, "unsupported_media_source", fmt.Sprintf("%s[%d]", path, index), "Responses image without an image_url was skipped")
 			}
 		case "input_file":
-			url := BridgeString(part["file_data"])
-			if url == "" {
-				url = BridgeString(part["file_url"])
-			}
-			if url != "" {
-				block := map[string]any{"type": "document", "source": DataURLToAnthropicSource(url)}
-				if filename := BridgeString(part["filename"]); filename != "" {
-					block["title"] = filename
-				}
+			// file_data 既可以是 data URL，也可以是纯 base64，不能把后者当作 URL。
+			if block, ok := ConvertOpenAIFileToAnthropic(part); ok && BridgeString(part["file_id"]) == "" {
 				blocks = append(blocks, block)
 			} else {
 				warnings = AppendPairwiseWarning(warnings, "unsupported_file_reference", fmt.Sprintf("%s[%d]", path, index), "Responses file_id cannot be dereferenced by the Anthropic bridge")
@@ -675,7 +673,11 @@ func ConvertResponsesRequestToAnthropicDirect(body []byte, model string, forward
 	if len(convertedTools) > 0 || len(nativeWebSearchTools) > 0 {
 		tools := make([]any, 0, len(convertedTools)+len(nativeWebSearchTools))
 		for _, tool := range convertedTools {
-			tools = append(tools, map[string]any{"name": tool.Function.Name, "description": tool.Function.Description, "input_schema": tool.Function.Parameters})
+			native := map[string]any{"name": tool.Function.Name, "description": tool.Function.Description, "input_schema": tool.Function.Parameters}
+			if tool.Function.Strict != nil {
+				native["strict"] = *tool.Function.Strict
+			}
+			tools = append(tools, native)
 		}
 		tools = append(tools, nativeWebSearchTools...)
 		result["tools"] = tools
@@ -725,6 +727,10 @@ func ConvertResponsesRequestToAnthropicDirect(body []byte, model string, forward
 				warnings = AppendPairwiseWarning(warnings, "reasoning_effort_approximated", "reasoning.effort", fmt.Sprintf("Responses reasoning effort %q was approximated as an Anthropic manual thinking budget", mappedEffort))
 			}
 		}
+	}
+	_, explicitMax := request["max_output_tokens"]
+	if err := FitAnthropicThinkingBudget(result, explicitMax); err != nil {
+		return nil, nil, warnings, err
 	}
 	encoded, err := json.Marshal(result)
 	return encoded, mappings, warnings, err
@@ -820,15 +826,7 @@ func ConvertAnthropicResponseToResponsesDirect(body []byte, model string, reques
 }
 
 func ResponsesUsageToAnthropicUsage(usage map[string]any) map[string]any {
-	input, _ := GetFloat(usage, "input_tokens", "prompt_tokens")
-	output, _ := GetFloat(usage, "output_tokens", "completion_tokens")
-	result := map[string]any{"input_tokens": int64(input), "output_tokens": int64(output)}
-	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
-		if cached, ok := details["cached_tokens"]; ok {
-			result["cache_read_input_tokens"] = cached
-		}
-	}
-	return result
+	return OpenAIUsageToAnthropicUsage(usage)
 }
 
 func ResponsesWebSearchToAnthropicBlocks(item map[string]any) []any {
@@ -870,6 +868,7 @@ func ConvertResponsesResponseToAnthropicDirect(body []byte, model string, mappin
 	var content []any
 	var warnings []BridgeWarning
 	hasToolUse := false
+	hasRefusal := false
 	webSearchRequests := 0
 	for index, raw := range BridgeArray(response["output"]) {
 		item, _ := raw.(map[string]any)
@@ -888,6 +887,7 @@ func ConvertResponsesResponseToAnthropicDirect(body []byte, model string, mappin
 					content = append(content, map[string]any{"type": "text", "text": BridgeString(part["text"])})
 				case "refusal":
 					content = append(content, map[string]any{"type": "text", "text": BridgeString(part["refusal"])})
+					hasRefusal = true
 				default:
 					warnings = AppendPairwiseWarning(warnings, "unsupported_response_part", fmt.Sprintf("output[%d].content[%d]", index, partIndex), fmt.Sprintf("Responses output content type %q was skipped", part["type"]))
 				}
@@ -922,6 +922,8 @@ func ConvertResponsesResponseToAnthropicDirect(body []byte, model string, mappin
 		stopReason = ResponsesIncompleteToAnthropicStopReason(response)
 	} else if hasToolUse {
 		stopReason = "tool_use"
+	} else if hasRefusal {
+		stopReason = "refusal"
 	}
 	if len(content) == 0 {
 		content = []any{map[string]any{"type": "text", "text": ""}}

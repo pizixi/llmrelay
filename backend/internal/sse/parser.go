@@ -17,7 +17,8 @@ type Event struct {
 const DefaultMaxEventBytes = 1 << 20
 
 // Parser 是可增量 Feed 的 SSE parser。它支持 LF、CRLF、CR 换行、注释、
-// 多 data 行和跨网络 chunk 的事件。解析器只用于旁路观察，不应承担原始流转发。
+// 多 data 行和跨网络 chunk 的事件。原始流转发由调用方处理；转换器通过
+// Reader 读取完整事件，并将缓存超限视为错误。
 type Parser struct {
 	pending  []byte
 	name     string

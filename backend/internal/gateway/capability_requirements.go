@@ -39,7 +39,11 @@ func requestCapabilities(body []byte, client WireProtocol) []Capability {
 			typ = strings.ToLower(strings.TrimSpace(typ))
 			switch typ {
 			case "custom":
-				add(CapabilityCustomTools)
+				// Anthropic custom 是 JSON Schema 函数工具；OpenAI custom
+				// 才是自由格式工具，不能混用同一能力判断。
+				if client != WireAnthropic {
+					add(CapabilityCustomTools)
+				}
 			case "web_search", "web_search_preview", "computer_use_preview", "tool_search":
 				add(CapabilityHostedWebSearch)
 			}

@@ -39,6 +39,10 @@ func callPreparedUpstream(ctx context.Context, body []byte, upstreamName, model 
 	return upstream.CallPreparedUpstream(ctx, body, upstreamName, model, target, raw...)
 }
 
+func prepareOpenAIUpstreamBody(body []byte, model string, target *UpstreamConfig) ([]byte, error) {
+	return upstream.PrepareOpenAIUpstreamBody(body, model, target)
+}
+
 func callUpstream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig, raw ...bool) ([]byte, int, http.Header, error) {
 	return upstream.CallUpstream(ctx, body, upstreamName, model, target, raw...)
 }
