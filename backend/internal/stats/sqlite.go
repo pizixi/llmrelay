@@ -16,10 +16,12 @@ import (
 	"llmrelay/backend/internal/storage"
 )
 
-// BreakdownStats is used by the admin panel for model/upstream/day views.
+// BreakdownStats 用于管理页的模型、上游和日期维度统计。
+// Model 保留客户端请求名（含路由别名），UpstreamModel 保留实际调用的模型，避免分流后混算。
 type BreakdownStats struct {
 	Model            string `json:"model,omitempty"`
 	Upstream         string `json:"upstream,omitempty"`
+	UpstreamModel    string `json:"upstream_model,omitempty"`
 	Date             string `json:"date,omitempty"`
 	RequestCount     int64  `json:"request_count"`
 	PromptTokens     int64  `json:"prompt_tokens"`
@@ -285,7 +287,7 @@ func breakdownQuery(db *sql.DB, query string) []BreakdownStats {
 	result := []BreakdownStats{}
 	for rows.Next() {
 		var value BreakdownStats
-		if err := rows.Scan(&value.Model, &value.Upstream, &value.Date, &value.RequestCount, &value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
+		if err := rows.Scan(&value.Model, &value.Upstream, &value.UpstreamModel, &value.Date, &value.RequestCount, &value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens); err == nil {
 			result = append(result, value)
 		}
 	}
@@ -317,19 +319,19 @@ func sqliteSnapshot() TokenStatsData {
 		Daily:          daily,
 		Upstreams:      upstreams,
 		DailyUpstreams: upstreamAggregateQuery(db, "called_date = ?", today),
-		ModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, '', COALESCE(SUM(request_count), 0),
+		ModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, upstream_model, '', COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
-			FROM usage_records GROUP BY request_model, upstream_name ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
-		DailyModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, '', COALESCE(SUM(request_count), 0),
+			FROM usage_records GROUP BY request_model, upstream_name, upstream_model ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
+		DailyModelUpstreams: breakdownQuery(db, `SELECT request_model, upstream_name, upstream_model, '', COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
-			FROM usage_records WHERE called_date = '`+today+`' GROUP BY request_model, upstream_name ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
-		ModelDays: breakdownQuery(db, `SELECT request_model, '', called_date, COALESCE(SUM(request_count), 0),
+			FROM usage_records WHERE called_date = '`+today+`' GROUP BY request_model, upstream_name, upstream_model ORDER BY COALESCE(SUM(total_tokens), 0) DESC`),
+		ModelDays: breakdownQuery(db, `SELECT request_model, '', '', called_date, COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 			FROM usage_records GROUP BY called_date, request_model ORDER BY called_date DESC, COALESCE(SUM(total_tokens), 0) DESC`),
-		ModelUpstreamDays: breakdownQuery(db, `SELECT request_model, upstream_name, called_date, COALESCE(SUM(request_count), 0),
+		ModelUpstreamDays: breakdownQuery(db, `SELECT request_model, upstream_name, upstream_model, called_date, COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
-			FROM usage_records GROUP BY called_date, upstream_name, request_model ORDER BY called_date DESC, COALESCE(SUM(total_tokens), 0) DESC`),
-		Days: breakdownQuery(db, `SELECT '', '', called_date, COALESCE(SUM(request_count), 0),
+			FROM usage_records GROUP BY called_date, upstream_name, request_model, upstream_model ORDER BY called_date DESC, COALESCE(SUM(total_tokens), 0) DESC`),
+		Days: breakdownQuery(db, `SELECT '', '', '', called_date, COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
 			FROM usage_records GROUP BY called_date ORDER BY called_date DESC`),
 	}

@@ -272,6 +272,7 @@ let rootOverflowBeforePopover = "";
 
 function closePopover() {
   if (activePopover) {
+    if (ssActiveWrapper && activePopover.contains(ssActiveWrapper)) ssClose();
     const cb = popoverCloseCallback;
     popoverCloseCallback = null;
     const trigger = activePopover._triggerEl;
@@ -287,7 +288,7 @@ function closePopover() {
 }
 
 function onModalEsc(e) {
-  if (e.key === "Escape") closePopover();
+  if (e.key === "Escape" && !ssActiveDropdown) closePopover();
 }
 
 function onOverlayClick(e) {
@@ -311,6 +312,7 @@ function openPopover(triggerEl, contentHtml, onClose) {
   triggerEl.classList.add("active");
   activeOverlay = overlay;
   activePopover = pop;
+  enhanceFilterInputs(pop);
   popoverCloseCallback = onClose || null;
   overlay.addEventListener("mousedown", onOverlayClick);
   document.addEventListener("keydown", onModalEsc);
@@ -968,6 +970,16 @@ function ssHighlight(dropdown, index) {
 
 function ssOnKeydown(e) {
   if (!ssActiveDropdown) return;
+  if (e.key === "Escape" || e.key === "Tab") {
+    const trigger = ssActiveWrapper?.querySelector(".ss-trigger");
+    ssClose();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    trigger?.focus();
+    return;
+  }
   const opts = ssVisibleOptions(ssActiveDropdown);
   if (!opts.length) {
     if (e.key === "Escape") ssClose();
@@ -1078,6 +1090,7 @@ function ssToggle(btn) {
   }
   html += "</div>";
   dropdown.innerHTML = html;
+  enhanceFilterInputs(dropdown);
 
   dropdown._select = sel;
   dropdown._wrapper = wrapper;
@@ -1109,12 +1122,14 @@ function ssSelect(option) {
   const wrapper = dropdown && dropdown._wrapper;
   const sel = dropdown && dropdown._select;
   if (!wrapper || !sel) return;
-  const value = option.dataset.value;
+  const value = sel.hasAttribute("data-clearable") && sel.value === option.dataset.value
+    ? "" : option.dataset.value;
   sel.value = value;
   ssSyncLabel(sel);
 
   ssClose();
   sel.dispatchEvent(new Event("change", { bubbles: true }));
+  wrapper.querySelector(".ss-trigger")?.focus();
 }
 
 function ssFilter(input) {
@@ -1174,7 +1189,28 @@ function ssSyncLabel(sel) {
     ? selectedOpt.dataset.displayLabel || selectedOpt.textContent
     : "";
   const trigger = wrapper.querySelector(".ss-trigger");
-  if (trigger) trigger.title = selectedOpt ? selectedOpt.title : "";
+  if (trigger) {
+    trigger.title = selectedOpt ? selectedOpt.title || selectedOpt.textContent : "";
+    const name = sel.getAttribute("aria-label");
+    if (name) trigger.setAttribute("aria-label", name + "：" + label.textContent);
+  }
+  if (sel.hasAttribute("data-clearable")) {
+    wrapper.classList.add("ss-clearable");
+    wrapper.classList.toggle("has-value", !!sel.value);
+    let clear = wrapper.querySelector(".ss-clear");
+    if (!clear) {
+      clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "ss-clear";
+      clear.textContent = "×";
+      clear.title = "清除此筛选";
+      clear.setAttribute("aria-label", "清除" + (sel.getAttribute("aria-label") || "筛选"));
+      clear.onclick = () => clearFilterField(sel);
+      wrapper.appendChild(clear);
+    }
+    clear.hidden = !sel.value;
+    clear.disabled = sel.disabled;
+  }
 }
 
 function ssSyncDisabled(sel) {
@@ -1193,6 +1229,7 @@ function ssEnhanceSelect(sel) {
   wrapper.className = "ss-wrapper";
   sel.parentNode.insertBefore(wrapper, sel);
   sel.classList.add("ss-hidden");
+  sel.tabIndex = -1;
   wrapper.appendChild(sel);
   const trigger = document.createElement("button");
   trigger.type = "button";
@@ -1207,6 +1244,85 @@ function ssEnhanceSelect(sel) {
   wrapper.appendChild(trigger);
   ssSyncLabel(sel);
   ssSyncDisabled(sel);
+  sel.addEventListener("change", () => ssSyncLabel(sel));
+}
+
+/* ===== 筛选交互 ===== */
+const PAGE_FILTERS = {
+  usage: [["usageDateFilter", "日期"], ["usageModelFilter", "请求模型"],
+    ["usageUpstreamFilter", "上游"], ["usageAPIKeyFilter", "密钥"]],
+  upstream: [["upstreamKeywordFilter", "关键词"], ["upstreamModelFilter", "模型"]],
+};
+
+function clearFilterField(field) {
+  if (!field) return;
+  if (!field.closest(".ss-dropdown")) ssClose();
+  field.value = "";
+  ssSyncLabel(field);
+  field.dispatchEvent(new Event(field.tagName === "SELECT" || field.type === "date" ? "change" : "input", { bubbles: true }));
+  (field.closest(".ss-wrapper")?.querySelector(".ss-trigger") || field).focus();
+}
+
+function updatePageFilters(scope, resultCount) {
+  const container = document.getElementById(scope + "ActiveFilters");
+  if (!container) return;
+  const selected = (PAGE_FILTERS[scope] || []).map(([id, label]) => {
+    const field = document.getElementById(id);
+    return { id, label, value: String(field?.value || "").trim() };
+  }).filter((item) => item.value);
+  const reset = document.querySelector('[data-filter-reset="' + scope + '"]');
+  if (reset) reset.disabled = !selected.length;
+  container.hidden = !selected.length;
+  const state = JSON.stringify(selected.map(({ id, value }) => [id, value]));
+  if (container.dataset.filterState === state && resultCount == null) return;
+  container.dataset.filterState = state;
+  const chips = selected.map(({ id, label, value }) =>
+    '<button type="button" class="filter-chip" onclick="clearFilterField(document.getElementById(\'' + id +
+    '\'))" title="清除此条件" aria-label="清除' + escAttr(label + "：" + value) + '">' +
+    esc(label + "：" + value) + '<span aria-hidden="true">×</span></button>').join("");
+  const count = '<span class="filter-result-count" role="status">' + (resultCount == null
+    ? "正在筛选…" : "匹配 " + fmt(resultCount) + (scope === "upstream" ? " 个上游" : " 条记录")) + '</span>';
+  // 自动刷新时保留条件按钮，避免打断键盘焦点。
+  const html = chips + count;
+  if (container.innerHTML !== html) container.innerHTML = html;
+}
+
+function resetPageFilters(scope) {
+  ssClose();
+  (PAGE_FILTERS[scope] || []).forEach(([id]) => {
+    const field = document.getElementById(id);
+    if (!field) return;
+    field.value = "";
+    ssSyncLabel(field);
+    syncInputClearButton(field);
+  });
+  if (scope === "usage") loadUsageRecords(0);
+  else filterUpstreamRows();
+}
+
+function syncInputClearButton(input) {
+  const button = input?._clearButton;
+  if (button) button.hidden = !input.value;
+}
+
+function enhanceFilterInputs(root) {
+  root.querySelectorAll('input[type="search"], input[data-clearable-input], .model-search input').forEach((input) => {
+    if (input._clearButton) return;
+    const parent = input.parentElement;
+    parent.classList.add("input-clearable");
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "input-clear";
+    clear.textContent = "×";
+    clear.title = "清除";
+    clear.setAttribute("aria-label", "清除" + (input.getAttribute("aria-label") || input.placeholder || "搜索"));
+    clear.onclick = () => clearFilterField(input);
+    parent.appendChild(clear);
+    input._clearButton = clear;
+    input.addEventListener("input", () => syncInputClearButton(input));
+    input.addEventListener("change", () => syncInputClearButton(input));
+    syncInputClearButton(input);
+  });
 }
 
 function searchableSelectHtml(field, options, selected, attrs) {
@@ -1422,6 +1538,7 @@ function filterUpstreamRows() {
     if (row.hidden !== hidden) row.hidden = hidden;
     if (!row.hidden) visible++;
   });
+  updatePageFilters("upstream", visible);
 
   if (rows.length && visible === 0) {
     tbody.insertAdjacentHTML(
@@ -1429,7 +1546,7 @@ function filterUpstreamRows() {
       '<tr class="upstream-filter-empty"><td colspan="9">' +
         '<div class="upstream-filter-empty-content">' +
         ICONS.search +
-        "<span>没有匹配的上游</span></div>" +
+        '<span>没有匹配的上游</span><button class="btn btn-default" type="button" onclick="resetPageFilters(\'upstream\')">清空筛选</button></div>' +
         "</td></tr>",
     );
   }
@@ -1448,105 +1565,190 @@ function renderUpstreamTable() {
       "添加第一个上游后即可开始路由请求",
     );
     renderUpstreamModelFilter();
+    filterUpstreamRows();
     return;
   }
-  tb.innerHTML = ks
-    .map((name) => {
-      const up = upstreamData[name] || {};
-      return (
-        '<tr data-upstream-row="' +
-        escAttr(name) +
-        '" data-upstream-original="' +
-        escAttr(name) +
-        '" data-upstream-id="' +
-        escAttr(up.id || "") +
-        '"' +
-        ">" +
-        '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
-        ICONS.grip +
-        "</span></td>" +
-        '<td><input value="' +
-        escAttr(name) +
-        '" data-field="name" placeholder="例如: main（留空自动获取）"></td>' +
-        '<td><input value="' +
-        escAttr(up.base_url || "") +
-        '" data-field="base_url" placeholder="https://example.com/v1"></td>' +
-        "<td>" +
-        apiKeyFieldHtml(up.api_key || "") +
-        "</td>" +
-        "<td>" +
-        apiTypeSelectHtml(up.api_type) +
-        "</td>" +
-        "<td>" +
-        bridgeModeSelectHtml(up.bridge_mode) +
-        "</td>" +
-        "<td>" +
-        proxySelectHtml(up.proxy) +
-        "</td>" +
-        "<td>" +
-        customModelsFieldHtml((up.custom_models || []).join(",")) +
-        "</td>" +
-        '<td class="action-cell">' +
-        '<button class="btn-icon model-test-btn" onclick="testUpstreamModel(this)" title="测试模型" aria-label="测试 ' +
-        escAttr(name) +
-        ' 的模型">' +
-        ICONS.gauge +
-        "</button>" +
-        '<button class="btn-icon btn-icon-success" onclick="syncModels(this)" title="同步模型">' +
-        ICONS.sync +
-        "</button>" +
-        '<button class="btn-icon btn-icon-danger" onclick="delUpstream(this)" title="删除">' +
-        ICONS.trash +
-        "</button>" +
-        "</td>" +
-        "</tr>"
-      );
-    })
-    .join("");
+  tb.innerHTML = ks.map((name) => upstreamRowHtml(name, upstreamData[name] || {})).join("");
   renderUpstreamModelFilter();
   filterUpstreamRows();
 }
 
+function upstreamRowHtml(name, up) {
+  return (
+    '<tr data-upstream-row="' +
+    escAttr(name) +
+    '" data-upstream-original="' +
+    escAttr(name) +
+    '" data-upstream-id="' +
+    escAttr(up.id || "") +
+    '"' +
+    ">" +
+    '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
+    ICONS.grip +
+    "</span></td>" +
+    '<td><input value="' +
+    escAttr(name) +
+    '" data-field="name" placeholder="例如: main（留空自动获取）"></td>' +
+    '<td><input value="' +
+    escAttr(up.base_url || "") +
+    '" data-field="base_url" placeholder="https://example.com/v1"></td>' +
+    "<td>" +
+    apiKeyFieldHtml(up.api_key || "") +
+    "</td>" +
+    "<td>" +
+    apiTypeSelectHtml(up.api_type) +
+    "</td>" +
+    "<td>" +
+    bridgeModeSelectHtml(up.bridge_mode) +
+    "</td>" +
+    "<td>" +
+    proxySelectHtml(up.proxy) +
+    "</td>" +
+    "<td>" +
+    customModelsFieldHtml((up.custom_models || []).join(",")) +
+    "</td>" +
+    '<td class="action-cell">' +
+    '<button class="btn-icon model-test-btn" onclick="testUpstreamModel(this)" title="测试模型" aria-label="测试 ' +
+    escAttr(name) +
+    ' 的模型">' +
+    ICONS.gauge +
+    "</button>" +
+    '<button class="btn-icon btn-icon-success" onclick="syncModels(this)" title="同步模型">' +
+    ICONS.sync +
+    "</button>" +
+    '<button class="btn-icon btn-icon-danger" onclick="delUpstream(this)" title="删除">' +
+    ICONS.trash +
+    "</button>" +
+    "</td>" +
+    "</tr>"
+  );
+}
+
 function addUpstreamRow() {
   collectUpstreams();
+  resetPageFilters("upstream");
   const tb = document.querySelector("#upstreamTable tbody");
   if (tb.querySelector(".empty-hint, .empty-state")) tb.innerHTML = "";
   tb.insertAdjacentHTML(
     "afterbegin",
-    '<tr data-upstream-row="" data-upstream-original="" data-upstream-id="">' +
-      '<td class="col-drag"><span class="drag-handle" draggable="true" title="拖动排序" aria-label="拖动排序">' +
-      ICONS.grip +
-      "</span></td>" +
-      '<td><input value="" data-field="name" placeholder="例如: main（留空自动获取）"></td>' +
-      '<td><input value="" data-field="base_url" placeholder="https://example.com/v1"></td>' +
-      "<td>" +
-      apiKeyFieldHtml("") +
-      "</td>" +
-      "<td>" +
-      apiTypeSelectHtml("openai") +
-      "</td>" +
-      "<td>" +
-      bridgeModeSelectHtml("compatible") +
-      "</td>" +
-      "<td>" +
-      proxySelectHtml("") +
-      "</td>" +
-      "<td>" +
-      customModelsFieldHtml("") +
-      "</td>" +
-      '<td class="action-cell">' +
-      '<button class="btn-icon model-test-btn" onclick="testUpstreamModel(this)" title="测试模型" aria-label="测试当前上游的模型">' +
-      ICONS.gauge +
-      "</button>" +
-      '<button class="btn-icon btn-icon-success" onclick="syncModels(this)" title="同步模型">' +
-      ICONS.sync +
-      "</button>" +
-      '<button class="btn-icon btn-icon-danger" onclick="delUpstream(this)" title="删除">' +
-      ICONS.trash +
-      "</button>" +
-      "</td>" +
-      "</tr>",
+    upstreamRowHtml("", {}),
   );
+  tb.querySelector('[data-field="base_url"]')?.focus();
+}
+
+/* ===== 批量添加上游 ===== */
+function bulkUpstreamIdentity(up) {
+  const parsed = parseUpstreamBaseURL(up.base_url);
+  const url = parsed ? parsed.href.replace(/\/+$/, "") : String(up.base_url || "");
+  return JSON.stringify([url, String(up.api_key || "").trim(), up.api_type || "openai"]);
+}
+
+function parseBulkUpstreams(value, delimiter, apiType, existing, usedNames) {
+  const rows = [];
+  const errors = [];
+  let duplicates = 0;
+  const names = new Set(usedNames || []);
+  const seen = new Set((existing || []).map(bulkUpstreamIdentity));
+  const lines = String(value || "").split(/\r?\n/);
+  if (lines.filter((line) => line.trim() && !line.trim().startsWith("#")).length > 500) {
+    return { rows, errors: ["每次最多添加 500 个上游，请分批粘贴"], duplicates };
+  }
+  lines.forEach((line, index) => {
+    const text = line.trim();
+    if (!text || text.startsWith("#")) return;
+    let separator = delimiter;
+    if (!separator) separator = ["|", "\t", ",", "，"].find((item) => text.includes(item)) || /\s+/;
+    const parts = text.split(separator).map((part) => part.trim());
+    const fail = (message) => errors.push("第 " + (index + 1) + " 行：" + message);
+    if (parts.length < 2 || parts.length > 3) {
+      fail("请填写 URL、Key，可选第三列名称；检查分隔符");
+      return;
+    }
+    const [url, key, customName] = parts;
+    const parsed = parseUpstreamBaseURL(url);
+    if (!parsed || /\s/.test(url) || parsed.username || parsed.password) {
+      fail("URL 无效，请使用 HTTP 或 HTTPS 地址");
+      return;
+    }
+    if (!key || /\s/.test(key)) {
+      fail("Key 不能为空或包含空白字符");
+      return;
+    }
+    const up = { base_url: parsed.href.replace(/\/+$/, ""), api_key: key,
+      api_type: apiType || "openai", bridge_mode: "compatible" };
+    const identity = bulkUpstreamIdentity(up);
+    if (seen.has(identity)) {
+      duplicates++;
+      return;
+    }
+    seen.add(identity);
+    const name = uniqueUpstreamDisplayName(customName || upstreamNameFromBaseURL(up.base_url), names);
+    names.add(name);
+    rows.push({ name, up, line: index + 1 });
+  });
+  return { rows, errors, duplicates };
+}
+
+function openBulkUpstreamEditor(trigger) {
+  const pop = openPopover(trigger,
+    '<div class="popover-header"><div class="popover-title">' + ICONS.plus +
+    '批量添加上游</div><button class="btn-icon" type="button" aria-label="关闭" onclick="closePopover()">×</button></div>' +
+    '<p class="popover-hint">一行一个上游：<code>URL | Key</code>，可选第三列名称：<code>URL | Key | 名称</code>。自动跳过空行、# 注释和重复项。</p>' +
+    '<div class="bulk-upstream-options"><label>分隔符<input class="popover-input" data-bulk-delimiter placeholder="自动识别 |、逗号、Tab 或空格" maxlength="10" oninput="updateBulkUpstreamPreview(this)"></label>' +
+    '<label>接口类型<select class="m-select" data-bulk-type onchange="updateBulkUpstreamPreview(this)"><option value="openai">OpenAI Chat</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label></div>' +
+    '<label class="popover-label" for="bulkUpstreamText">上游列表</label><textarea id="bulkUpstreamText" class="popover-textarea bulk-upstream-text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="https://api.example.com/v1 | sk-example\nhttps://api.other.com/v1 | sk-other | 备用上游" oninput="updateBulkUpstreamPreview(this)"></textarea>' +
+    '<div class="bulk-upstream-summary" role="status"></div><div class="bulk-upstream-errors" role="alert" hidden></div><div class="bulk-upstream-preview"></div>' +
+    '<div class="bulk-upstream-footer"><p class="popover-hint">先加入配置列表，检查后点击「保存上游」生效；随后可同步模型。</p><button class="btn btn-default" type="button" onclick="closePopover()">取消</button><button class="btn btn-primary" type="button" data-bulk-submit onclick="applyBulkUpstreams(this)" disabled>加入列表</button></div>');
+  pop.classList.add("bulk-upstream-popover");
+  ssEnhanceSelect(pop.querySelector("[data-bulk-type]"));
+  updateBulkUpstreamPreview(pop);
+  pop.querySelector("textarea").focus();
+}
+
+function readBulkUpstreamPlan(pop) {
+  const existing = Array.from(document.querySelectorAll('#upstreamTable tr[data-upstream-row]')).map((row) => ({
+    base_url: row.querySelector('[data-field="base_url"]')?.value || "",
+    api_key: row.querySelector('[data-field="api_key"]')?.dataset.value || "",
+    api_type: row.querySelector('[data-field="api_type"]')?.value || "openai",
+  }));
+  return parseBulkUpstreams(pop.querySelector("textarea").value,
+    pop.querySelector("[data-bulk-delimiter]").value,
+    pop.querySelector("[data-bulk-type]").value, existing, upstreamRowsUsedNames());
+}
+
+function updateBulkUpstreamPreview(source) {
+  const pop = source.closest(".bulk-upstream-popover") || source;
+  const plan = readBulkUpstreamPlan(pop);
+  pop.querySelector(".bulk-upstream-summary").textContent =
+    "可添加 " + plan.rows.length + " 个 · 跳过重复 " + plan.duplicates + " 个 · 错误 " + plan.errors.length + " 行";
+  const errors = pop.querySelector(".bulk-upstream-errors");
+  errors.hidden = !plan.errors.length;
+  errors.textContent = plan.errors.slice(0, 20).join("\n") + (plan.errors.length > 20 ? "\n…请先修正以上错误" : "");
+  const preview = pop.querySelector(".bulk-upstream-preview");
+  preview.innerHTML = plan.rows.length ? '<table class="tbl"><thead><tr><th>行</th><th>名称</th><th>URL</th><th>Key</th></tr></thead><tbody>' +
+    plan.rows.slice(0, 50).map(({ name, up, line }) => '<tr><td>' + line + '</td><td>' + esc(name) +
+    '</td><td>' + esc(up.base_url) + '</td><td>••••' + esc(up.api_key.length > 8 ? up.api_key.slice(-4) : "") + '</td></tr>').join("") +
+    '</tbody></table>' + (plan.rows.length > 50 ? '<p class="popover-hint">仅预览前 50 个，加入时包含全部有效上游。</p>' : "") : "";
+  pop.querySelector("[data-bulk-submit]").disabled = !plan.rows.length || !!plan.errors.length;
+}
+
+function applyBulkUpstreams(button) {
+  const pop = button.closest(".bulk-upstream-popover");
+  const plan = readBulkUpstreamPlan(pop);
+  if (plan.errors.length || !plan.rows.length) {
+    updateBulkUpstreamPreview(pop);
+    return;
+  }
+  collectUpstreams();
+  const tbody = document.querySelector("#upstreamTable tbody");
+  tbody.querySelectorAll("tr:not([data-upstream-row])").forEach((row) => row.remove());
+  tbody.insertAdjacentHTML("afterbegin", plan.rows.map(({ name, up }) => upstreamRowHtml(name, up)).join(""));
+  collectUpstreams();
+  closePopover();
+  resetPageFilters("upstream");
+  renderUpstreamModelFilter();
+  showToast("已加入 " + plan.rows.length + " 个上游，请保存上游配置", "success");
+  tbody.querySelector('[data-field="name"]')?.focus();
 }
 
 /* ===== 上游拖动排序 ===== */
@@ -2128,7 +2330,7 @@ function uniqueUpstreamName(baseURL, usedNames) {
 }
 
 function collectUpstreams() {
-  const r = {};
+  const r = Object.create(null);
   const order = [];
   const rows = Array.from(
     document.querySelectorAll("#upstreamTable tbody tr"),
@@ -4190,7 +4392,8 @@ function filterModelSyncReview(input) {
 function filterModelSyncKind(button) {
   const pop = button?.closest?.(".model-sync-review-popover") || activePopover;
   if (!pop || button.disabled) return;
-  pop._modelSyncKind = button.dataset.syncKind || "addition";
+  const kind = button.dataset.syncKind || "addition";
+  pop._modelSyncKind = (pop._modelSyncKind || "addition") === kind ? "all" : kind;
   applyModelSyncListFilter(pop);
   updateModelSyncReviewSummary(pop);
   const searchInput = pop.querySelector(".model-search input");
@@ -6027,7 +6230,7 @@ function statsControlsHtml(dimension) {
     statsPeriodTabsHtml(dimension) +
     '<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>' +
     '<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>' +
-    '<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="loadStats()">' +
+    '<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="changeStatsDimension()">' +
     '<option value="model"' + selected("model") + ">按模型</option>" +
     '<option value="upstream"' + selected("upstream") + ">按上游</option>" +
     '<option value="model_upstream"' + selected("model_upstream") + ">模型 × 上游</option>" +
@@ -6309,6 +6512,12 @@ function modelStatCells(m) {
   );
 }
 
+function statsRouteCells(row, includeDate) {
+  const labels = includeDate ? [row.date || "-"] : [];
+  labels.push(row.upstream || "-", row.model || "-", row.upstream_model || row.model || "-");
+  return labels.map((label) => '<td class="stats-route-cell" title="' + escAttr(label) + '">' + esc(label) + '</td>').join("");
+}
+
 function statsTableHtml(rowsHtml, dateLabel, dimensionLabel, period) {
   const isToday = period !== "total";
   const title = isToday
@@ -6316,16 +6525,15 @@ function statsTableHtml(rowsHtml, dateLabel, dimensionLabel, period) {
       ? "单日用量 · " + esc(dateLabel)
       : "单日用量"
     : "累计用量";
-  const tableClass = "tbl stats-period-table " + (isToday ? "is-today" : "is-total");
+  const labels = Array.isArray(dimensionLabel) ? dimensionLabel : [dimensionLabel];
+  const tableClass = "tbl stats-period-table " + (labels.length > 1 ? "stats-route-table " : "") + (isToday ? "is-today" : "is-total");
   return (
     '<div class="stats-table-wrap"><table class="' +
     tableClass +
     '" id="statsTable">' +
     "<thead>" +
     "<tr>" +
-    '<th class="stats-model-col" rowspan="2">' +
-    esc(dimensionLabel) +
-    "</th>" +
+    labels.map((label) => '<th class="stats-model-col" rowspan="2">' + esc(label) + '</th>').join("") +
     '<th colspan="5" class="stats-group-head">' +
     title +
     "</th>" +
@@ -6343,7 +6551,7 @@ function statsTableHtml(rowsHtml, dateLabel, dimensionLabel, period) {
 function statsRowMap(rows) {
   const result = {};
   (rows || []).forEach((row) => {
-    const key = (row.model || "") + "\u0000" + (row.upstream || "");
+    const key = JSON.stringify([row.model || "", row.upstream || "", row.upstream_model || row.model || ""]);
     result[key] = row;
   });
   return result;
@@ -6369,7 +6577,7 @@ function statsModelUpstreamDayMap(rows, dateFilter) {
     const model = row.model || "";
     if (!date || !upstream || !model) return;
     if (dateFilter && date !== dateFilter) return;
-    result[date + "\u0000" + upstream + "\u0000" + model] = row;
+    result[date + "\u0000" + upstream + "\u0000" + model + "\u0000" + (row.upstream_model || model)] = row;
   });
   return result;
 }
@@ -6378,7 +6586,7 @@ function setUsageFilterOptions(id, values, emptyLabel) {
   const select = document.getElementById(id);
   if (!select) return;
   const selected = select.value;
-  const options = Array.from(new Set(values.filter(Boolean))).sort((a, b) =>
+  const options = Array.from(new Set([...values, selected].filter(Boolean))).sort((a, b) =>
     a.localeCompare(b),
   );
   select.innerHTML =
@@ -6416,6 +6624,11 @@ async function resetStats(btn) {
 }
 
 let statsRenderKey = "";
+
+function changeStatsDimension() {
+  if (statsSnapshot) renderStats(statsSnapshot);
+  else loadStats();
+}
 
 function statsSignature(d, dimension) {
   return dimension + "|" + statsPeriod + "|" + JSON.stringify(d);
@@ -6501,15 +6714,7 @@ function renderStats(d) {
   } else if (dimension === "model_upstream") {
     cumulative = statsRowMap(d.model_upstreams);
     todayValues = statsRowMap(d.daily_model_upstreams);
-    Object.keys(cumulative).forEach((key) => {
-      const row = cumulative[key] || {};
-      displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
-    });
-    Object.keys(todayValues).forEach((key) => {
-      const row = todayValues[key] || {};
-      if (!displayLabels[key]) displayLabels[key] = (row.model || "-") + " / " + (row.upstream || "-");
-    });
-    dimensionLabel = "模型 / 上游";
+    dimensionLabel = ["上游", "请求模型（下游）", "实际模型（上游）"];
     heading = "模型与上游用量";
   } else if (dimension === "model_day") {
     cumulative = statsModelDayMap(d.model_days);
@@ -6523,12 +6728,7 @@ function renderStats(d) {
   } else if (dimension === "model_upstream_day") {
     cumulative = statsModelUpstreamDayMap(d.model_upstream_days);
     todayValues = statsModelUpstreamDayMap(d.model_upstream_days, dateLabel);
-    Object.keys(cumulative).forEach((key) => {
-      const parts = key.split("\u0000");
-      displayLabels[key] =
-        (parts[0] || "-") + " / " + (parts[1] || "-") + " / " + (parts[2] || "-");
-    });
-    dimensionLabel = "日期 / 上游 / 模型";
+    dimensionLabel = ["日期", "上游", "请求模型（下游）", "实际模型（上游）"];
     heading = "日期、上游与模型用量";
   } else if (dimension === "day") {
     heading = "每日用量明细";
@@ -6593,18 +6793,17 @@ function renderStats(d) {
       ? "stats-dimension-label is-date-model"
       : "stats-dimension-label";
     for (const k of keys) {
+      const routeCells = Array.isArray(dimensionLabel)
+        ? statsRouteCells(values[k], dimension === "model_upstream_day")
+        : '<td><span class="' + labelClass + '">' + esc(displayLabels[k] || k) + '</span></td>';
       rows +=
-        '<tr><td><span class="' +
-        labelClass +
-        '">' +
-        esc(displayLabels[k] || k) +
-        "</span></td>" +
+        '<tr>' + routeCells +
         modelStatCells(values[k]) +
         "</tr>";
     }
     const totals = sumModelStats(values, Object.keys(values));
     rows +=
-      '<tr class="stats-total-row"><td><span class="stats-dimension-label is-total">合计</span></td>' +
+      '<tr class="stats-total-row"><td colspan="' + (Array.isArray(dimensionLabel) ? dimensionLabel.length : 1) + '"><span class="stats-dimension-label is-total">合计</span></td>' +
       modelStatCells({
         request_count: totals.requests,
         prompt_tokens: totals.prompt,
@@ -6804,12 +7003,15 @@ async function loadUsageRecords(offset) {
   const upstream = document.getElementById("usageUpstreamFilter")?.value || "";
   const apiKeyName = document.getElementById("usageAPIKeyFilter")?.value || "";
   const date = document.getElementById("usageDateFilter")?.value || "";
+  const hasFilters = !!(model || upstream || apiKeyName || date);
+  updatePageFilters("usage");
   if (model) params.set("model", model);
   if (upstream) params.set("upstream", upstream);
   if (apiKeyName) params.set("key_name", apiKeyName);
   if (date) params.set("date", date);
   const tbody = document.querySelector("#usageTable tbody");
   if (!tbody) return;
+  document.getElementById("usageTable").setAttribute("aria-busy", "true");
   try {
     const page = await apiJSON("/api/usage?" + params.toString());
     if (loadSequence !== usageLoadSequence) return;
@@ -6822,7 +7024,9 @@ async function loadUsageRecords(offset) {
       return;
     }
     if (!items.length) {
-      tbody.innerHTML = emptyRowHtml(5, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
+      tbody.innerHTML = hasFilters
+        ? '<tr><td colspan="5">' + emptyStateHtml(ICONS.search, "没有匹配的使用记录", "试试减少筛选条件，或清空筛选查看全部记录") + '<div class="filter-empty-actions"><button class="btn btn-default" type="button" onclick="resetPageFilters(\'usage\')">清空筛选</button></div></td></tr>'
+        : emptyRowHtml(5, ICONS.inbox, "暂无使用记录", "成功调用模型后会在这里显示详细用量");
     } else {
       tbody.innerHTML = items.map(usageRecordRowHtml).join("");
     }
@@ -6848,6 +7052,7 @@ async function loadUsageRecords(offset) {
     const end = Math.min(usagePageOffset + items.length, usageTotal);
     document.getElementById("usageSummary").textContent = "共 " + fmt(usageTotal) + " 条 · " + fmt(start) + "–" + fmt(end);
     updateUsagePagination();
+    updatePageFilters("usage", usageTotal);
   } catch (e) {
     if (loadSequence !== usageLoadSequence) return;
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
@@ -6859,6 +7064,8 @@ async function loadUsageRecords(offset) {
     document.getElementById("usageSummaryCompletion").textContent = "0";
     document.getElementById("usageSummaryTotal").textContent = "0";
     updateUsagePagination();
+  } finally {
+    if (loadSequence === usageLoadSequence) document.getElementById("usageTable").setAttribute("aria-busy", "false");
   }
 }
 
@@ -6907,6 +7114,14 @@ function fmt(n) {
 /* ===== 初始化 ===== */
 function initAdminPage() {
   initAdminTabs();
+  enhanceFilterInputs(document);
+  new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => mutation.addedNodes.forEach((node) => {
+      if (!(node instanceof Element)) return;
+      enhanceFilterInputs(node);
+      if (node.matches('input[type="search"], input[data-clearable-input]')) enhanceFilterInputs(node.parentElement);
+    }));
+  }).observe(document.body, { childList: true, subtree: true });
   ssEnhanceSelect(document.getElementById("upstreamModelFilter"));
   ssEnhanceSelect(document.getElementById("usageModelFilter"));
   ssEnhanceSelect(document.getElementById("usageUpstreamFilter"));

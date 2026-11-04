@@ -163,6 +163,68 @@ func TestDeleteUsageRecordUpdatesSummaries(t *testing.T) {
 	}
 }
 
+func TestRouteDimensionsSeparateActualModels(t *testing.T) {
+	previousPath := Path()
+	SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))
+	t.Cleanup(func() { SetPath(previousPath) })
+	LoadTokenStats()
+
+	RecordUsage("chat-alias", "primary", "model-a", 10, 5, 15)
+	RecordUsage("chat-alias", "primary", "model-b", 20, 7, 27)
+	RecordUsage("chat-alias", "primary", "model-a", 3, 2, 5)
+	RecordUsage("other-alias", "primary", "model-a", 4, 1, 5)
+	RecordUsage("chat-alias", "secondary", "model-a", 6, 2, 8)
+	db, err := sqliteDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	if _, err := db.Exec(`UPDATE usage_records SET called_date = ? WHERE upstream_name = 'secondary'`, yesterday); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := Snapshot()
+	for name, rows := range map[string][]BreakdownStats{
+		"cumulative": snapshot.ModelUpstreams,
+		"daily":      snapshot.DailyModelUpstreams,
+		"by date":    snapshot.ModelUpstreamDays,
+	} {
+		wantRows := 4
+		if name == "daily" {
+			wantRows = 3
+		}
+		if len(rows) != wantRows {
+			t.Fatalf("%s rows = %#v, want %d routes", name, rows, wantRows)
+		}
+		var total, requests int64
+		for _, row := range rows {
+			if row.UpstreamModel == "" {
+				t.Fatalf("%s missing actual model: %#v", name, row)
+			}
+			if row.Model == "chat-alias" && row.Upstream == "primary" && row.UpstreamModel == "model-a" {
+				if row.RequestCount != 2 || row.TotalTokens != 20 || row.PromptTokens != 13 || row.CompletionTokens != 7 {
+					t.Fatalf("%s merged route incorrectly: %#v", name, row)
+				}
+			}
+			if name == "by date" && (row.Date == "" || row.Upstream == "secondary" && row.Date != yesterday) {
+				t.Fatalf("incorrect route date: %#v", row)
+			}
+			total += row.TotalTokens
+			requests += row.RequestCount
+		}
+		wantTotal, wantRequests := int64(60), int64(5)
+		if name == "daily" {
+			wantTotal, wantRequests = 52, 4
+		}
+		if total != wantTotal || requests != wantRequests {
+			t.Fatalf("%s totals = %d tokens / %d requests, want %d / %d", name, total, requests, wantTotal, wantRequests)
+		}
+	}
+	if snapshot.Models["chat-alias"].TotalTokens != 55 || snapshot.Upstreams["primary"].TotalTokens != 52 {
+		t.Fatalf("route detail changed aggregate totals: %#v", snapshot)
+	}
+}
+
 func TestTrackedRequestPersistsFirstByteAndDuration(t *testing.T) {
 	previousPath := Path()
 	SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))

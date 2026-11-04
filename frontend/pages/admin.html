@@ -52,13 +52,15 @@
 <div class="card-desc">按调用、路由、性能和 Token 构成查看每次成功请求</div>
 </div>
 <div class="usage-toolbar">
-<input id="usageDateFilter" class="usage-date-input" type="date" aria-label="按日期筛选" onchange="loadUsageRecords(0)">
-<select id="usageModelFilter" class="m-select" aria-label="按请求模型筛选" onchange="loadUsageRecords(0)"><option value="">全部模型</option></select>
-<select id="usageUpstreamFilter" class="m-select" aria-label="按上游筛选" onchange="loadUsageRecords(0)"><option value="">全部上游</option></select>
-<select id="usageAPIKeyFilter" class="m-select" aria-label="按密钥名称筛选" onchange="loadUsageRecords(0)"><option value="">全部密钥</option></select>
+<div class="filter-date"><input id="usageDateFilter" class="usage-date-input" type="date" data-clearable-input aria-label="按日期筛选" onchange="loadUsageRecords(0)"></div>
+<select id="usageModelFilter" class="m-select" data-clearable aria-label="按请求模型筛选" onchange="loadUsageRecords(0)"><option value="">全部模型</option></select>
+<select id="usageUpstreamFilter" class="m-select" data-clearable aria-label="按上游筛选" onchange="loadUsageRecords(0)"><option value="">全部上游</option></select>
+<select id="usageAPIKeyFilter" class="m-select" data-clearable aria-label="按密钥名称筛选" onchange="loadUsageRecords(0)"><option value="">全部密钥</option></select>
+<button class="btn btn-default filter-reset" type="button" data-filter-reset="usage" onclick="resetPageFilters('usage')" disabled>清空筛选</button>
 <button class="btn btn-default" data-icon="refresh" onclick="loadUsageRecords()">刷新</button>
 </div>
 </div>
+<div class="active-filters" id="usageActiveFilters" aria-label="已选筛选条件" hidden></div>
 <div class="usage-table-scroll"><table class="tbl usage-table" id="usageTable"><thead><tr><th class="usage-call-col">调用信息</th><th class="usage-route-col">模型路由</th><th class="usage-performance-col">性能</th><th class="usage-token-col">Token 用量</th><th class="usage-action">操作</th></tr></thead><tbody><tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">正在加载使用记录</div></div></td></tr></tbody></table></div>
 <div class="usage-pagination" aria-label="使用记录分页"><div class="usage-filter-summary" id="usageFilterSummary" aria-live="polite"><div class="usage-filter-summary-heading"><div class="usage-filter-summary-title">当前筛选汇总</div></div><div class="usage-filter-summary-items"><span class="usage-summary-requests"><b id="usageSummaryRequests">0</b><em>请求</em></span><span class="usage-summary-prompt"><b id="usageSummaryPrompt">0</b><em>输入</em></span><span class="usage-summary-cached"><b id="usageSummaryCached">0</b><em>缓存命中</em></span><span class="usage-summary-completion"><b id="usageSummaryCompletion">0</b><em>输出</em></span><span class="usage-summary-total"><b id="usageSummaryTotal">0</b><em>合计 Token</em></span></div></div><div class="usage-pagination-actions"><span class="usage-page-range" id="usageSummary"></span><div class="usage-page-controls"><button class="btn-icon" id="usagePrev" type="button" title="上一页" aria-label="上一页" onclick="changeUsagePage(-1)">&#x2039;</button><label class="usage-page-indicator" id="usagePageIndicator" aria-live="polite"><span>第</span><input id="usagePageInput" class="usage-page-input" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="当前页码" onchange="jumpToUsagePage()" onkeydown="handleUsagePageInputKeydown(event)"><span class="usage-page-divider">/</span><b class="usage-page-total" id="usageTotalPages">1</b><em>页</em></label><button class="btn-icon" id="usageNext" type="button" title="下一页" aria-label="下一页" onclick="changeUsagePage(1)">&#x203A;</button></div></div></div>
 </section>
@@ -83,10 +85,12 @@
 </div>
 <div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
 <label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="scheduleFilterUpstreamRows()"></label>
-<select id="upstreamModelFilter" class="m-select" aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
-<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)">同步模型</button>
+<select id="upstreamModelFilter" class="m-select" data-clearable aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
+<button class="btn btn-default filter-reset" type="button" data-filter-reset="upstream" onclick="resetPageFilters('upstream')" disabled>清空筛选</button>
+<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button><button class="btn btn-default" data-icon="plus" onclick="openBulkUpstreamEditor(this)">批量添加</button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)">同步模型</button>
 </div>
 </div>
+<div class="active-filters" id="upstreamActiveFilters" aria-label="已选筛选条件" hidden></div>
 <div class="table-scroll">
 <table class="tbl" id="upstreamTable">
 <thead><tr><th class="col-drag" aria-label="拖动排序"></th><th class="col-name">名称</th><th class="col-url">Base URL</th><th class="col-key">API Key</th><th class="col-type">接口类型</th><th class="col-bridge" title="兼容模式会降级并告警；严格模式会拒绝有损协议转换">桥接模式</th><th class="col-proxy">代理</th><th class="col-models">模型</th><th class="col-action"></th></tr></thead>
