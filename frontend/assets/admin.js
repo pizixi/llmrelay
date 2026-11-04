@@ -1693,13 +1693,14 @@ function openBulkUpstreamEditor(trigger) {
   const pop = openPopover(trigger,
     '<div class="popover-header"><div class="popover-title">' + ICONS.plus +
     '批量添加上游</div><button class="btn-icon" type="button" aria-label="关闭" onclick="closePopover()">×</button></div>' +
-    '<p class="popover-hint">一行一个上游：<code>URL | Key</code>，可选第三列名称：<code>URL | Key | 名称</code>。自动跳过空行、# 注释和重复项。</p>' +
-    '<div class="bulk-upstream-options"><label>分隔符<input class="popover-input" data-bulk-delimiter placeholder="自动识别 |、逗号、Tab 或空格" maxlength="10" oninput="updateBulkUpstreamPreview(this)"></label>' +
+    '<div class="bulk-upstream-options"><label>分隔符<input class="popover-input" data-bulk-delimiter placeholder="自动（|、逗号、Tab、空格）" maxlength="10" oninput="updateBulkUpstreamPreview(this)"></label>' +
     '<label>接口类型<select class="m-select" data-bulk-type onchange="updateBulkUpstreamPreview(this)"><option value="openai">OpenAI Chat</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label></div>' +
-    '<label class="popover-label" for="bulkUpstreamText">上游列表</label><textarea id="bulkUpstreamText" class="popover-textarea bulk-upstream-text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="https://api.example.com/v1 | sk-example\nhttps://api.other.com/v1 | sk-other | 备用上游" oninput="updateBulkUpstreamPreview(this)"></textarea>' +
-    '<div class="bulk-upstream-summary" role="status"></div><div class="bulk-upstream-errors" role="alert" hidden></div><div class="bulk-upstream-preview"></div>' +
-    '<div class="bulk-upstream-footer"><p class="popover-hint">先加入配置列表，检查后点击「保存上游」生效；随后可同步模型。</p><button class="btn btn-default" type="button" onclick="closePopover()">取消</button><button class="btn btn-primary" type="button" data-bulk-submit onclick="applyBulkUpstreams(this)" disabled>加入列表</button></div>');
+    '<div class="bulk-upstream-input-head"><label class="popover-label" for="bulkUpstreamText">上游列表</label><span class="popover-hint" id="bulkUpstreamFormat">每行 URL | Key，可选第三列名称 · 最多 500 个</span></div>' +
+    '<textarea id="bulkUpstreamText" class="popover-textarea bulk-upstream-text" aria-describedby="bulkUpstreamFormat" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="https://api.example.com/v1 | sk-example\nhttps://api.other.com/v1 | sk-other | 备用上游" oninput="updateBulkUpstreamPreview(this)"></textarea>' +
+    '<div class="bulk-upstream-errors" role="alert" hidden></div><details class="bulk-upstream-review"><summary><span>导入预览</span><span class="bulk-upstream-summary" role="status"></span></summary><div class="bulk-upstream-preview"></div></details>' +
+    '<div class="bulk-upstream-footer"><p class="popover-hint">加入后点击「保存上游」生效</p><button class="btn btn-default" type="button" onclick="closePopover()">取消</button><button class="btn btn-primary" type="button" data-bulk-submit onclick="applyBulkUpstreams(this)" disabled>加入列表</button></div>');
   pop.classList.add("bulk-upstream-popover");
+  pop.parentElement.classList.add("bulk-upstream-overlay");
   ssEnhanceSelect(pop.querySelector("[data-bulk-type]"));
   updateBulkUpstreamPreview(pop);
   pop.querySelector("textarea").focus();
@@ -1728,7 +1729,7 @@ function updateBulkUpstreamPreview(source) {
   preview.innerHTML = plan.rows.length ? '<table class="tbl"><thead><tr><th>行</th><th>名称</th><th>URL</th><th>Key</th></tr></thead><tbody>' +
     plan.rows.slice(0, 50).map(({ name, up, line }) => '<tr><td>' + line + '</td><td>' + esc(name) +
     '</td><td>' + esc(up.base_url) + '</td><td>••••' + esc(up.api_key.length > 8 ? up.api_key.slice(-4) : "") + '</td></tr>').join("") +
-    '</tbody></table>' + (plan.rows.length > 50 ? '<p class="popover-hint">仅预览前 50 个，加入时包含全部有效上游。</p>' : "") : "";
+    '</tbody></table>' + (plan.rows.length > 50 ? '<p class="popover-hint">仅预览前 50 个，加入时包含全部有效上游。</p>' : "") : '<p class="popover-hint">暂无可预览的上游</p>';
   pop.querySelector("[data-bulk-submit]").disabled = !plan.rows.length || !!plan.errors.length;
 }
 
@@ -2893,68 +2894,92 @@ function buildModelTestOptionsHtml(models, selected) {
     .join("");
 }
 
+const MODEL_TEST_PROMPTS = [
+  { title: "快速检查", description: "了解模型能力与回答风格", icon: "sparkles",
+    prompt: "请用简洁的中文介绍你的能力，并列出三个你擅长处理的任务。" },
+  { title: "上下文记忆", description: "试试连续对话与信息记忆", icon: "inbox",
+    prompt: "请记住：我的项目叫「星河」，正在开发一个 AI 网关，我偏好简洁的中文回答。请确认这些信息，等待我接下来的问题。" },
+  { title: "逻辑推理", description: "观察分析过程与推理能力", icon: "gauge",
+    prompt: "有三个盒子，分别贴着「苹果」「橙子」「混合」的标签，但标签全部贴错。只能从一个盒子取出一个水果，如何确定三个盒子的内容？请解释你的推理。" },
+  { title: "代码生成", description: "检查代码质量与格式展示", icon: "edit",
+    prompt: "用 Python 实现一个带过期时间的简单缓存，给出可运行的使用示例，并简要解释设计。" },
+];
+const MODEL_TEST_FOLLOWUPS = [
+  { title: "回顾上下文", prompt: "请根据前面的对话，回顾我提到的项目名称、需求与偏好；未提到的信息请明确说明。" },
+  { title: "给个例子", prompt: "请结合刚才的回答，给出一个具体、容易理解的例子。" },
+  { title: "更简洁一些", prompt: "请把刚才的回答压缩为三个要点，保留核心信息。" },
+  { title: "结构化输出", prompt: "请将刚才的回答整理成合法 JSON，只输出 JSON，不要使用 Markdown 代码块。" },
+];
+
+function buildModelTestMessages(history, prompt) {
+  const messages = [{ role: "user", content: String(prompt).trim() }];
+  let characters = Array.from(messages[0].content).length;
+  const previous = history || [];
+  for (let index = previous.length - 2; index >= 0 && messages.length < 41; index -= 2) {
+    const user = previous[index];
+    const assistant = previous[index + 1];
+    if (user.role !== "user" || assistant.role !== "assistant") break;
+    const size = Array.from(user.content).length + Array.from(assistant.content).length;
+    if (characters + size > 32768) break;
+    messages.unshift({ role: user.role, content: user.content }, { role: assistant.role, content: assistant.content });
+    characters += size;
+  }
+  return messages;
+}
+
+function buildModelTestTurnHtml(model) {
+  return '<section class="model-test-turn model-test-user-turn"><span class="model-test-user-avatar">你</span><div class="model-test-user-content"></div></section>' +
+    '<section class="model-test-turn model-test-assistant-turn"><div class="model-test-assistant-label"><span>' + ICONS.sparkles +
+    '</span><strong title="' + escAttr(model) + '">' + esc(model) + '</strong></div>' +
+    '<div class="model-test-thinking" data-state="idle" hidden><button type="button" class="model-test-thinking-toggle" onclick="toggleModelTestThinking(this)" aria-expanded="false">' +
+    '<span class="model-test-thinking-icon">' + ICONS.sparkles + '</span><span class="model-test-thinking-label">思考过程</span>' +
+    '<svg class="model-test-thinking-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>' +
+    '<div class="model-test-thinking-body" hidden><div class="model-test-thinking-content"></div></div></div>' +
+    '<div class="model-test-output" data-empty="true" aria-live="polite"></div>' +
+    '<div class="model-test-response-footer" hidden><span class="model-test-turn-status"></span><button type="button" class="model-test-answer-copy" onclick="copyModelTestAnswer(this)" title="复制回答" aria-label="复制回答">' +
+    ICONS.copy + '</button></div></section>';
+}
+
 function buildModelTestPopoverHtml(upstreamName, models, apiType) {
   const model = models[0] || "";
   const modelLabel = model || "暂无可测试模型";
   return (
     '<div class="model-test-header">' +
     '<div class="model-test-heading"><span class="model-test-mark">' +
-    ICONS.layers +
-    '</span><div><h2 title="' +
-    escAttr(upstreamName) +
-    '">' +
-    esc(upstreamName) +
-    '</h2><div class="model-test-meta"><span title="' +
-    escAttr(modelLabel) +
-    '">' +
-    esc(modelLabel) +
+    ICONS.sparkles +
+    '</span><div><h2 id="modelTestTitle">模型对话</h2><div class="model-test-meta"><span title="' +
+    escAttr(upstreamName) + '">' + esc(upstreamName) +
     '</span><i aria-hidden="true"></i><span>' +
     esc(upstreamProtocolLabel(apiType)) +
     '</span></div></div></div>' +
+    '<div class="model-test-header-actions"><div class="model-test-model-picker"><span class="model-test-model-icon" aria-hidden="true">' + ICONS.layers +
+    '</span><select class="model-test-model-select m-select" aria-label="选择测试模型" onchange="changeModelTestModel(this)">' + buildModelTestOptionsHtml(models, model) + '</select></div>' +
+    '<button type="button" class="model-test-new-chat" onclick="startNewModelTestChat(this)" title="新对话，清空当前上下文">' + ICONS.plus + '<span>新对话</span></button>' +
+    '<button type="button" class="btn-icon model-test-fullscreen" onclick="toggleModelTestFullscreen(this)" title="全屏查看" aria-label="全屏查看" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg></button>' +
     '<button type="button" class="btn-icon model-test-close" onclick="closePopover()" title="关闭" aria-label="关闭">' +
     ICONS.close +
-    "</button></div>" +
-    '<div class="model-test-conversation">' +
-    '<div class="model-test-empty"><span class="model-test-empty-mark">' +
-    ICONS.layers +
-    '</span><strong title="' +
-    escAttr(modelLabel) +
-    '">' +
-    esc(modelLabel) +
-    "</strong></div>" +
-    '<div class="model-test-thread" hidden>' +
-    '<section class="model-test-turn model-test-user-turn"><span class="model-test-user-avatar">你</span><div class="model-test-user-content"></div></section>' +
-    '<section class="model-test-turn model-test-assistant-turn"><div class="model-test-assistant-label"><span>' +
-    ICONS.layers +
-    '</span><strong data-model-test-current-model title="' +
-    escAttr(modelLabel) +
-    '">' +
-    esc(modelLabel) +
-    '</strong></div><div class="model-test-thinking" data-state="idle" hidden>' +
-    '<button type="button" class="model-test-thinking-toggle" onclick="toggleModelTestThinking(this)" aria-expanded="false">' +
-    '<span class="model-test-thinking-icon">' +
-    ICONS.sparkles +
-    '</span><span class="model-test-thinking-label">思考过程</span>' +
-    '<svg class="model-test-thinking-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>' +
-    '<div class="model-test-thinking-body" hidden><div class="model-test-thinking-content" aria-live="polite"></div></div></div>' +
-    '<div class="model-test-output" data-empty="true" aria-live="polite"></div></section>' +
-    "</div></div>" +
-    '<div class="model-test-composer-wrap"><div class="model-test-composer">' +
-    '<textarea class="model-test-input" rows="1" maxlength="32768" oninput="updateModelTestControls(this); resizeModelTestInput(this)" onkeydown="handleModelTestKeydown(event)" placeholder="向模型发送消息"></textarea>' +
-    '<div class="model-test-composer-bar"><span class="model-test-status" data-state="idle"><i></i><span>' +
+    '</button></div></div>' +
+    '<div class="model-test-body"><div class="model-test-conversation" onscroll="updateModelTestScroll(this)">' +
+    '<div class="model-test-empty"><div class="model-test-welcome"><span class="model-test-empty-mark">' + ICONS.sparkles +
+    '</span><span class="model-test-eyebrow">MODEL PLAYGROUND</span><h3>从一个问题，开始探索</h3><p>验证模型能力，也让灵感在对话中延续。</p>' +
+    '<strong data-model-test-current-model title="' + escAttr(modelLabel) + '">' + ICONS.layers + esc(modelLabel) + '</strong></div>' +
+    '<div class="model-test-prompt-grid">' + MODEL_TEST_PROMPTS.map((item, index) =>
+      '<button type="button" class="model-test-prompt-card" data-model-test-prompt onclick="fillModelTestPrompt(this, ' + index + ')"><span class="model-test-prompt-icon">' + ICONS[item.icon] +
+      '</span><span><b>' + esc(item.title) + '</b><small>' + esc(item.description) + '</small></span>' + ICONS.arrowRight + '</button>').join('') +
+    '</div></div><div class="model-test-thread" hidden></div></div>' +
+    '<button class="model-test-scroll-latest" type="button" onclick="scrollModelTestToLatest(this)" aria-label="回到最新消息" hidden>' + ICONS.arrowUp + '<span>回到最新</span></button></div>' +
+    '<div class="model-test-composer-wrap"><div class="model-test-followups" hidden>' + MODEL_TEST_FOLLOWUPS.map((item, index) =>
+      '<button type="button" data-model-test-prompt onclick="fillModelTestPrompt(this, ' + index + ', true)">' + esc(item.title) + '</button>').join('') + '</div><div class="model-test-composer">' +
+    '<textarea class="model-test-input" rows="2" maxlength="32768" aria-label="对话消息" oninput="updateModelTestControls(this); resizeModelTestInput(this)" onkeydown="handleModelTestKeydown(event)" placeholder="输入问题，和模型开始对话…"></textarea>' +
+    '<div class="model-test-composer-bar"><span class="model-test-context"><i></i><span data-model-test-context>上下文已开启</span></span>' +
+    '<div class="model-test-actions"><span class="model-test-status" data-state="idle" role="status"><i></i><span>' +
     (model ? "就绪" : "请先同步模型") +
-    "</span></span>" +
-    '<div class="model-test-actions">' +
-    '<div class="model-test-model-picker" title="选择要测试的模型"><span class="model-test-model-icon" aria-hidden="true">' +
-    ICONS.layers +
-    '</span><select class="model-test-model-select m-select" aria-label="选择测试模型" onchange="changeModelTestModel(this)">' +
-    buildModelTestOptionsHtml(models, model) +
-    "</select></div>" +
+    '</span></span>' +
     '<button type="button" class="model-test-control model-test-stop" onclick="stopModelTestGeneration(this)" title="停止生成" aria-label="停止生成" disabled hidden>' +
     ICONS.stop +
     '</button><button type="button" class="model-test-control model-test-send" onclick="runModelTest(this)" title="发送" aria-label="发送" disabled>' +
     ICONS.arrowUp +
-    "</button></div></div></div></div>"
+    '</button></div></div></div><div class="model-test-composer-note"><span>仅在本次窗口中保留对话</span><span><kbd>Enter</kbd> 发送 · <kbd>Shift + Enter</kbd> 换行</span></div></div>'
   );
 }
 
@@ -2980,10 +3005,38 @@ function testUpstreamModel(btn) {
     () => disposeModelTest(testPop),
   );
   testPop.classList.add("model-test-popover");
+  testPop.parentElement.classList.add("model-test-overlay");
+  testPop.setAttribute("role", "dialog");
+  testPop.setAttribute("aria-modal", "true");
+  testPop.setAttribute("aria-labelledby", "modelTestTitle");
   testPop._modelTestUpstream = upstreamName;
   testPop._modelTestModel = models[0] || "";
   testPop._modelTestRunning = false;
+  testPop._modelTestMessages = [];
+  testPop._modelTestStickToBottom = true;
+  const conversation = testPop.querySelector(".model-test-conversation");
+  testPop._modelTestScrollObserver = new ResizeObserver(() => {
+    if (testPop._modelTestStickToBottom && !testPop.querySelector(".model-test-thread").hidden) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+  });
+  testPop._modelTestScrollObserver.observe(conversation);
+  testPop.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab" || ssActiveDropdown) return;
+    const controls = Array.from(testPop.querySelectorAll('button:not(:disabled), textarea:not(:disabled), [tabindex="0"]'))
+      .filter((element) => element.getClientRects().length && !element.closest("[hidden]"));
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  });
   setTimeout(() => {
+    if (!testPop.isConnected) return;
     const modelSelect = testPop.querySelector(".model-test-model-select");
     ssEnhanceSelect(modelSelect);
     fitModelTestSelectWidth(modelSelect);
@@ -2991,11 +3044,13 @@ function testUpstreamModel(btn) {
     input?.focus();
     resizeModelTestInput(input);
     updateModelTestControls(testPop);
+    updateModelTestContext(testPop);
   }, 0);
 }
 
 function disposeModelTest(pop) {
   pop?._modelTestController?.abort();
+  pop?._modelTestScrollObserver?.disconnect();
   if (pop?._modelTestThinkingTimer) {
     clearInterval(pop._modelTestThinkingTimer);
     pop._modelTestThinkingTimer = null;
@@ -3022,8 +3077,77 @@ function fitModelTestSelectWidth(select) {
   wrapper.style.setProperty("--model-test-select-width", width + "px");
 }
 
+function activeModelTestTurn(pop) {
+  return pop?._modelTestActiveTurn || pop;
+}
+
+function fillModelTestPrompt(button, index, followup) {
+  const pop = button.closest(".model-test-popover");
+  const item = (followup ? MODEL_TEST_FOLLOWUPS : MODEL_TEST_PROMPTS)[index];
+  if (!pop || !item || pop._modelTestRunning) return;
+  const input = pop.querySelector(".model-test-input");
+  input.value = item.prompt;
+  resizeModelTestInput(input);
+  updateModelTestControls(pop);
+  input.focus();
+}
+
+function startNewModelTestChat(button) {
+  const pop = button.closest(".model-test-popover");
+  if (!pop || pop._modelTestRunning) return;
+  resetModelTestConversation(pop);
+  const input = pop.querySelector(".model-test-input");
+  input.value = "";
+  resizeModelTestInput(input);
+  updateModelTestControls(pop);
+  input.focus();
+}
+
+function toggleModelTestFullscreen(button) {
+  const pop = button.closest(".model-test-popover");
+  const expanded = pop.classList.toggle("is-fullscreen");
+  pop.parentElement.classList.toggle("is-fullscreen", expanded);
+  button.setAttribute("aria-pressed", String(expanded));
+  button.setAttribute("aria-label", expanded ? "退出全屏" : "全屏查看");
+  button.title = expanded ? "退出全屏" : "全屏查看";
+  resizeModelTestInput(pop.querySelector(".model-test-input"));
+}
+
+function updateModelTestScroll(conversation) {
+  const pop = conversation.closest(".model-test-popover");
+  const button = pop?.querySelector(".model-test-scroll-latest");
+  if (!pop || !button) return;
+  const nearBottom = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 120;
+  pop._modelTestStickToBottom = nearBottom;
+  button.hidden = pop.querySelector(".model-test-thread").hidden || nearBottom;
+}
+
+function scrollModelTestToLatest(button) {
+  const conversation = button.closest(".model-test-popover").querySelector(".model-test-conversation");
+  conversation.scrollTop = conversation.scrollHeight;
+  conversation.closest(".model-test-popover")._modelTestStickToBottom = true;
+  button.hidden = true;
+}
+
+async function copyModelTestAnswer(button) {
+  const turn = button.closest(".model-test-assistant-turn");
+  const copied = await copyText(turn?._modelTestAnswer || "");
+  button.innerHTML = copied ? ICONS.check : ICONS.copy;
+  button.title = copied ? "已复制" : "复制失败，请重试";
+  setTimeout(() => { button.innerHTML = ICONS.copy; button.title = "复制回答"; }, 1800);
+}
+
+function updateModelTestContext(pop) {
+  const label = pop.querySelector("[data-model-test-context]");
+  const turns = (buildModelTestMessages(pop._modelTestMessages, "继续").length - 1) / 2;
+  if (label) {
+    label.textContent = turns ? "上下文 · 最近 " + turns + " 轮" : "上下文已开启";
+    label.title = "自动携带最近 20 轮完整对话，总计最多 32768 字；失败或停止的回答不加入上下文";
+  }
+}
+
 function setModelTestThinkingExpanded(pop, expanded, userInitiated) {
-  const thinking = pop?.querySelector(".model-test-thinking");
+  const thinking = activeModelTestTurn(pop)?.querySelector(".model-test-thinking");
   const toggle = thinking?.querySelector(".model-test-thinking-toggle");
   const body = thinking?.querySelector(".model-test-thinking-body");
   if (!thinking || !toggle || !body) return;
@@ -3036,8 +3160,10 @@ function setModelTestThinkingExpanded(pop, expanded, userInitiated) {
 
 function toggleModelTestThinking(button) {
   const pop = button.closest(".model-test-popover");
+  const turn = button.closest(".model-test-assistant-turn");
   const expanded = button.getAttribute("aria-expanded") === "true";
-  setModelTestThinkingExpanded(pop, !expanded, true);
+  if (turn === pop._modelTestActiveTurn) pop._modelTestThinkingUserToggled = true;
+  setModelTestThinkingExpanded(turn, !expanded, false);
 }
 
 function modelTestThinkingElapsed(pop) {
@@ -3051,7 +3177,7 @@ function formatModelTestThinkingDuration(milliseconds) {
 }
 
 function updateModelTestThinkingLabel(pop) {
-  const thinking = pop?.querySelector(".model-test-thinking");
+  const thinking = activeModelTestTurn(pop)?.querySelector(".model-test-thinking");
   const label = thinking?.querySelector(".model-test-thinking-label");
   if (!thinking || !label || thinking.dataset.state !== "running") return;
   const elapsed = modelTestThinkingElapsed(pop);
@@ -3068,7 +3194,7 @@ function resetModelTestThinking(pop) {
   pop._modelTestThinkingStartedAt = 0;
   pop._modelTestThinkingText = "";
   pop._modelTestThinkingUserToggled = false;
-  const thinking = pop.querySelector(".model-test-thinking");
+  const thinking = activeModelTestTurn(pop).querySelector(".model-test-thinking");
   const content = thinking?.querySelector(".model-test-thinking-content");
   const label = thinking?.querySelector(".model-test-thinking-label");
   if (thinking) {
@@ -3082,7 +3208,7 @@ function resetModelTestThinking(pop) {
 
 function appendModelTestThinking(pop, text) {
   if (!pop || !text) return;
-  const thinking = pop.querySelector(".model-test-thinking");
+  const thinking = activeModelTestTurn(pop).querySelector(".model-test-thinking");
   const body = thinking?.querySelector(".model-test-thinking-body");
   const content = thinking?.querySelector(".model-test-thinking-content");
   if (!thinking || !body || !content) return;
@@ -3113,7 +3239,7 @@ function appendModelTestThinking(pop, text) {
 }
 
 function finishModelTestThinking(pop, state) {
-  const thinking = pop?.querySelector(".model-test-thinking");
+  const thinking = activeModelTestTurn(pop)?.querySelector(".model-test-thinking");
   const label = thinking?.querySelector(".model-test-thinking-label");
   if (
     !thinking ||
@@ -3144,15 +3270,19 @@ function resetModelTestConversation(pop) {
   pop._modelTestRenderFrame = null;
   pop._modelTestOutputMarkdown = "";
   resetModelTestThinking(pop);
-  const output = pop.querySelector(".model-test-output");
-  if (output) {
-    output.replaceChildren();
-    output.dataset.empty = "true";
-  }
+  pop._modelTestActiveTurn = null;
+  pop._modelTestMessages = [];
   const empty = pop.querySelector(".model-test-empty");
   const thread = pop.querySelector(".model-test-thread");
   if (empty) empty.hidden = false;
-  if (thread) thread.hidden = true;
+  if (thread) {
+    thread.replaceChildren();
+    thread.hidden = true;
+  }
+  pop.querySelector(".model-test-followups").hidden = true;
+  pop.querySelector(".model-test-scroll-latest").hidden = true;
+  pop.querySelector(".model-test-conversation").scrollTop = 0;
+  updateModelTestContext(pop);
   setModelTestStatus(
     pop,
     pop._modelTestModel ? "就绪" : "请先同步模型",
@@ -3171,20 +3301,10 @@ function changeModelTestModel(select) {
   pop
     .querySelectorAll("[data-model-test-current-model]")
     .forEach((label) => {
-      label.textContent = modelLabel;
+      label.innerHTML = ICONS.layers + esc(modelLabel);
       label.title = modelLabel;
     });
-  const metaModel = pop.querySelector(".model-test-meta span:first-child");
-  if (metaModel) {
-    metaModel.textContent = modelLabel;
-    metaModel.title = modelLabel;
-  }
-  const emptyModel = pop.querySelector(".model-test-empty strong");
-  if (emptyModel) {
-    emptyModel.textContent = modelLabel;
-    emptyModel.title = modelLabel;
-  }
-  resetModelTestConversation(pop);
+  setModelTestStatus(pop, model ? "就绪" : "请先同步模型", "idle");
   updateModelTestControls(pop);
   pop.querySelector(".model-test-input")?.focus();
 }
@@ -3192,7 +3312,8 @@ function changeModelTestModel(select) {
 function resizeModelTestInput(input) {
   if (!input) return;
   input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  const limit = Math.min(160, Math.max(56, window.innerHeight * 0.2));
+  input.style.height = Math.min(input.scrollHeight, limit) + "px";
 }
 
 function handleModelTestKeydown(event) {
@@ -3213,7 +3334,13 @@ function updateModelTestControls(source) {
   const stop = pop.querySelector(".model-test-stop");
   const modelSelect = pop.querySelector(".model-test-model-select");
   const hasModel = Boolean(String(modelSelect?.value || "").trim());
-  if (input) input.disabled = running;
+  if (input) {
+    input.disabled = !hasModel;
+    input.placeholder = !hasModel ? "请先同步上游模型" : running ? "可先编辑下一条消息…" : pop._modelTestMessages?.length ? "继续提问，模型会结合前文回答…" : "输入问题，和模型开始对话…";
+  }
+  pop.querySelectorAll("[data-model-test-prompt]").forEach((button) => { button.disabled = running || !hasModel; });
+  const newChat = pop.querySelector(".model-test-new-chat");
+  if (newChat) newChat.disabled = running;
   if (modelSelect) {
     modelSelect.disabled = running || !hasModel;
     ssSyncDisabled(modelSelect);
@@ -3588,7 +3715,7 @@ function renderModelTestMarkdown(markdown) {
 }
 
 function renderModelTestOutput(pop, followOutput) {
-  const output = pop?.querySelector(".model-test-output");
+  const output = activeModelTestTurn(pop)?.querySelector(".model-test-output");
   if (!output) return;
   const markdown = String(pop._modelTestOutputMarkdown || "");
   if (!markdown) {
@@ -3652,7 +3779,7 @@ function flushModelTestOutput(pop) {
 function appendModelTestOutput(pop, text) {
   if (!text) return;
   finishModelTestThinking(pop, "complete");
-  const output = pop.querySelector(".model-test-output");
+  const output = activeModelTestTurn(pop).querySelector(".model-test-output");
   if (!output) return;
   const conversation = pop.querySelector(".model-test-conversation");
   const followOutput =
@@ -3759,7 +3886,8 @@ function modelTestStreamEvent(line) {
   } else if (payloadType.includes("output_text") && typeof payload?.delta === "string") {
     text += payload.delta;
   }
-  return { text, reasoning };
+  return { text, reasoning, usage: payload.usage || payload.response?.usage,
+    finished: Boolean(payload?.choices?.[0]?.finish_reason) };
 }
 
 function modelTestHTTPError(raw, status) {
@@ -3783,29 +3911,25 @@ async function runModelTest(btn) {
   ).trim();
   if (!pop || !prompt || !model || pop._modelTestRunning) return;
   pop._modelTestModel = model;
-  resetModelTestThinking(pop);
-
-  const output = pop.querySelector(".model-test-output");
-  if (output) {
-    if (pop._modelTestRenderFrame) cancelAnimationFrame(pop._modelTestRenderFrame);
-    pop._modelTestRenderFrame = null;
-    pop._modelTestOutputMarkdown = "";
-    output.replaceChildren();
-    output.dataset.empty = "true";
-  }
+  const messages = buildModelTestMessages(pop._modelTestMessages, prompt);
   const empty = pop.querySelector(".model-test-empty");
   const thread = pop.querySelector(".model-test-thread");
-  const promptView = pop.querySelector(".model-test-user-content");
   if (empty) empty.hidden = true;
   if (thread) thread.hidden = false;
-  if (promptView) promptView.textContent = prompt;
-  const responseModel = pop.querySelector(
-    ".model-test-assistant-label [data-model-test-current-model]",
-  );
-  if (responseModel) {
-    responseModel.textContent = model;
-    responseModel.title = model;
-  }
+  const exchange = document.createElement("div");
+  exchange.className = "model-test-exchange";
+  exchange.innerHTML = buildModelTestTurnHtml(model);
+  exchange.querySelector(".model-test-user-content").textContent = prompt;
+  thread.appendChild(exchange);
+  const turn = exchange.querySelector(".model-test-assistant-turn");
+  pop._modelTestActiveTurn = turn;
+  pop._modelTestOutputMarkdown = "";
+  pop._modelTestFollowOutput = true;
+  pop._modelTestStickToBottom = true;
+  resetModelTestThinking(pop);
+  pop.querySelector(".model-test-followups").hidden = false;
+  const conversation = pop.querySelector(".model-test-conversation");
+  conversation.scrollTop = conversation.scrollHeight;
   input.value = "";
   resizeModelTestInput(input);
   pop._modelTestRunning = true;
@@ -3816,16 +3940,31 @@ async function runModelTest(btn) {
   setModelTestStatus(pop, "连接中", "running");
   const started = performance.now();
   let reader = null;
+  let state = "complete";
+  let firstResponse = null;
+  let usage = null;
+  let completed = false;
+  const consume = (event) => {
+    if (!event) return false;
+    if (event.error) throw new Error(event.error);
+    if (firstResponse === null && (event.text || event.reasoning)) firstResponse = performance.now() - started;
+    if (event.usage) usage = event.usage;
+    if (event.done || event.finished) completed = true;
+    appendModelTestThinking(pop, event.reasoning);
+    appendModelTestOutput(pop, event.text);
+    return Boolean(event.done);
+  };
 
   try {
     await saveConfigSilent({ skipModelSync: true });
+    if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
     const response = await apiFetch("/api/test-model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         upstream: pop._modelTestUpstream,
         model,
-        prompt,
+        messages,
       }),
       signal: controller.signal,
     });
@@ -3847,47 +3986,67 @@ async function runModelTest(btn) {
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       for (const line of lines) {
-        const event = modelTestStreamEvent(line);
-        if (!event) continue;
-        if (event.error) throw new Error(event.error);
-        appendModelTestThinking(pop, event.reasoning);
-        appendModelTestOutput(pop, event.text);
-        if (event.done) streamDone = true;
+        if (consume(modelTestStreamEvent(line))) {
+          streamDone = true;
+          break;
+        }
       }
       if (chunk.done) {
-        if (buffer) {
-          const event = modelTestStreamEvent(buffer);
-          if (event?.error) throw new Error(event.error);
-          appendModelTestThinking(pop, event?.reasoning);
-          appendModelTestOutput(pop, event?.text);
-        }
+        if (buffer && !streamDone) consume(modelTestStreamEvent(buffer));
         streamDone = true;
       }
+    }
+    if (!completed && !pop._modelTestStopped) throw new Error("连接提前结束，请重试");
+    if (!String(pop._modelTestOutputMarkdown || "").trim() && !pop._modelTestStopped) {
+      throw new Error("模型未返回文本，请重试或切换模型");
     }
     flushModelTestOutput(pop);
     finishModelTestThinking(pop, "complete");
     if (!pop._modelTestStopped) {
+      pop._modelTestMessages = messages.concat({ role: "assistant", content: pop._modelTestOutputMarkdown });
+      updateModelTestContext(pop);
       const elapsed = Math.round(performance.now() - started);
       setModelTestStatus(pop, "已完成 · " + elapsed + "ms", "complete");
     }
   } catch (e) {
-    if (String(e.message || "").includes("登录已失效")) return;
     if (e.name === "AbortError" || pop._modelTestStopped) {
+      state = "stopped";
       finishModelTestThinking(pop, "stopped");
       setModelTestStatus(pop, "已停止", "stopped");
     } else {
+      state = "error";
       finishModelTestThinking(pop, "error");
       setModelTestStatus(pop, "请求失败", "error");
-      appendModelTestOutput(pop, "请求失败：" + (e.message || "未知错误"));
+      const error = document.createElement("p");
+      error.className = "model-test-error";
+      error.textContent = "请求失败：" + (e.message || "未知错误");
+      turn.appendChild(error);
     }
   } finally {
     flushModelTestOutput(pop);
+    if (pop._modelTestStopped) state = "stopped";
+    turn._modelTestAnswer = pop._modelTestOutputMarkdown || "";
+    turn.dataset.state = state;
+    const output = turn.querySelector(".model-test-output");
+    if (!turn._modelTestAnswer) output.dataset.empty = "false";
+    const footer = turn.querySelector(".model-test-response-footer");
+    footer.hidden = false;
+    footer.querySelector(".model-test-answer-copy").disabled = !turn._modelTestAnswer;
+    const elapsed = ((performance.now() - started) / 1000).toFixed(1) + " 秒";
+    const tokens = Number(usage?.total_tokens) || Number(usage?.prompt_tokens || usage?.input_tokens || 0) + Number(usage?.completion_tokens || usage?.output_tokens || 0);
+    const metrics = [elapsed];
+    if (firstResponse !== null) metrics.push("首响 " + (firstResponse / 1000).toFixed(1) + " 秒");
+    if (tokens > 0) metrics.push(tokens.toLocaleString() + " Tokens");
+    turn.querySelector(".model-test-turn-status").textContent = state === "complete" ? metrics.join(" · ") : (state === "stopped" ? "已停止" : "请求失败") + " · 本轮未加入上下文";
     if (reader) await reader.cancel().catch(() => {});
     if (pop._modelTestController === controller) {
       pop._modelTestController = null;
       pop._modelTestRunning = false;
       updateModelTestControls(pop);
+      if (pop._modelTestFollowOutput) conversation.scrollTop = conversation.scrollHeight;
+      if (pop.isConnected) input.focus({ preventScroll: true });
     }
+    updateModelTestScroll(conversation);
   }
 }
 

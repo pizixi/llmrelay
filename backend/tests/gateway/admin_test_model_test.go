@@ -180,6 +180,89 @@ func TestAdminTestModelReturnsUpstreamFailureDetailsWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestAdminTestModelCarriesConversationAcrossProtocols(t *testing.T) {
+	messages := []map[string]string{
+		{"role": "user", "content": "请记住项目叫星河"},
+		{"role": "assistant", "content": "已记住，项目叫星河。"},
+		{"role": "user", "content": "项目叫什么？"},
+	}
+	for _, apiType := range []UpstreamType{UpstreamOpenAI, UpstreamAnthropic, UpstreamResponses} {
+		t.Run(string(apiType), func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var body map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode upstream request: %v", err)
+				}
+				key := "messages"
+				if apiType == UpstreamResponses {
+					key = "input"
+				}
+				var received []map[string]string
+				if err := json.Unmarshal(body[key], &received); err != nil {
+					t.Errorf("decode %s: %v", key, err)
+				}
+				if !reflect.DeepEqual(received, messages) {
+					t.Errorf("conversation=%#v, want %#v", received, messages)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+			installAdminModelTestUpstream(t, "target", &UpstreamConfig{BaseURL: server.URL, APIType: apiType})
+			body, err := json.Marshal(map[string]any{"upstream": "target", "model": "test-model", "messages": messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			adminTestModelHandler(recorder, httptest.NewRequest(http.MethodPost, "/api/test-model", strings.NewReader(string(body))))
+			if recorder.Code != http.StatusOK || calls != 1 {
+				t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminTestModelRejectsInvalidConversation(t *testing.T) {
+	cases := map[string]any{
+		"empty":             []map[string]string{},
+		"assistant first":   []map[string]string{{"role": "assistant", "content": "answer"}},
+		"system role":       []map[string]string{{"role": "system", "content": "instructions"}},
+		"consecutive users": []map[string]string{{"role": "user", "content": "one"}, {"role": "user", "content": "two"}, {"role": "user", "content": "three"}},
+		"assistant last":    []map[string]string{{"role": "user", "content": "one"}, {"role": "assistant", "content": "two"}},
+		"blank content":     []map[string]string{{"role": "user", "content": "  "}},
+		"too long":          []map[string]string{{"role": "user", "content": strings.Repeat("字", 32769)}},
+	}
+	tooMany := make([]map[string]string, 43)
+	for index := range tooMany {
+		role := "user"
+		if index%2 == 1 {
+			role = "assistant"
+		}
+		tooMany[index] = map[string]string{"role": role, "content": "hello"}
+	}
+	cases["too many messages"] = tooMany
+	cases["combined length"] = []map[string]string{
+		{"role": "user", "content": strings.Repeat("😀", 16000)},
+		{"role": "assistant", "content": strings.Repeat("字", 16000)},
+		{"role": "user", "content": strings.Repeat("字", 769)},
+	}
+	for name, messages := range cases {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"upstream": "target", "model": "test-model", "prompt": "legacy fallback", "messages": messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			adminTestModelHandler(recorder, httptest.NewRequest(http.MethodPost, "/api/test-model", strings.NewReader(string(body))))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d, want 400; body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestAdminTestModelFlushesBeforeUpstreamCompletes(t *testing.T) {
 	releaseUpstream := make(chan struct{}, 1)
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

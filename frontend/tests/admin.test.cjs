@@ -78,3 +78,31 @@ test("旧统计数据缺少实际模型时仍保留请求模型", () => {
   assert.equal(Object.keys(admin.statsRowMap(rows)).length, 1);
   assert.equal(Object.keys(admin.statsModelUpstreamDayMap(rows)).length, 1);
 });
+
+test("模型对话按顺序携带完整的历史问答，并保留原始消息", () => {
+  const history = [{ role: "user", content: "记住项目叫星河" }, { role: "assistant", content: "已记住星河项目。" }];
+  const messages = admin.buildModelTestMessages(history, " 项目叫什么？ ");
+  assert.deepEqual(JSON.parse(JSON.stringify(messages)), history.concat({ role: "user", content: "项目叫什么？" }));
+  assert.equal(history.length, 2);
+});
+
+test("上下文最多携带最近 20 轮，超出字符预算时整轮移除", () => {
+  const history = Array.from({ length: 50 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: String(i) }));
+  const messages = admin.buildModelTestMessages(history, "继续");
+  assert.equal(messages.length, 41);
+  assert.equal(messages[0].content, "10");
+  const largeHistory = [{ role: "user", content: "旧问题" }, { role: "assistant", content: "旧回答" },
+    { role: "user", content: "新问题" }, { role: "assistant", content: "😀".repeat(32760) }];
+  const bounded = admin.buildModelTestMessages(largeHistory, "接着说");
+  assert.equal(bounded.length, 3);
+  assert.equal(bounded[0].content, "新问题");
+  assert.equal(admin.buildModelTestMessages(largeHistory, "大".repeat(32768)).length, 1);
+});
+
+test("模型流保留用量，并分别提取正文和思考内容", () => {
+  const event = admin.modelTestStreamEvent('data: {"choices":[{"delta":{"content":[{"type":"text","text":"回答"},{"type":"thinking","text":"分析"}]}}],"usage":{"total_tokens":42}}');
+  assert.equal(event.text, "回答");
+  assert.equal(event.reasoning, "分析");
+  assert.equal(event.usage.total_tokens, 42);
+  assert.equal(admin.modelTestStreamEvent("data: [DONE]").done, true);
+});

@@ -203,9 +203,36 @@ func AdminSyncModelsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminModelTestRequest struct {
-	Upstream string `json:"upstream"`
-	Model    string `json:"model"`
-	Prompt   string `json:"prompt"`
+	Upstream string                  `json:"upstream"`
+	Model    string                  `json:"model"`
+	Prompt   string                  `json:"prompt"`
+	Messages []adminModelTestMessage `json:"messages"`
+}
+
+type adminModelTestMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func validModelTestMessages(messages []adminModelTestMessage) bool {
+	if len(messages) == 0 || len(messages) > 41 || len(messages)%2 == 0 {
+		return false
+	}
+	characters := 0
+	for index, message := range messages {
+		role := "user"
+		if index%2 == 1 {
+			role = "assistant"
+		}
+		if message.Role != role || strings.TrimSpace(message.Content) == "" {
+			return false
+		}
+		characters += utf8.RuneCountInString(message.Content)
+		if characters > 32768 {
+			return false
+		}
+	}
+	return true
 }
 
 func writeAdminJSON(w http.ResponseWriter, status int, payload any) {
@@ -214,27 +241,35 @@ func writeAdminJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func modelTestRequestBody(apiType UpstreamType, model, prompt string) []byte {
+func modelTestRequestBody(apiType UpstreamType, model, prompt string, messages []adminModelTestMessage) []byte {
+	conversation := messages
+	if len(conversation) == 0 {
+		conversation = []adminModelTestMessage{{Role: "user", Content: prompt}}
+	}
 	var payload map[string]any
 	switch apiType {
 	case UpstreamAnthropic:
 		payload = map[string]any{
 			"model":      model,
-			"messages":   []map[string]any{{"role": "user", "content": prompt}},
+			"messages":   conversation,
 			"max_tokens": 1024,
 			"stream":     true,
 		}
 	case UpstreamResponses:
+		var input any = prompt
+		if len(messages) > 0 {
+			input = conversation
+		}
 		payload = map[string]any{
 			"model":             model,
-			"input":             prompt,
+			"input":             input,
 			"max_output_tokens": 1024,
 			"stream":            true,
 		}
 	default:
 		payload = map[string]any{
 			"model":          model,
-			"messages":       []map[string]any{{"role": "user", "content": prompt}},
+			"messages":       conversation,
 			"max_tokens":     1024,
 			"stream":         true,
 			"stream_options": map[string]any{"include_usage": true},
@@ -292,8 +327,12 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 	input.Upstream = strings.TrimSpace(input.Upstream)
 	input.Model = strings.TrimSpace(input.Model)
 	input.Prompt = strings.TrimSpace(input.Prompt)
-	if input.Upstream == "" || input.Model == "" || input.Prompt == "" {
-		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "upstream, model and prompt are required"})
+	if input.Upstream == "" || input.Model == "" || input.Prompt == "" && len(input.Messages) == 0 {
+		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "upstream, model and prompt or messages are required"})
+		return
+	}
+	if input.Messages != nil && !validModelTestMessages(input.Messages) {
+		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "messages must alternate user and assistant, end with user, and contain at most 41 messages and 32768 characters"})
 		return
 	}
 	if len(input.Upstream) > 128 || len(input.Model) > 512 || utf8.RuneCountInString(input.Prompt) > 32768 {
@@ -314,7 +353,7 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	body, status, _, callErr := callPreparedUpstreamStream(
 		ctx,
-		modelTestRequestBody(upstream.APIType, input.Model, input.Prompt),
+		modelTestRequestBody(upstream.APIType, input.Model, input.Prompt, input.Messages),
 		input.Upstream,
 		input.Model,
 		upstream,
