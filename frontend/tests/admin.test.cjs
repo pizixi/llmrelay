@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
+const adminSource = fs.readFileSync(path.join(__dirname, "../assets/admin.js"), "utf8");
 
 const admin = vm.createContext({
   URL,
@@ -10,7 +11,7 @@ const admin = vm.createContext({
   document: { readyState: "loading", addEventListener() {} },
   setInterval() {},
 });
-vm.runInContext(fs.readFileSync(path.join(__dirname, "../assets/admin.js"), "utf8"), admin);
+vm.runInContext(adminSource, admin);
 const parse = (...args) => admin.parseBulkUpstreams(...args);
 
 test("批量上游识别逐行分隔符并保留 URL 路径和 Key", () => {
@@ -105,4 +106,157 @@ test("模型流保留用量，并分别提取正文和思考内容", () => {
   assert.equal(event.reasoning, "分析");
   assert.equal(event.usage.total_tokens, 42);
   assert.equal(admin.modelTestStreamEvent("data: [DONE]").done, true);
+});
+
+test("模型流按完整事件解析：支持多行 data 与单换行分隔", () => {
+  const parser = admin.createModelTestSSEParser();
+  const multiLine = parser.push('data: {"choices":[{"delta":{"content":\ndata: "多行正文"}}]}\n\n', false);
+  assert.equal(multiLine.length, 1);
+  assert.equal(admin.modelTestStreamEvent(multiLine[0]).text, "多行正文");
+
+  const singleLine = admin.createModelTestSSEParser();
+  const events = singleLine.push('data: {"choices":[{"delta":{"content":"一"}}]}\ndata: {"choices":[{"delta":{"content":"二"}}]}\n', false);
+  assert.equal(events.length, 2);
+  assert.equal(events.map((event) => admin.modelTestStreamEvent(event).text).join(""), "一二");
+});
+
+test("模型流保留拒答正文、非流式 message 正文和结束原因", () => {
+  const refusal = admin.modelTestStreamEvent('data: {"choices":[{"delta":{"refusal":"无法提供该内容"}}]}');
+  assert.equal(refusal.text, "无法提供该内容");
+
+  const full = admin.modelTestNonStreamEvent('{"choices":[{"message":{"content":"完整回答"},"finish_reason":"stop"}]}');
+  assert.equal(full.text, "完整回答");
+  assert.equal(full.done, true);
+
+  const truncated = admin.modelTestStreamEvent('data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}');
+  assert.equal(truncated.finishReason, "length");
+  assert.equal(admin.modelTestEmptyTextReason("length", true, false).includes("思考阶段"), true);
+});
+
+test("模型流兼容顶层 content，并识别非流式错误响应", () => {
+  const event = admin.modelTestStreamEvent({ data: '{"content":"顶层正文"}', name: "" });
+  assert.equal(event.text, "顶层正文");
+  const failed = admin.modelTestNonStreamEvent('{"error":{"message":"bad key"}}');
+  assert.equal(failed.error, "bad key");
+  const full = admin.modelTestNonStreamEvent('{"content":"非流式正文"}');
+  assert.equal(full.text, "非流式正文");
+  assert.equal(full.done, true);
+});
+
+test("已分类的增量只进入对应的正文或思考通道一次", () => {
+  const cases = [
+    ["output_text.delta", "回答", ""],
+    ["response.output_text.delta", "回答", ""],
+    ["reasoning.delta", "", "回答"],
+    ["response.reasoning_text.delta", "", "回答"],
+    ["refusal.delta", "回答", ""],
+    ["response.refusal.delta", "回答", ""],
+    ["text_delta", "回答", ""],
+  ];
+  for (const [type, text, reasoning] of cases) {
+    const event = admin.modelTestStreamEvent({ data: JSON.stringify({ type, delta: "回答" }) });
+    assert.equal(event.text, text, type);
+    assert.equal(event.reasoning, reasoning, type);
+  }
+});
+
+// 保留真实的请求、流读取和重试流程，仅替换与这些行为无关的页面渲染。
+async function runModelTestResponses(bodies) {
+  const element = () => {
+    const children = new Map();
+    return {
+      dataset: {}, style: {}, isConnected: false,
+      scrollTop: 0, scrollHeight: 0, clientHeight: 0,
+      querySelector(selector) {
+        if (!children.has(selector)) children.set(selector, element());
+        return children.get(selector);
+      },
+      appendChild(child) { (this.added ||= []).push(child); },
+    };
+  };
+  const context = vm.createContext({
+    URL, AbortController, DOMException, TextDecoder, Uint8Array, performance,
+    localStorage: { getItem: () => null },
+    document: { readyState: "loading", addEventListener() {}, createElement: element },
+    setInterval() {},
+    setTimeout(callback) { callback(); },
+  });
+  vm.runInContext(adminSource, context);
+  for (const name of [
+    "resetModelTestThinking", "resizeModelTestInput", "updateModelTestControls",
+    "appendModelTestThinking", "flushModelTestOutput", "finishModelTestThinking",
+    "updateModelTestContext", "updateModelTestScroll", "setModelTestStatus",
+  ]) context[name] = () => {};
+  context.buildModelTestTurnHtml = () => "";
+  context.saveConfigSilent = async () => {};
+  context.appendModelTestOutput = (pop, text) => {
+    if (text) pop._modelTestOutputMarkdown += text;
+  };
+  const requests = [];
+  context.apiFetch = async (url, options) => {
+    assert.equal(url, "/api/test-model");
+    requests.push(JSON.parse(options.body));
+    return new Response(bodies[Math.min(requests.length - 1, bodies.length - 1)]);
+  };
+  const pop = element();
+  pop._modelTestUpstream = "target";
+  pop.querySelector(".model-test-input").value = "你好";
+  pop.querySelector(".model-test-model-select").value = "test-model";
+  await context.runModelTest({ closest: () => pop });
+  const turn = pop._modelTestActiveTurn;
+  return {
+    requests,
+    state: turn.dataset.state,
+    answer: turn._modelTestAnswer,
+    history: JSON.parse(JSON.stringify(pop._modelTestMessages || [])),
+    errors: (turn.added || []).map((child) => child.textContent),
+    metrics: turn.querySelector(".model-test-turn-status").textContent,
+  };
+}
+
+test("有明确结束原因的空回答不重试，保留原始诊断", async () => {
+  for (const [finishReason, diagnostic] of [
+    ["content_filter", "内容策略"],
+    ["length", "输出额度不足"],
+    ["tool_calls", "工具调用"],
+    ["stop", "模型未返回文本"],
+  ]) {
+    const body = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`;
+    const result = await runModelTestResponses([body]);
+    assert.equal(result.requests.length, 1, finishReason);
+    assert.equal(result.state, "error", finishReason);
+    assert.ok(result.errors.some((message) => message.includes(diagnostic)), finishReason);
+    assert.equal(result.history.length, 0, finishReason);
+  }
+});
+
+test("空流只重试一次，成功回答加入上下文且不复用首轮用量", async () => {
+  const empty = 'data: {"choices":[{"delta":{"role":"assistant"}}],"usage":{"total_tokens":42}}\n\ndata: [DONE]\n\n';
+  const answer = 'data: {"choices":[{"delta":{"content":"你好！"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+  const result = await runModelTestResponses([empty, answer]);
+  assert.equal(result.requests.length, 2);
+  assert.deepEqual(result.requests[0], result.requests[1]);
+  assert.equal(result.state, "complete");
+  assert.equal(result.answer, "你好！");
+  assert.deepEqual(result.history, [{ role: "user", content: "你好" }, { role: "assistant", content: "你好！" }]);
+  assert.ok(!result.metrics.includes("Tokens"));
+
+  const stillEmpty = await runModelTestResponses(["data: [DONE]\n\n"]);
+  assert.equal(stillEmpty.requests.length, 2);
+  assert.equal(stillEmpty.state, "error");
+  assert.equal(stillEmpty.history.length, 0);
+});
+
+test("完整 JSON 回答进入上下文，HTTP 200 内的上游错误保留且不重试", async () => {
+  const success = await runModelTestResponses(['{"choices":[{"message":{"content":"完整回答"},"finish_reason":"stop"}]}']);
+  assert.equal(success.requests.length, 1);
+  assert.equal(success.state, "complete");
+  assert.equal(success.answer, "完整回答");
+  assert.equal(success.history[1].content, "完整回答");
+
+  const failure = await runModelTestResponses(['{"error":{"message":"bad test key"}}']);
+  assert.equal(failure.requests.length, 1);
+  assert.equal(failure.state, "error");
+  assert.ok(failure.errors.some((message) => message.includes("bad test key")));
+  assert.equal(failure.history.length, 0);
 });

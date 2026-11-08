@@ -3834,19 +3834,98 @@ function modelTestReasoningValue(value) {
   return "";
 }
 
-function modelTestStreamEvent(line) {
-  const trimmed = String(line || "").trim();
-  if (!trimmed.startsWith("data:")) return null;
-  const raw = trimmed.slice(5).trim();
-  if (!raw) return null;
-  if (raw === "[DONE]") return { done: true };
-  let payload;
+function modelTestIsCompletePayload(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return false;
+  if (trimmed === "[DONE]") return true;
+  if (trimmed.charAt(0) !== "{" && trimmed.charAt(0) !== "[") return false;
   try {
-    payload = JSON.parse(raw);
+    JSON.parse(trimmed);
+    return true;
   } catch (e) {
-    return null;
+    return false;
   }
-  if (payload?.error) {
+}
+
+// 按完整 SSE 事件解析：支持多行 data、\r\n 与 \r 换行，也兼容
+// “每个事件只用单个换行分隔”的非标准上游。之前逐行解析只认单行 data，
+// 遇到多行载荷时会丢掉正文。
+function createModelTestSSEParser() {
+  let pending = "";
+  let eventName = "";
+  let buffer = "";
+  const flush = (out) => {
+    if (!pending) return;
+    out.push({ data: pending, name: eventName });
+    pending = "";
+    eventName = "";
+  };
+  const appendData = (value, out) => {
+    pending = pending ? pending + "\n" + value : value;
+    if (modelTestIsCompletePayload(pending)) flush(out);
+  };
+  const consumeLine = (line, out) => {
+    if (!line) {
+      flush(out);
+      return;
+    }
+    if (line.charAt(0) === ":") return;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.charAt(0) === " ") value = value.slice(1);
+    if (field === "event") {
+      eventName = value;
+      return;
+    }
+    if (field === "data") appendData(value, out);
+  };
+  return {
+    push(text, final) {
+      const out = [];
+      buffer += String(text || "");
+      let index = 0;
+      while (true) {
+        const newline = buffer.indexOf("\n", index);
+        if (newline === -1) break;
+        let line = buffer.slice(index, newline);
+        index = newline + 1;
+        if (line.charAt(line.length - 1) === "\r") line = line.slice(0, -1);
+        consumeLine(line, out);
+      }
+      buffer = buffer.slice(index);
+      if (final) {
+        const tail = buffer.replace(/\r$/, "");
+        buffer = "";
+        if (tail) consumeLine(tail, out);
+        flush(out);
+      }
+      return out;
+    },
+  };
+}
+
+function modelTestFinishReason(stopReason) {
+  switch (String(stopReason || "")) {
+    case "max_tokens":
+    case "model_context_window_exceeded":
+    case "length":
+      return "length";
+    case "tool_use":
+    case "tool_calls":
+      return "tool_calls";
+    case "refusal":
+    case "content_filter":
+      return "content_filter";
+    default:
+      return String(stopReason || "");
+  }
+}
+
+function modelTestPayloadEvent(payload, eventName) {
+  if (!payload || typeof payload !== "object") return null;
+  const payloadType = String(payload.type || eventName || "").toLowerCase();
+  if (payload.error) {
     const error = payload.error;
     return {
       error:
@@ -3855,39 +3934,164 @@ function modelTestStreamEvent(line) {
           : error.message || error.type || "模型流返回错误",
     };
   }
-  const delta = payload?.choices?.[0]?.delta || {};
-  const content = modelTestContentParts(delta.content);
+  if (payloadType === "error") {
+    return { error: payload.message || payload.code || "模型流返回错误" };
+  }
+
+  const choice = Array.isArray(payload.choices) && payload.choices.length
+    ? payload.choices[0] || {}
+    : {};
+  const delta = choice.delta && typeof choice.delta === "object" ? choice.delta : null;
+  const message = choice.message && typeof choice.message === "object" ? choice.message : null;
+  // 不是所有上游都真的流式返回：有些在 stream=true 时仍给出完整的
+  // choices[0].message，此时必须回退到 message 才能拿到正文。
+  const part = delta || message || {};
+  const content = modelTestContentParts(part.content ?? message?.content);
   let text = content.text;
   let reasoning = content.reasoning;
+  if (typeof choice.text === "string") text += choice.text;
+  // 少数聚合网关不使用 choices 结构，直接在顶层给出 content/text/delta。
+  // 已知的 Responses / Anthropic 事件已由下方分支处理，避免重复追加。
+  const knownProtocolEvent =
+    payloadType.startsWith("response.") ||
+    payloadType === "message_start" ||
+    payloadType === "message_delta" ||
+    payloadType === "message_stop" ||
+    payloadType === "content_block_start" ||
+    payloadType === "content_block_delta" ||
+    payloadType === "ping";
   [
-    delta.reasoning_content,
-    delta.reasoning,
-    delta.reasoning_text,
-    delta.thinking,
+    part.reasoning_content,
+    part.reasoning,
+    part.reasoning_text,
+    part.thinking,
   ].forEach((value) => {
     reasoning += modelTestReasoningValue(value);
   });
-  if (Array.isArray(delta.reasoning_details)) {
-    delta.reasoning_details.forEach((detail) => {
+  if (Array.isArray(part.reasoning_details)) {
+    part.reasoning_details.forEach((detail) => {
       reasoning += modelTestReasoningValue(detail);
     });
   }
+  // 拒答内容是模型的实际输出，之前被忽略，会表现为“未返回文本”。
+  if (typeof part.refusal === "string") {
+    text += part.refusal;
+  } else if (part.refusal && typeof part.refusal === "object") {
+    text += modelTestTextValue(part.refusal);
+  }
 
-  const payloadType = String(payload?.type || "").toLowerCase();
+  let finishReason = modelTestFinishReason(choice.finish_reason);
+  let finished = Boolean(finishReason);
+  let done = false;
+  let hasToolCalls =
+    (Array.isArray(part.tool_calls) && part.tool_calls.length > 0) ||
+    Boolean(part.function_call);
+
   if (payloadType === "content_block_delta") {
-    const anthropicDelta = payload?.delta || {};
+    const anthropicDelta = payload.delta && typeof payload.delta === "object" ? payload.delta : {};
     if (anthropicDelta.type === "thinking_delta") {
       reasoning += modelTestTextValue({ text: anthropicDelta.thinking });
     } else if (anthropicDelta.type === "text_delta") {
       text += modelTestTextValue({ text: anthropicDelta.text });
     }
-  } else if (payloadType.includes("reasoning") && typeof payload?.delta === "string") {
-    reasoning += payload.delta;
-  } else if (payloadType.includes("output_text") && typeof payload?.delta === "string") {
+  } else if (payloadType === "content_block_start") {
+    const block = payload.content_block;
+    if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
+      text += block.text;
+    }
+  } else if (payloadType === "message_delta") {
+    const stopReason = payload?.delta?.stop_reason;
+    if (stopReason) {
+      finishReason = modelTestFinishReason(stopReason);
+      finished = true;
+    }
+  } else if (payloadType === "message_stop") {
+    finished = true;
+    done = true;
+  } else if (payloadType.includes("refusal") && typeof payload.delta === "string") {
     text += payload.delta;
+  } else if (payloadType.includes("reasoning") && typeof payload.delta === "string") {
+    reasoning += payload.delta;
+  } else if (payloadType.includes("output_text") && typeof payload.delta === "string") {
+    text += payload.delta;
+  } else if (payloadType === "response.output_item.added" || payloadType === "response.output_item.done") {
+    const itemType = String(payload?.item?.type || "");
+    if (itemType === "function_call" || itemType === "custom_tool_call") hasToolCalls = true;
+  } else if (payloadType === "response.completed" || payloadType === "response.incomplete" || payloadType === "response.done") {
+    finished = true;
+    done = true;
+    if (payloadType === "response.incomplete" && !finishReason) finishReason = "length";
+  } else if (payloadType === "response.failed") {
+    return { error: payload?.response?.error?.message || "上游响应失败" };
+  } else if (!Array.isArray(payload.choices) && !knownProtocolEvent) {
+    if (typeof payload.content === "string") text += payload.content;
+    else if (typeof payload.text === "string") text += payload.text;
+    else if (typeof payload.delta === "string") text += payload.delta;
   }
-  return { text, reasoning, usage: payload.usage || payload.response?.usage,
-    finished: Boolean(payload?.choices?.[0]?.finish_reason) };
+
+  return {
+    text,
+    reasoning,
+    usage: payload.usage || payload.response?.usage,
+    done,
+    finished,
+    finishReason,
+    hasToolCalls,
+  };
+}
+
+function modelTestStreamEvent(frame) {
+  let data = "";
+  let name = "";
+  if (frame && typeof frame === "object" && typeof frame.data === "string") {
+    data = frame.data;
+    name = frame.name || "";
+  } else {
+    const events = createModelTestSSEParser().push(String(frame || ""), true);
+    if (!events.length) return null;
+    data = events[0].data;
+    name = events[0].name || "";
+  }
+  const raw = String(data || "").trim();
+  if (!raw) return null;
+  if (raw === "[DONE]") return { done: true };
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  return modelTestPayloadEvent(payload, name);
+}
+
+// 有些上游忽略 stream=true，直接返回完整 JSON。此时没有任何 data: 行，
+// 需要把整个响应体当作一次完成的响应来解析。
+function modelTestNonStreamEvent(rawBody) {
+  const trimmed = String(rawBody || "").trim();
+  if (!trimmed || (trimmed.charAt(0) !== "{" && trimmed.charAt(0) !== "[")) return null;
+  let payload;
+  try {
+    payload = JSON.parse(trimmed);
+  } catch (e) {
+    return null;
+  }
+  const event = modelTestPayloadEvent(payload, "");
+  if (!event || event.error) return event;
+  return { ...event, done: true, finished: true };
+}
+
+function modelTestEmptyTextReason(finishReason, hasReasoning, hasToolCalls) {
+  if (finishReason === "length") {
+    return hasReasoning
+      ? "模型在思考阶段用尽了输出额度，未生成正文；请重试或换用非推理模型。"
+      : "模型因输出额度不足（finish_reason=length）未返回正文，请重试或换用其他模型。";
+  }
+  if (finishReason === "content_filter") {
+    return "模型输出被上游内容策略拦截，未返回正文。";
+  }
+  if (hasToolCalls || finishReason === "tool_calls") return "模型只返回了工具调用，没有可展示的正文。";
+  if (hasReasoning) return "模型只返回了思考内容，没有正文；请重试或换用其他模型。";
+  return "模型未返回文本，请重试或切换模型";
 }
 
 function modelTestHTTPError(raw, status) {
@@ -3944,20 +4148,30 @@ async function runModelTest(btn) {
   let firstResponse = null;
   let usage = null;
   let completed = false;
+  let sawReasoning = false;
+  let sawToolCalls = false;
+  let finishReason = "";
   const consume = (event) => {
     if (!event) return false;
     if (event.error) throw new Error(event.error);
     if (firstResponse === null && (event.text || event.reasoning)) firstResponse = performance.now() - started;
     if (event.usage) usage = event.usage;
+    if (event.finishReason) finishReason = event.finishReason;
+    if (event.hasToolCalls) sawToolCalls = true;
+    if (event.reasoning) sawReasoning = true;
     if (event.done || event.finished) completed = true;
     appendModelTestThinking(pop, event.reasoning);
     appendModelTestOutput(pop, event.text);
     return Boolean(event.done);
   };
 
-  try {
-    await saveConfigSilent({ skipModelSync: true });
-    if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
+  const attemptStream = async (attempt) => {
+    completed = false;
+    usage = null;
+    sawReasoning = false;
+    sawToolCalls = false;
+    finishReason = "";
+    if (attempt > 0) setModelTestStatus(pop, "重新生成", "running");
     const response = await apiFetch("/api/test-model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3976,29 +4190,54 @@ async function runModelTest(btn) {
     setModelTestStatus(pop, "生成中", "running");
     reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
+    const parser = createModelTestSSEParser();
+    let rawBody = "";
+    let sawEvent = false;
     let streamDone = false;
     while (!streamDone) {
       const chunk = await reader.read();
-      buffer += decoder.decode(chunk.value || new Uint8Array(), {
-        stream: !chunk.done,
-      });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (consume(modelTestStreamEvent(line))) {
+      let piece = chunk.value ? decoder.decode(chunk.value, { stream: true }) : "";
+      if (chunk.done) piece += decoder.decode();
+      rawBody += piece;
+      const events = parser.push(piece, Boolean(chunk.done));
+      for (const frame of events) {
+        sawEvent = true;
+        if (consume(modelTestStreamEvent(frame))) {
           streamDone = true;
           break;
         }
       }
-      if (chunk.done) {
-        if (buffer && !streamDone) consume(modelTestStreamEvent(buffer));
-        streamDone = true;
+      if (chunk.done) streamDone = true;
+    }
+    if (!sawEvent && !pop._modelTestStopped) {
+      const fallback = modelTestNonStreamEvent(rawBody);
+      if (fallback) {
+        sawEvent = true;
+        consume(fallback);
       }
+    }
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      reader = null;
+    }
+  };
+
+  try {
+    await saveConfigSilent({ skipModelSync: true });
+    if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
+    // 上游偶发返回空流（只有 role 或只有 [DONE]）时静默重试一次；
+    // 有明确结束原因、思考内容或工具调用时保留本次结果，不重复请求。
+    for (let attempt = 0; ; attempt += 1) {
+      await attemptStream(attempt);
+      if (pop._modelTestStopped || controller.signal.aborted) break;
+      if (String(pop._modelTestOutputMarkdown || "").trim()) break;
+      if (finishReason || sawReasoning || sawToolCalls || attempt >= 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
     }
     if (!completed && !pop._modelTestStopped) throw new Error("连接提前结束，请重试");
     if (!String(pop._modelTestOutputMarkdown || "").trim() && !pop._modelTestStopped) {
-      throw new Error("模型未返回文本，请重试或切换模型");
+      throw new Error(modelTestEmptyTextReason(finishReason, sawReasoning, sawToolCalls));
     }
     flushModelTestOutput(pop);
     finishModelTestThinking(pop, "complete");

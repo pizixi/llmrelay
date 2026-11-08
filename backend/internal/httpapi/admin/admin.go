@@ -241,6 +241,12 @@ func writeAdminJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// modelTestAnthropicMaxTokens 只用于 Anthropic 协议：该协议强制要求 max_tokens。
+// 旧的 1024 上限会让推理型模型把额度全部消耗在思考阶段，最终只返回思考内容、
+// 没有正文，管理页就会误报“模型未返回文本”。其余两种协议不限制输出长度，
+// 由上游按模型默认值决定，避免再次截断。
+const modelTestAnthropicMaxTokens = 4096
+
 func modelTestRequestBody(apiType UpstreamType, model, prompt string, messages []adminModelTestMessage) []byte {
 	conversation := messages
 	if len(conversation) == 0 {
@@ -252,7 +258,7 @@ func modelTestRequestBody(apiType UpstreamType, model, prompt string, messages [
 		payload = map[string]any{
 			"model":      model,
 			"messages":   conversation,
-			"max_tokens": 1024,
+			"max_tokens": modelTestAnthropicMaxTokens,
 			"stream":     true,
 		}
 	case UpstreamResponses:
@@ -261,16 +267,14 @@ func modelTestRequestBody(apiType UpstreamType, model, prompt string, messages [
 			input = conversation
 		}
 		payload = map[string]any{
-			"model":             model,
-			"input":             input,
-			"max_output_tokens": 1024,
-			"stream":            true,
+			"model":  model,
+			"input":  input,
+			"stream": true,
 		}
 	default:
 		payload = map[string]any{
 			"model":          model,
 			"messages":       conversation,
-			"max_tokens":     1024,
 			"stream":         true,
 			"stream_options": map[string]any{"include_usage": true},
 		}
@@ -349,7 +353,9 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 	zeroRetries := 0
 	upstream.MaxRetries = &zeroRetries
 
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	// 测试请求不再限制输出额度后，推理型模型可能持续生成较长时间；
+	// 客户端断开时 r.Context() 会立即取消，因此这里放宽总超时即可。
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	body, status, _, callErr := callPreparedUpstreamStream(
 		ctx,
@@ -377,14 +383,7 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Upstream-Status", strconv.Itoa(status))
 	// 管理页模型测试只用于连通性/效果验证，不属于真实业务调用，
 	// 因此显式关闭用量统计，避免写入“使用记录”。
-	switch upstream.APIType {
-	case UpstreamAnthropic:
-		anthropicStreamToChatHandler(w, body, input.Model, "", false)
-	case UpstreamResponses:
-		responsesStreamToChatHandler(w, body, input.Model, "", false)
-	default:
-		proxyAdminModelTestStream(w, body, input.Model)
-	}
+	proxyAdminModelTestResponse(w, body, upstream.APIType, input.Model)
 }
 
 func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {

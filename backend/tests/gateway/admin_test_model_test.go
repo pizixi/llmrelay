@@ -49,7 +49,7 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 		streamBody   string
 	}{
 		{
-			name: "OpenAI Chat", apiType: UpstreamOpenAI, baseSuffix: "/v1", wantPath: "/v1/chat/completions", wantBodyKey: "messages", wantLimitKey: "max_tokens",
+			name: "OpenAI Chat", apiType: UpstreamOpenAI, baseSuffix: "/v1", wantPath: "/v1/chat/completions", wantBodyKey: "messages", wantLimitKey: "",
 			streamBody: "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"plan\"},\"finish_reason\":null}]}\n\n" +
 				"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello \"},\"finish_reason\":null}]}\n\n" +
 				"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"},\"finish_reason\":null}]}\n\n" +
@@ -66,7 +66,7 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 		},
 		{
-			name: "OpenAI Responses", apiType: UpstreamResponses, baseSuffix: "/v1", wantPath: "/v1/responses", wantBodyKey: "input", wantLimitKey: "max_output_tokens",
+			name: "OpenAI Responses", apiType: UpstreamResponses, baseSuffix: "/v1", wantPath: "/v1/responses", wantBodyKey: "input", wantLimitKey: "",
 			streamBody: "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"plan\"}\n\n" +
 				"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello world\"}\n\n" +
 				"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n" +
@@ -91,8 +91,20 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Errorf("decode request: %v", err)
 				}
-				if body["model"] != "test-model" || body[testCase.wantBodyKey] == nil || body[testCase.wantLimitKey] == nil || body["stream"] != true {
+				if body["model"] != "test-model" || body[testCase.wantBodyKey] == nil || body["stream"] != true {
 					t.Errorf("unexpected body: %#v", body)
+				}
+				if testCase.wantLimitKey != "" && body[testCase.wantLimitKey] == nil {
+					t.Errorf("missing %s in body: %#v", testCase.wantLimitKey, body)
+				}
+				if testCase.apiType == UpstreamAnthropic {
+					if limit, ok := body["max_tokens"].(float64); !ok || limit < 2048 {
+						t.Errorf("max_tokens=%#v, want a generous output budget", body["max_tokens"])
+					}
+				} else if _, ok := body["max_tokens"]; ok {
+					t.Errorf("model test must not cap max_tokens: %#v", body)
+				} else if _, ok := body["max_output_tokens"]; ok {
+					t.Errorf("model test must not cap max_output_tokens: %#v", body)
 				}
 				if testCase.apiType == UpstreamOpenAI {
 					streamOptions, _ := body["stream_options"].(map[string]any)
@@ -177,6 +189,106 @@ func TestAdminTestModelReturnsUpstreamFailureDetailsWithoutRetry(t *testing.T) {
 	}
 	if recorder.Code != http.StatusBadGateway || result.UpstreamStatus != http.StatusUnauthorized || result.Error != "bad test key" || requests != 1 {
 		t.Fatalf("result=%+v requests=%d", result, requests)
+	}
+}
+
+func TestAdminTestModelAcceptsNonStreamingResponsesAcrossProtocols(t *testing.T) {
+	previousStatsPath := stats.Path()
+	stats.SetPath(filepath.Join(t.TempDir(), "llmrelay.db"))
+	stats.LoadTokenStats()
+	t.Cleanup(func() { stats.SetPath(previousStatsPath) })
+	cases := []struct {
+		apiType UpstreamType
+		body    string
+	}{
+		{UpstreamOpenAI, `{"choices":[{"message":{"role":"assistant","content":"Hello world","reasoning_content":"plan"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`},
+		{UpstreamAnthropic, `{"type":"message","role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"Hello world"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`},
+		{UpstreamResponses, `{"object":"response","status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`},
+	}
+	for _, tc := range cases {
+		for _, contentType := range []string{"application/json", "text/event-stream", ""} {
+			t.Run(string(tc.apiType)+"/"+contentType, func(t *testing.T) {
+				calls := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls++
+					w.Header().Set("Content-Type", contentType)
+					// 包括带 BOM 和前导空白、且错误声明为 SSE 的兼容上游。
+					if contentType == "text/event-stream" {
+						_, _ = io.WriteString(w, "\xef\xbb\xbf")
+					}
+					_, _ = io.WriteString(w, "\n\t "+tc.body)
+				}))
+				defer server.Close()
+				installAdminModelTestUpstream(t, "target", &UpstreamConfig{BaseURL: server.URL, APIType: tc.apiType})
+				recorder := httptest.NewRecorder()
+				adminTestModelHandler(recorder, httptest.NewRequest(http.MethodPost, "/api/test-model", strings.NewReader(`{"upstream":"target","model":"test-model","prompt":"hello"}`)))
+				if recorder.Code != http.StatusOK || calls != 1 {
+					t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+				}
+				if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+					t.Fatalf("content-type=%q, want application/json", got)
+				}
+				if got := recorder.Header().Get("X-Model-Test-Protocol"); got != string(tc.apiType) {
+					t.Fatalf("protocol=%q, want %s", got, tc.apiType)
+				}
+				var result struct {
+					Choices []struct {
+						Message struct {
+							Content   string `json:"content"`
+							Reasoning string `json:"reasoning_content"`
+						} `json:"message"`
+						FinishReason string `json:"finish_reason"`
+					} `json:"choices"`
+					Usage struct {
+						TotalTokens int `json:"total_tokens"`
+					} `json:"usage"`
+				}
+				if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+					t.Fatalf("decode response: %v; body=%s", err, recorder.Body.String())
+				}
+				if len(result.Choices) != 1 || result.Choices[0].Message.Content != "Hello world" || result.Choices[0].Message.Reasoning != "plan" || result.Choices[0].FinishReason != "stop" || result.Usage.TotalTokens != 3 {
+					t.Fatalf("response lost text, reasoning, finish reason or usage: %s", recorder.Body.String())
+				}
+			})
+		}
+	}
+	page, err := stats.ListUsageRecords(stats.UsageQuery{Limit: 10})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("model test must not record usage: page=%+v err=%v", page, err)
+	}
+}
+
+func TestAdminTestModelPreservesNonStreamingErrors(t *testing.T) {
+	for _, apiType := range []UpstreamType{UpstreamOpenAI, UpstreamAnthropic, UpstreamResponses} {
+		for _, tc := range []struct {
+			name   string
+			body   string
+			status int
+		}{
+			{"upstream error", `{"error":{"message":"bad test key"}}`, http.StatusOK},
+			{"invalid JSON", `{"choices":`, http.StatusBadGateway},
+		} {
+			t.Run(string(apiType)+"/"+tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, tc.body)
+				}))
+				defer server.Close()
+				installAdminModelTestUpstream(t, "target", &UpstreamConfig{BaseURL: server.URL, APIType: apiType})
+				recorder := httptest.NewRecorder()
+				adminTestModelHandler(recorder, httptest.NewRequest(http.MethodPost, "/api/test-model", strings.NewReader(`{"upstream":"target","model":"test-model","prompt":"hello"}`)))
+				if recorder.Code != tc.status {
+					t.Fatalf("status=%d, want %d; body=%s", recorder.Code, tc.status, recorder.Body.String())
+				}
+				var result map[string]json.RawMessage
+				if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || len(result["error"]) == 0 {
+					t.Fatalf("missing JSON error: %s; err=%v", recorder.Body.String(), err)
+				}
+				if tc.name == "upstream error" && !strings.Contains(string(result["error"]), "bad test key") {
+					t.Fatalf("lost upstream error: %s", recorder.Body.String())
+				}
+			})
+		}
 	}
 }
 
