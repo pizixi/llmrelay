@@ -21,6 +21,8 @@ const ICONS = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
   search:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+  globe:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   check:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -6626,8 +6628,8 @@ function statsControlsHtml(dimension) {
   return (
     '<div class="stats-heading-actions" aria-label="统计操作">' +
     statsPeriodTabsHtml(dimension) +
-    '<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()">刷新</button>' +
-    '<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)">清空统计</button>' +
+    '<button class="btn btn-success" data-icon="refresh" onclick="reloadConfig()" title="刷新" aria-label="刷新"><span class="btn-label">刷新</span></button>' +
+    '<button class="btn btn-danger" data-icon="trash" onclick="resetStats(this)" title="清空统计" aria-label="清空统计"><span class="btn-label">清空统计</span></button>' +
     '<select id="statsDimension" class="m-select stats-dimension" aria-label="统计维度" onchange="changeStatsDimension()">' +
     '<option value="model"' + selected("model") + ">按模型</option>" +
     '<option value="upstream"' + selected("upstream") + ">按上游</option>" +

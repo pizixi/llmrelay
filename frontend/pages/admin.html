@@ -22,13 +22,13 @@
 </div>
 <div class="header-toolbar">
 <nav class="header-tabs" role="tablist" aria-label="管理功能">
-<button class="header-tab is-active" id="tab-trigger-stats" type="button" role="tab" aria-selected="true" aria-controls="tab-stats" tabindex="0" data-tab="stats" data-icon="chart">用量统计</button>
-<button class="header-tab" id="tab-trigger-usage" type="button" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1" data-tab="usage" data-icon="inbox">使用记录</button>
-<button class="header-tab" id="tab-trigger-api-keys" type="button" role="tab" aria-selected="false" aria-controls="tab-api-keys" tabindex="-1" data-tab="api-keys" data-icon="key">API 密钥</button>
-<button class="header-tab" id="tab-trigger-upstreams" type="button" role="tab" aria-selected="false" aria-controls="tab-upstreams" tabindex="-1" data-tab="upstreams" data-icon="server">上游配置</button>
-<button class="header-tab" id="tab-trigger-models" type="button" role="tab" aria-selected="false" aria-controls="tab-models" tabindex="-1" data-tab="models" data-icon="layers">模型路由</button>
-<button class="header-tab" id="tab-trigger-search" type="button" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1" data-tab="search" data-icon="search">Web Search</button>
-<button class="header-tab" id="tab-trigger-proxy" type="button" role="tab" aria-selected="false" aria-controls="tab-proxy" tabindex="-1" data-tab="proxy" data-icon="key">SOCKS5</button>
+<button class="header-tab is-active" id="tab-trigger-stats" type="button" role="tab" aria-selected="true" aria-controls="tab-stats" tabindex="0" data-tab="stats" data-icon="chart" title="用量统计"><span class="tab-label">用量统计</span></button>
+<button class="header-tab" id="tab-trigger-usage" type="button" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1" data-tab="usage" data-icon="inbox" title="使用记录"><span class="tab-label">使用记录</span></button>
+<button class="header-tab" id="tab-trigger-api-keys" type="button" role="tab" aria-selected="false" aria-controls="tab-api-keys" tabindex="-1" data-tab="api-keys" data-icon="key" title="API 密钥"><span class="tab-label">API 密钥</span></button>
+<button class="header-tab" id="tab-trigger-upstreams" type="button" role="tab" aria-selected="false" aria-controls="tab-upstreams" tabindex="-1" data-tab="upstreams" data-icon="server" title="上游配置"><span class="tab-label">上游配置</span></button>
+<button class="header-tab" id="tab-trigger-models" type="button" role="tab" aria-selected="false" aria-controls="tab-models" tabindex="-1" data-tab="models" data-icon="layers" title="模型路由"><span class="tab-label">模型路由</span></button>
+<button class="header-tab" id="tab-trigger-search" type="button" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1" data-tab="search" data-icon="search" title="Web Search"><span class="tab-label">Web Search</span></button>
+<button class="header-tab" id="tab-trigger-proxy" type="button" role="tab" aria-selected="false" aria-controls="tab-proxy" tabindex="-1" data-tab="proxy" data-icon="globe" title="SOCKS5"><span class="tab-label">SOCKS5</span></button>
 </nav>
 <div class="header-actions">
 <span class="header-chip">Admin</span>
@@ -56,8 +56,8 @@
 <select id="usageModelFilter" class="m-select" data-clearable aria-label="按请求模型筛选" onchange="loadUsageRecords(0)"><option value="">全部模型</option></select>
 <select id="usageUpstreamFilter" class="m-select" data-clearable aria-label="按上游筛选" onchange="loadUsageRecords(0)"><option value="">全部上游</option></select>
 <select id="usageAPIKeyFilter" class="m-select" data-clearable aria-label="按密钥名称筛选" onchange="loadUsageRecords(0)"><option value="">全部密钥</option></select>
-<button class="btn btn-default filter-reset" type="button" data-filter-reset="usage" onclick="resetPageFilters('usage')" disabled>清空筛选</button>
-<button class="btn btn-default" data-icon="refresh" onclick="loadUsageRecords()">刷新</button>
+<button class="btn btn-default filter-reset" type="button" data-icon="close" data-filter-reset="usage" onclick="resetPageFilters('usage')" title="清空筛选" aria-label="清空筛选" disabled><span class="btn-label">清空筛选</span></button>
+<button class="btn btn-default" data-icon="refresh" onclick="loadUsageRecords()" title="刷新" aria-label="刷新"><span class="btn-label">刷新</span></button>
 </div>
 </div>
 <div class="active-filters" id="usageActiveFilters" aria-label="已选筛选条件" hidden></div>
@@ -86,8 +86,8 @@
 <div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
 <label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="scheduleFilterUpstreamRows()"></label>
 <select id="upstreamModelFilter" class="m-select" data-clearable aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
-<button class="btn btn-default filter-reset" type="button" data-filter-reset="upstream" onclick="resetPageFilters('upstream')" disabled>清空筛选</button>
-<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()">添加上游</button><button class="btn btn-default" data-icon="plus" onclick="openBulkUpstreamEditor(this)">批量添加</button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')">保存上游</button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)">同步模型</button>
+<button class="btn btn-default filter-reset" type="button" data-icon="close" data-filter-reset="upstream" onclick="resetPageFilters('upstream')" title="清空筛选" aria-label="清空筛选" disabled><span class="btn-label">清空筛选</span></button>
+<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()" title="添加上游" aria-label="添加上游"><span class="btn-label">添加上游</span></button><button class="btn btn-default" data-icon="layers" onclick="openBulkUpstreamEditor(this)" title="批量添加" aria-label="批量添加"><span class="btn-label">批量添加</span></button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')" title="保存上游" aria-label="保存上游"><span class="btn-label">保存上游</span></button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)" title="同步模型" aria-label="同步模型"><span class="btn-label">同步模型</span></button>
 </div>
 </div>
 <div class="active-filters" id="upstreamActiveFilters" aria-label="已选筛选条件" hidden></div>
