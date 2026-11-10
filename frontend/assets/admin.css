@@ -1779,7 +1779,8 @@ select.m-select {
   transition: transform var(--transition);
 }
 
-#upstreamTable .action-cell > .btn-icon svg {
+#upstreamTable .action-cell > .btn-icon svg,
+#aliasTable .action-cell > .btn-icon svg {
   width: 18px;
   height: 18px;
 }
