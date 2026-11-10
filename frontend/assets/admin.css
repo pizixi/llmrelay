@@ -2069,7 +2069,7 @@ select.m-select {
 #aliasTable .col-select { width: 46px; min-width: 46px; }
 #aliasTable .col-targets { width: 46%; min-width: 260px; }
 #aliasTable .col-reasoning { width: 96px; min-width: 96px; white-space: nowrap; text-align: center; }
-#aliasTable .col-action { width: 58px; }
+#aliasTable .col-action { width: 96px; min-width: 96px; }
 
 #aliasTable {
   min-width: 620px;

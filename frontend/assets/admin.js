@@ -2956,7 +2956,7 @@ function buildModelTestPopoverHtml(options) {
     '<div class="model-test-header">' +
     '<div class="model-test-heading"><span class="model-test-mark">' +
     ICONS.sparkles +
-    '</span><div><h2 id="modelTestTitle">模型对话</h2><div class="model-test-meta"><span title="' +
+    '</span><div><h2 id="modelTestTitle">模型对话</h2><div class="model-test-meta"><span data-model-test-source title="' +
     escAttr(options.sourceTitle || options.sourceLabel || "") + '">' + esc(options.sourceLabel || "") +
     '</span><i aria-hidden="true"></i><span data-model-test-route title="' +
     escAttr(options.sourceMeta || "") + '">' + esc(options.sourceMeta || "") +
@@ -3028,17 +3028,28 @@ function testModelsForAliases() {
     .sort((a, b) => a.localeCompare(b));
 }
 
-function testAliasModels(btn) {
-  const models = testModelsForAliases();
-  if (!models.length) {
-    showToast("请先添加至少一个模型映射", "error");
+function testAliasModel(btn) {
+  const row = btn.closest("tr");
+  const aliasName = String(
+    row?.querySelector('[data-field="key"]')?.value || "",
+  ).trim();
+  if (!aliasName) {
+    showToast("请先填写映射模型名", "error");
     return;
   }
+  const models = testModelsForAliases();
+  if (!models.includes(aliasName)) {
+    showToast("请为 " + aliasName + " 添加至少一个上游模型", "error");
+    return;
+  }
+  // 让当前行的映射默认出现在下拉框首位，同时仍可切换到其他映射。
+  const ordered = [aliasName, ...models.filter((name) => name !== aliasName)];
   openModelTestPopover(btn, {
     mode: "alias",
-    models,
-    sourceLabel: "模型映射",
-    sourceMeta: models.length + " 个映射 · 按权重选择上游",
+    models: ordered,
+    sourceLabel: aliasName,
+    sourceTitle: aliasName,
+    sourceMeta: "模型映射 · 按权重选择上游",
   });
 }
 
@@ -3353,6 +3364,14 @@ function changeModelTestModel(select) {
       label.innerHTML = ICONS.layers + esc(modelLabel);
       label.title = modelLabel;
     });
+  if (pop._modelTestMode === "alias") {
+    const source = pop.querySelector("[data-model-test-source]");
+    if (source) {
+      const label = model || "模型映射";
+      source.textContent = label;
+      source.title = label;
+    }
+  }
   resetModelTestRoute(pop);
   setModelTestStatus(pop, model ? "就绪" : modelTestEmptyStatus(pop), "idle");
   updateModelTestControls(pop);
@@ -5851,13 +5870,26 @@ function renderAliasTable() {
         '<td class="col-reasoning">' +
         reasoningSwitchHtml(!!entry.with_reasoning) +
         "</td>" +
-        '<td class="action-cell"><button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
+        '<td class="action-cell">' +
+        aliasTestButtonHtml(k) +
+        '<button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
         ICONS.trash +
         "</button></td>" +
         "</tr>"
       );
     })
     .join("");
+}
+
+function aliasTestButtonHtml(aliasName) {
+  const label = aliasName ? "测试 " + aliasName + " 映射的模型" : "测试该映射的模型";
+  return (
+    '<button class="btn-icon model-test-btn" onclick="testAliasModel(this)" title="测试模型" aria-label="' +
+    escAttr(label) +
+    '">' +
+    ICONS.gauge +
+    "</button>"
+  );
 }
 
 function addAliasRow() {
@@ -5875,7 +5907,9 @@ function addAliasRow() {
       '<td class="col-reasoning">' +
       reasoningSwitchHtml(false) +
       "</td>" +
-      '<td class="action-cell"><button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
+      '<td class="action-cell">' +
+      aliasTestButtonHtml("") +
+      '<button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
       ICONS.trash +
       "</button></td>" +
       "</tr>",
