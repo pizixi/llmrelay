@@ -49,13 +49,25 @@ func requestCapabilities(body []byte, client WireProtocol) []Capability {
 			}
 		}
 	}
-	if _, exists := fields["response_format"]; exists {
-		add(CapabilityStructuredOutput)
+	// format 才声明输出约束；text.verbosity 和 output_config.effort
+	// 分别控制详细程度和推理，不能据此外推结构化输出能力。
+	var outputFormat any
+	switch client {
+	case WireChat:
+		outputFormat = fields["response_format"]
+	case WireResponses:
+		if text, ok := fields["text"].(map[string]any); ok {
+			outputFormat = text["format"]
+		}
+	case WireAnthropic:
+		if config, ok := fields["output_config"].(map[string]any); ok {
+			outputFormat = config["format"]
+			if effort, _ := config["effort"].(string); strings.TrimSpace(effort) != "" {
+				add(CapabilityReasoning)
+			}
+		}
 	}
-	if _, exists := fields["text"]; exists {
-		add(CapabilityStructuredOutput)
-	}
-	if _, exists := fields["output_config"]; exists {
+	if format, ok := outputFormat.(map[string]any); ok && format["type"] != nil && format["type"] != "" && format["type"] != "text" {
 		add(CapabilityStructuredOutput)
 	}
 	if _, exists := fields["prompt_cache_key"]; exists {

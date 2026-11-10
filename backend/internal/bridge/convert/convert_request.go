@@ -6,6 +6,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"llmrelay/backend/internal/bridge"
 )
 
 // ======================== Thinking/Reasoning 判断 ========================
@@ -602,6 +604,12 @@ func OpenAIToAnthropicRequestWithError(body []byte) ([]byte, error) {
 		}
 	}
 
+	if format, _ := bridge.OpenAIOutputFormatToAnthropic(req["response_format"], "response_format"); format != nil {
+		outputConfig, _ := claudeReq["output_config"].(map[string]any)
+		outputConfig = CloneAnyMap(outputConfig)
+		outputConfig["format"] = format
+		claudeReq["output_config"] = outputConfig
+	}
 	result, _ := json.Marshal(claudeReq)
 	return result, nil
 }

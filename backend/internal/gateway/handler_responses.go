@@ -225,10 +225,11 @@ func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 			chatReq.AdditionalFields["logprobs"] = true
 		}
 	}
+	// 网关搜索回退也会使用 Chat 中间表示，所有上游都需要保留输出格式。
+	if responseFormat, _ := responsesTextToChatResponseFormat(requestFields["text"]); responseFormat != nil {
+		chatReq.AdditionalFields["response_format"] = responseFormat
+	}
 	if upstream.APIType == UpstreamOpenAI {
-		if responseFormat, _ := responsesTextToChatResponseFormat(requestFields["text"]); responseFormat != nil {
-			chatReq.AdditionalFields["response_format"] = responseFormat
-		}
 		if textConfig, ok := requestFields["text"].(map[string]any); ok {
 			if verbosity, exists := textConfig["verbosity"]; exists && verbosity != nil {
 				chatReq.AdditionalFields["verbosity"] = verbosity

@@ -555,6 +555,17 @@ func PrepareAnthropicPassthroughBodyWithReasoning(body []byte, modelID string, f
 				delete(req, "thinking")
 				changed = true
 			}
+			// output_config 同时承载推理强度和输出格式；关闭推理只移除
+			// effort，不能删除同级的 format 或供应商扩展。
+			if config, ok := req["output_config"].(map[string]any); ok {
+				if _, exists := config["effort"]; exists {
+					delete(config, "effort")
+					if len(config) == 0 {
+						delete(req, "output_config")
+					}
+					changed = true
+				}
+			}
 		}
 		return changed
 	})

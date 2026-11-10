@@ -612,6 +612,15 @@ func TestResponsesHandlerNegotiatesNativeBeforeFallback(t *testing.T) {
 		var mu sync.Mutex
 		upstreamCalls := 0
 		upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			text, _ := request["text"].(map[string]any)
+			format, _ := text["format"].(map[string]any)
+			if format["type"] != "json_schema" || format["strict"] != true || format["schema"] == nil {
+				t.Errorf("native search or fallback round lost output format: %#v", request)
+			}
 			mu.Lock()
 			upstreamCalls++
 			call := upstreamCalls
@@ -643,7 +652,8 @@ func TestResponsesHandlerNegotiatesNativeBeforeFallback(t *testing.T) {
 		configMu.Unlock()
 
 		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
-			"model":"matrix-public-model","input":"find fallback fact","tools":[{"type":"web_search"}]
+			"model":"matrix-public-model","input":"find fallback fact","tools":[{"type":"web_search"}],
+			"text":{"format":{"type":"json_schema","name":"answer","strict":true,"schema":{"type":"object","properties":{},"additionalProperties":false}}}
 		}`))
 		response := httptest.NewRecorder()
 		responsesHandler(response, request)

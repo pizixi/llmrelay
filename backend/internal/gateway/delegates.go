@@ -175,6 +175,10 @@ func responsesTextToChatResponseFormat(value any) (map[string]any, []BridgeWarni
 	return convert.ResponsesTextToChatResponseFormat(value)
 }
 
+func anthropicOutputConfigToChatResponseFormat(value any) (map[string]any, []BridgeWarning) {
+	return bridge.AnthropicOutputConfigToChatResponseFormat(value)
+}
+
 func downgradeRejectedChatOptions(body []byte, status int) ([]byte, []BridgeWarning, bool) {
 	return convert.DowngradeRejectedChatOptions(body, status)
 }

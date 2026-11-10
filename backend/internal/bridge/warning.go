@@ -325,6 +325,8 @@ func chatBridgeWarnings(req *OpenAIRequest, upstream *UpstreamConfig) []BridgeWa
 		return nil
 	}
 	var warnings []BridgeWarning
+	_, formatWarnings := OpenAIOutputFormatToAnthropic(req.AdditionalFields["response_format"], "response_format")
+	warnings = appendBridgeWarnings(warnings, formatWarnings)
 	if value, exists := req.AdditionalFields["service_tier"]; exists && value != nil {
 		_, recognized, approximated := anthropicServiceTierFromOpenAI(value)
 		switch {

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"llmrelay/backend/internal/bridge"
 )
 
 // ======================== Responses 接口 ========================
@@ -1200,11 +1202,33 @@ func ResponsesBridgeRequestWarningsForUpstream(fields map[string]any, upstream *
 		if upstream != nil && upstream.APIType == UpstreamOpenAI {
 			_, textWarnings := ResponsesTextToChatResponseFormat(textConfig)
 			warnings = AppendBridgeWarnings(warnings, textWarnings)
+		} else if upstream != nil && upstream.APIType == UpstreamAnthropic {
+			_, textWarnings := ResponsesTextToAnthropicOutputFormat(textConfig)
+			warnings = AppendBridgeWarnings(warnings, textWarnings)
 		} else {
 			add("request_field_ignored", "text", "request field \"text\" is unavailable on the selected non-Responses upstream and was ignored")
 		}
 	}
 	return warnings
+}
+
+// ResponsesTextToAnthropicOutputFormat 分别处理输出格式与文本提示，避免因不支持
+// verbosity 而连同可无损转换的 JSON Schema 一起丢弃。
+func ResponsesTextToAnthropicOutputFormat(value any) (map[string]any, []BridgeWarning) {
+	if value == nil {
+		return nil, nil
+	}
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil, AppendBridgeWarning(nil, BridgeWarning{Code: "request_field_ignored", Path: "text", Message: "Responses text configuration must be an object and was ignored"})
+	}
+	format, warnings := bridge.OpenAIOutputFormatToAnthropic(config["format"], "text.format")
+	for key, value := range config {
+		if key != "format" && value != nil {
+			warnings = AppendBridgeWarning(warnings, BridgeWarning{Code: "request_field_ignored", Path: "text." + key, Message: fmt.Sprintf("Responses text option %q has no Anthropic equivalent and was ignored", key)})
+		}
+	}
+	return format, warnings
 }
 
 // ResponsesTextToChatResponseFormat 将 Responses 文本配置中的结构化输出部分
@@ -1297,6 +1321,7 @@ func ResponsesRequestEchoFields(fields map[string]any) map[string]any {
 	echo := map[string]any{}
 	for _, field := range []string{
 		"instructions", "max_output_tokens", "metadata", "reasoning", "store", "temperature", "top_p",
+		"text",
 	} {
 		if value, exists := fields[field]; exists {
 			echo[field] = value

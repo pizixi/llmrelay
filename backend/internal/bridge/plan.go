@@ -184,8 +184,9 @@ func NativeCapabilities(protocol WireProtocol) map[Capability]bool {
 	case WireAnthropic:
 		profile = map[Capability]bool{
 			CapabilityStreaming: true, CapabilityToolCalls: true,
-			CapabilityReasoning: true, CapabilityHostedWebSearch: true,
-			CapabilityPromptCaching: true,
+			CapabilityReasoning: true, CapabilityStructuredOutput: true,
+			CapabilityHostedWebSearch: true,
+			CapabilityPromptCaching:   true,
 		}
 	case WireResponses:
 		profile = map[Capability]bool{

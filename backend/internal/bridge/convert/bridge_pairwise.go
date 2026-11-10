@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"llmrelay/backend/internal/bridge"
 )
 
 func DecodeBridgeObject(body []byte) (map[string]any, error) {
@@ -417,6 +419,11 @@ func ConvertAnthropicRequestToResponsesDirect(body []byte, model string, forward
 	if stops := BridgeArray(request["stop_sequences"]); len(stops) > 0 {
 		warnings = AppendPairwiseWarning(warnings, "stop_sequences_ignored", "stop_sequences", "Anthropic stop sequences are unavailable on the Responses API")
 	}
+	format, formatWarnings := bridge.AnthropicOutputFormatToOpenAI(request["output_config"])
+	warnings = AppendBridgeWarnings(warnings, formatWarnings)
+	if format != nil {
+		result["text"] = map[string]any{"format": format}
+	}
 	encoded, err := json.Marshal(result)
 	return encoded, warnings, err
 }
@@ -731,6 +738,14 @@ func ConvertResponsesRequestToAnthropicDirect(body []byte, model string, forward
 	_, explicitMax := request["max_output_tokens"]
 	if err := FitAnthropicThinkingBudget(result, explicitMax); err != nil {
 		return nil, nil, warnings, err
+	}
+	format, formatWarnings := ResponsesTextToAnthropicOutputFormat(request["text"])
+	warnings = AppendBridgeWarnings(warnings, formatWarnings)
+	if format != nil {
+		outputConfig, _ := result["output_config"].(map[string]any)
+		outputConfig = CloneAnyMap(outputConfig)
+		outputConfig["format"] = format
+		result["output_config"] = outputConfig
 	}
 	encoded, err := json.Marshal(result)
 	return encoded, mappings, warnings, err

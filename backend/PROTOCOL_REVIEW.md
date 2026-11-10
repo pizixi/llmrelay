@@ -1,6 +1,58 @@
 # 三协议转换审查与优化记录
 
-核查日期：2026-11-04。文档依据为当日实际读取的在线官方文档；开源参照固定到下面列出的修订，避免后续 `main` 更新后无法复核。
+首次核查日期：2026-11-04；结构化输出复查日期：2026-11-10。各轮依据均为当日实际读取的在线官方文档；开源参照固定到对应修订，避免后续 `main` 更新后无法复核。
+
+## 2026-11-10：结构化输出与能力告警复查
+
+### 日志根因
+
+针对 `anthropic / capability_downgraded / capabilities.structured_output / the client protocol does not expose the complete upstream capability`，检查发现：
+
+1. `gateway/requestCapabilities` 原先只要发现 `output_config` 就声明需要结构化输出，没有区分 `output_config.effort` 和 `output_config.format`。Responses 的 `text.verbosity`、显式普通文本和空配置也存在相同误判。
+2. `bridge/NativeCapabilities` 没有登记 Anthropic 现已支持的 JSON Schema 输出，导致来自 Anthropic 的请求被判为客户端无法表达该能力；严格模式甚至会拒绝 Anthropic 同协议请求。
+3. Anthropic ↔ Chat、Anthropic ↔ Responses 的请求适配器缺少输出 Schema 映射，Responses 的告警收集还会将整个 `text` 判为不支持。实际请求带有 Schema 时，除了误报还会存在真实的约束丢失。
+
+仅凭这条日志不能确定当时是否携带了 `format`：只有 `effort` 时属于能力误判，携带 Schema 时还可能命中第三项。`已抑制=31` 来自日志的五分钟去重窗口，表示此前抑制了 31 条同类警告，不表示 31 次上游请求失败。此次修正保留去重与真实有损告警。
+
+### 官方文档与开源对照
+
+截至本次复查，官方文档中的输出格式如下：
+
+| 协议 | JSON Schema 请求位置 | 本次处理 |
+|---|---|---|
+| OpenAI Chat Completions | `response_format.json_schema` | 保留现有 Chat ↔ Responses 映射，补齐 Anthropic 双向映射 |
+| OpenAI Responses | `text.format`，Schema 元数据平铺 | 格式独立于 `text.verbosity` 转换，回传原始 `text` 配置 |
+| Anthropic Messages | `output_config.format`，`type: "json_schema"` | 与同级 `effort` 分开处理，补齐协议能力登记 |
+
+- [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) 与 [Responses Create](https://developers.openai.com/api/reference/resources/responses/methods/create)：区分 Schema 输出、无 Schema 的 JSON mode 和普通文本；Chat 与 Responses 的格式外层结构不同。
+- [Anthropic Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)：通过 `output_config.format` 声明 JSON Schema，JSON 结果仍位于文本内容块；工具 `strict` 与最终文本输出格式是两项独立设置。该文档还列明了 Schema 子集和约束限制。
+- [LiteLLM Anthropic transformation，修订 02d610f](https://github.com/BerriAI/litellm/blob/02d610f1a9e410e2f43d24431083f84f7d2158bd/litellm/llms/anthropic/chat/transformation.py)：对照原生 Schema 输出选择，以及处理 effort 时独立保留 format 的方式。该实现还包含旧版 `output_format`、Schema 改写和工具模拟；本项目本轮采用当前官方字段，保留客户端 Schema，由上游验证，不引入这些改写或工具模拟。
+- [CLIProxyAPI Chat → Claude 请求转换，修订 6e6afab](https://github.com/router-for-me/CLIProxyAPI/blob/6e6afab99a1939525ecb6bb1f0873c8e7a9df877/internal/translator/claude/openai/chat-completions/claude_openai_request.go)：对照 adaptive thinking、函数工具 `strict` 和并行工具选择的分开处理。此文件没有提供可直接套用的当前 `response_format` → `output_config.format` 映射，字段定义仍以官方文档为准。
+
+本轮没有复制第三方源码。
+
+### 已完成改动与边界
+
+- 能力检测检查实际 `format.type`；`effort` 只声明推理能力，`verbosity`、普通文本、空值不再声明结构化输出。Anthropic 能力表增加结构化输出。
+- 通过共享适配器补齐四个涉及 Anthropic 的方向。转入 OpenAI 时补齐必需的 Schema 名称 `response` 和 `strict:true`；转入 Anthropic 时保留 Schema，并与 adaptive thinking 生成的 `effort` 合并。
+- 删除“Anthropic 不支持整个 Responses text”的过时判断；其他文本选项逐项告警。Schema 内的 `$defs`、`$ref`、枚举、描述及对象约束不因供应商适配而删除。
+- 关闭别名推理时，原生 Anthropic 请求只删除 `thinking`、`output_config.effort`，保留 `format` 和其他扩展。Responses 经搜索回退使用 Chat 中间表示时，各轮保留输出格式。
+- 转换生成的 Responses JSON 和 SSE 终态回传请求中的 `text` 配置。
+
+能力表表示协议具备表达方式，不承诺 `deepseek-v4.1-flash` 或某个中转商接受全部参数。三种 API 的 Schema 子集、可选属性和严格校验规则也不完全相同；网关不删除约束来换取上游接受，也不做本地 Schema 校验或输出重试。
+
+Anthropic 没有等价的无 Schema `json_object` 模式；本轮在 compatible 模式中明确告警并省略该格式，在 strict 模式中于调用上游前拒绝。显式 `strict:false` 转入 Anthropic 时会改为原生强制 Schema 校验，因此同样告警或拒绝。OpenAI 格式外层的 `description` 没有 Anthropic 对应字段，会给出提示；Schema 内部描述继续保留。
+
+### 回归验证
+
+新增测试先复现原始误判、漏传和严格模式误拒绝，再验证修正：
+
+- `TestStructuredOutputAcrossProtocolMatrix`：3×3×流式/非流式×compatible/strict，共 36 组；检查上游 Schema、OpenAI 名称与严格度、无误报，以及转换后的 Responses 配置回传。
+- `TestAnthropicOutputEffortAndFormatRemainIndependent`：三种上游×推理开关×是否携带 Schema，共 12 组；复现 effort-only 告警，并确认关闭推理不影响格式。
+- `TestUnsupportedOutputFormatStillWarnsOrRejects`：两种 OpenAI 客户端×三种有损格式×两种模式，共 12 组；确认真实损失仍可观测，严格模式的上游调用数为零。
+- `TestRequestCapabilitiesSeparatesOutputFormatFromReasoning`：检查 11 种格式、推理及空值组合。已有搜索回退测试增加每轮输出格式检查。
+
+执行 `go test ./... -count=1` 和 `go vet ./...`。验证使用本地模拟上游，不调用真实中转商，也不替代具体模型的线上验收。下文保留 2026-11-04 的原始审查记录。
 
 ## 实现与审查范围
 

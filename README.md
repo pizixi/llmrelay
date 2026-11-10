@@ -96,6 +96,8 @@ LLM Relay 是一个轻量级 LLM 网关。它对外提供 OpenAI Chat Completion
 
 模式可以在上游配置中设置，也可通过请求头 `X-Llm2api-Bridge-Mode` 指定 `strict`。请求头严格模式优先。
 
+JSON Schema 输出会在 Chat 的 `response_format`、Responses 的 `text.format` 和 Anthropic 的 `output_config.format` 之间转换。Anthropic 的 `output_config.effort` 单独控制推理，不会触发结构化输出降级告警；关闭别名推理时仍保留输出格式。无 Schema 的 `json_object`、显式 `strict:false` 等无法等价转入 Anthropic 的设置仍会告警或被 strict 模式拒绝。具体模型的 Schema 支持范围由上游验证，详见[协议审查记录](backend/PROTOCOL_REVIEW.md)。
+
 协议转换不要求额外维护供应商能力列表。网关按客户端协议与上游 `api_type` 自动选择同协议透传或直接转换；Responses 映射到 Chat 时会先发送当前 Chat 标准字段。如果兼容上游以 400/422 拒绝 `verbosity` 或 Prompt Cache 提示字段，compatible 模式会自动移除这些可选字段并重试一次，同时返回信息级桥接告警。
 
 ### Hosted Web Search 自动协商

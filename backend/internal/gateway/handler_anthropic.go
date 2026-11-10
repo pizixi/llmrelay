@@ -146,6 +146,13 @@ func ClaudeMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		chatReq.AdditionalFields["metadata"] = claudeReq.Metadata
 	}
 	var bridgeWarnings []BridgeWarning
+	format, formatWarnings := anthropicOutputConfigToChatResponseFormat(claudeReq.OutputConfig)
+	if format != nil {
+		chatReq.AdditionalFields["response_format"] = format
+	}
+	if decision.Upstream == WireChat || useWebSearchFallback {
+		bridgeWarnings = appendBridgeWarnings(bridgeWarnings, formatWarnings)
+	}
 	if claudeReq.ServiceTier != nil {
 		if mapped, recognized := openAIServiceTierFromAnthropic(claudeReq.ServiceTier); recognized {
 			chatReq.AdditionalFields["service_tier"] = mapped
