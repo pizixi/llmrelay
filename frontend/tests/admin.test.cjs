@@ -161,7 +161,7 @@ test("已分类的增量只进入对应的正文或思考通道一次", () => {
 });
 
 // 保留真实的请求、流读取和重试流程，仅替换与这些行为无关的页面渲染。
-async function runModelTestResponses(bodies) {
+async function runModelTestResponses(bodies, options = {}) {
   const element = () => {
     const children = new Map();
     return {
@@ -193,15 +193,18 @@ async function runModelTestResponses(bodies) {
     if (text) pop._modelTestOutputMarkdown += text;
   };
   const requests = [];
-  context.apiFetch = async (url, options) => {
+  context.apiFetch = async (url, requestOptions) => {
     assert.equal(url, "/api/test-model");
-    requests.push(JSON.parse(options.body));
-    return new Response(bodies[Math.min(requests.length - 1, bodies.length - 1)]);
+    requests.push(JSON.parse(requestOptions.body));
+    return new Response(bodies[Math.min(requests.length - 1, bodies.length - 1)], {
+      headers: options.headers || {},
+    });
   };
   const pop = element();
-  pop._modelTestUpstream = "target";
+  pop._modelTestMode = options.mode || "upstream";
+  pop._modelTestUpstream = options.mode === "alias" ? "" : "target";
   pop.querySelector(".model-test-input").value = "你好";
-  pop.querySelector(".model-test-model-select").value = "test-model";
+  pop.querySelector(".model-test-model-select").value = options.model || "test-model";
   await context.runModelTest({ closest: () => pop });
   const turn = pop._modelTestActiveTurn;
   return {
@@ -211,6 +214,7 @@ async function runModelTestResponses(bodies) {
     history: JSON.parse(JSON.stringify(pop._modelTestMessages || [])),
     errors: (turn.added || []).map((child) => child.textContent),
     metrics: turn.querySelector(".model-test-turn-status").textContent,
+    route: pop.querySelector("[data-model-test-route]").textContent,
   };
 }
 
@@ -259,4 +263,20 @@ test("完整 JSON 回答进入上下文，HTTP 200 内的上游错误保留且�
   assert.equal(failure.state, "error");
   assert.ok(failure.errors.some((message) => message.includes("bad test key")));
   assert.equal(failure.history.length, 0);
+});
+
+test("模型映射测试通过别名请求并展示本次实际路由", async () => {
+  const answer = 'data: {"choices":[{"delta":{"content":"你好！"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+  const result = await runModelTestResponses([answer], {
+    mode: "alias",
+    model: "mapped-model",
+    headers: {
+      "X-Model-Test-Upstream": "primary",
+      "X-Model-Test-Model": "real-model",
+    },
+  });
+  assert.equal(result.requests.length, 1);
+  assert.equal(result.requests[0].alias, "mapped-model");
+  assert.equal(result.requests[0].upstream, undefined);
+  assert.equal(result.route, "→ primary / real-model");
 });

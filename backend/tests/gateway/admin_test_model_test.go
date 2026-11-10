@@ -165,6 +165,75 @@ func TestAdminTestModelStreamsConfiguredProtocol(t *testing.T) {
 	}
 }
 
+func TestAdminTestModelResolvesModelAliasTarget(t *testing.T) {
+	var gotModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	installAdminModelTestUpstream(t, "target", &UpstreamConfig{
+		BaseURL: server.URL + "/v1",
+		APIKey:  "test-key",
+		APIType: UpstreamOpenAI,
+	})
+	configMu.Lock()
+	oldAliases := modelAlias
+	modelAlias = map[string]ModelAlias{
+		"mapped-model": {Targets: []ModelAliasTarget{{
+			Upstream:    "target",
+			TargetModel: "real-model",
+			Weight:      1,
+			Enabled:     true,
+		}}},
+	}
+	configMu.Unlock()
+	t.Cleanup(func() {
+		configMu.Lock()
+		modelAlias = oldAliases
+		configMu.Unlock()
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/test-model", strings.NewReader(`{"alias":"mapped-model","prompt":"hello"}`))
+	adminTestModelHandler(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if gotModel != "real-model" {
+		t.Fatalf("upstream model=%q, want mapped target", gotModel)
+	}
+	if recorder.Header().Get("X-Model-Test-Upstream") != "target" {
+		t.Fatalf("route upstream header=%q", recorder.Header().Get("X-Model-Test-Upstream"))
+	}
+	if recorder.Header().Get("X-Model-Test-Model") != "real-model" {
+		t.Fatalf("route model header=%q", recorder.Header().Get("X-Model-Test-Model"))
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"ok"`) {
+		t.Fatalf("unexpected stream: %s", recorder.Body.String())
+	}
+}
+
+func TestAdminTestModelRejectsUnknownAlias(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/test-model", strings.NewReader(`{"alias":"missing","prompt":"hello"}`))
+	adminTestModelHandler(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "model alias not found") {
+		t.Fatalf("unexpected body: %s", recorder.Body.String())
+	}
+}
+
 func TestAdminTestModelReturnsUpstreamFailureDetailsWithoutRetry(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

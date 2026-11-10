@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"llmrelay/backend/internal/auth"
 	"llmrelay/backend/internal/bridge"
 	catalogpkg "llmrelay/backend/internal/catalog"
+	"llmrelay/backend/internal/config"
 	"llmrelay/backend/internal/stats"
 )
 
@@ -203,7 +205,11 @@ func AdminSyncModelsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminModelTestRequest struct {
-	Upstream string                  `json:"upstream"`
+	Upstream string `json:"upstream"`
+	// Alias tests a configured model mapping instead of a single upstream model.
+	// The target upstream and model are resolved with the same weighted routing
+	// used by real gateway requests.
+	Alias    string                  `json:"alias"`
 	Model    string                  `json:"model"`
 	Prompt   string                  `json:"prompt"`
 	Messages []adminModelTestMessage `json:"messages"`
@@ -329,29 +335,56 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Upstream = strings.TrimSpace(input.Upstream)
+	input.Alias = strings.TrimSpace(input.Alias)
 	input.Model = strings.TrimSpace(input.Model)
 	input.Prompt = strings.TrimSpace(input.Prompt)
-	if input.Upstream == "" || input.Model == "" || input.Prompt == "" && len(input.Messages) == 0 {
-		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "upstream, model and prompt or messages are required"})
+	if (input.Alias == "" && (input.Upstream == "" || input.Model == "")) ||
+		(input.Prompt == "" && len(input.Messages) == 0) {
+		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "alias or upstream and model, plus prompt or messages, are required"})
 		return
 	}
 	if input.Messages != nil && !validModelTestMessages(input.Messages) {
 		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "messages must alternate user and assistant, end with user, and contain at most 41 messages and 32768 characters"})
 		return
 	}
-	if len(input.Upstream) > 128 || len(input.Model) > 512 || utf8.RuneCountInString(input.Prompt) > 32768 {
-		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "upstream, model or prompt is too long"})
+	if len(input.Upstream) > 128 || len(input.Alias) > 512 || len(input.Model) > 512 || utf8.RuneCountInString(input.Prompt) > 32768 {
+		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "alias, upstream, model or prompt is too long"})
 		return
 	}
 
-	upstreams, _ := getConfiguredUpstreams()
-	upstream := upstreams[input.Upstream]
-	if upstream == nil {
-		writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "upstream not found"})
-		return
+	upstreamName := input.Upstream
+	model := input.Model
+	var upstream *UpstreamConfig
+	if input.Alias != "" {
+		resolvedModel, _, resolvedUpstreamName, resolvedUpstream, aliasMatched, matched := config.ResolveRequestModel(input.Alias)
+		if !aliasMatched {
+			writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "model alias not found: " + input.Alias})
+			return
+		}
+		if !matched || resolvedUpstream == nil || resolvedModel == "" {
+			writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "model alias has no active target: " + input.Alias})
+			return
+		}
+		upstreamName = resolvedUpstreamName
+		model = resolvedModel
+		upstream = resolvedUpstream
+	} else {
+		upstreams, _ := getConfiguredUpstreams()
+		upstream = upstreams[input.Upstream]
+		if upstream == nil {
+			writeAdminJSON(w, http.StatusNotFound, map[string]any{"error": "upstream not found"})
+			return
+		}
 	}
 	zeroRetries := 0
 	upstream.MaxRetries = &zeroRetries
+	if input.Alias != "" {
+		// 映射可能按权重指向不同上游；用响应头回传本次实际路由，便于
+		// 管理页展示（失败时也能定位是哪个目标出错）。名称可能包含
+		// 非 ASCII 字符，先转义再写入 Header。
+		w.Header().Set("X-Model-Test-Upstream", url.PathEscape(upstreamName))
+		w.Header().Set("X-Model-Test-Model", url.PathEscape(model))
+	}
 
 	// 测试请求不再限制输出额度后，推理型模型可能持续生成较长时间；
 	// 客户端断开时 r.Context() 会立即取消，因此这里放宽总超时即可。
@@ -359,9 +392,9 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	body, status, _, callErr := callPreparedUpstreamStream(
 		ctx,
-		modelTestRequestBody(upstream.APIType, input.Model, input.Prompt, input.Messages),
-		input.Upstream,
-		input.Model,
+		modelTestRequestBody(upstream.APIType, model, input.Prompt, input.Messages),
+		upstreamName,
+		model,
 		upstream,
 		true,
 	)
@@ -375,6 +408,9 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 			"error":           modelTestErrorMessage(errorBody, callErr),
 			"upstream_status": status,
 			"api_type":        upstream.APIType,
+			"alias":           input.Alias,
+			"upstream":        upstreamName,
+			"model":           model,
 		})
 		return
 	}
@@ -383,7 +419,7 @@ func AdminTestModelHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Upstream-Status", strconv.Itoa(status))
 	// 管理页模型测试只用于连通性/效果验证，不属于真实业务调用，
 	// 因此显式关闭用量统计，避免写入“使用记录”。
-	proxyAdminModelTestResponse(w, body, upstream.APIType, input.Model)
+	proxyAdminModelTestResponse(w, body, upstream.APIType, model)
 }
 
 func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {

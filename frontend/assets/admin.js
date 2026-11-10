@@ -2942,17 +2942,24 @@ function buildModelTestTurnHtml(model) {
     ICONS.copy + '</button></div></section>';
 }
 
-function buildModelTestPopoverHtml(upstreamName, models, apiType) {
+function buildModelTestPopoverHtml(options) {
+  const models = options.models || [];
+  const mode = options.mode || "upstream";
   const model = models[0] || "";
-  const modelLabel = model || "暂无可测试模型";
+  const modelLabel = model || (mode === "alias" ? "暂无可测试模型映射" : "暂无可测试模型");
+  const readyLabel = model
+    ? "就绪"
+    : mode === "alias"
+      ? "请先添加模型映射"
+      : "请先同步模型";
   return (
     '<div class="model-test-header">' +
     '<div class="model-test-heading"><span class="model-test-mark">' +
     ICONS.sparkles +
     '</span><div><h2 id="modelTestTitle">模型对话</h2><div class="model-test-meta"><span title="' +
-    escAttr(upstreamName) + '">' + esc(upstreamName) +
-    '</span><i aria-hidden="true"></i><span>' +
-    esc(upstreamProtocolLabel(apiType)) +
+    escAttr(options.sourceTitle || options.sourceLabel || "") + '">' + esc(options.sourceLabel || "") +
+    '</span><i aria-hidden="true"></i><span data-model-test-route title="' +
+    escAttr(options.sourceMeta || "") + '">' + esc(options.sourceMeta || "") +
     '</span></div></div></div>' +
     '<div class="model-test-header-actions"><div class="model-test-model-picker"><span class="model-test-model-icon" aria-hidden="true">' + ICONS.layers +
     '</span><select class="model-test-model-select m-select" aria-label="选择测试模型" onchange="changeModelTestModel(this)">' + buildModelTestOptionsHtml(models, model) + '</select></div>' +
@@ -2975,7 +2982,7 @@ function buildModelTestPopoverHtml(upstreamName, models, apiType) {
     '<textarea class="model-test-input" rows="2" maxlength="32768" aria-label="对话消息" oninput="updateModelTestControls(this); resizeModelTestInput(this)" onkeydown="handleModelTestKeydown(event)" placeholder="输入问题，和模型开始对话…"></textarea>' +
     '<div class="model-test-composer-bar"><span class="model-test-context"><i></i><span data-model-test-context>上下文已开启</span></span>' +
     '<div class="model-test-actions"><span class="model-test-status" data-state="idle" role="status"><i></i><span>' +
-    (model ? "就绪" : "请先同步模型") +
+    readyLabel +
     '</span></span>' +
     '<button type="button" class="model-test-control model-test-stop" onclick="stopModelTestGeneration(this)" title="停止生成" aria-label="停止生成" disabled hidden>' +
     ICONS.stop +
@@ -3001,9 +3008,45 @@ function testUpstreamModel(btn) {
   collectUpstreams();
   const apiType = String(upstreamData[upstreamName]?.api_type || "openai");
   const models = testModelsForUpstream(upstreamName);
+  openModelTestPopover(btn, {
+    mode: "upstream",
+    models,
+    sourceLabel: upstreamName,
+    sourceMeta: upstreamProtocolLabel(apiType),
+  });
+}
+
+// 模型映射测试复用上游模型测试的对话窗口，但请求通过模型别名解析，
+// 从而验证真实的路由目标，而不是直接指定某个上游模型。
+function testModelsForAliases() {
+  collectAliases();
+  return Object.keys(aliasData || {})
+    .filter(
+      (name) =>
+        normalizeAliasTargets(aliasData[name]?.targets || []).length > 0,
+    )
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function testAliasModels(btn) {
+  const models = testModelsForAliases();
+  if (!models.length) {
+    showToast("请先添加至少一个模型映射", "error");
+    return;
+  }
+  openModelTestPopover(btn, {
+    mode: "alias",
+    models,
+    sourceLabel: "模型映射",
+    sourceMeta: models.length + " 个映射 · 按权重选择上游",
+  });
+}
+
+function openModelTestPopover(btn, options) {
+  const models = options.models || [];
   const testPop = openPopover(
     btn,
-    buildModelTestPopoverHtml(upstreamName, models, apiType),
+    buildModelTestPopoverHtml(options),
     () => disposeModelTest(testPop),
   );
   testPop.classList.add("model-test-popover");
@@ -3011,8 +3054,11 @@ function testUpstreamModel(btn) {
   testPop.setAttribute("role", "dialog");
   testPop.setAttribute("aria-modal", "true");
   testPop.setAttribute("aria-labelledby", "modelTestTitle");
-  testPop._modelTestUpstream = upstreamName;
+  testPop._modelTestMode = options.mode || "upstream";
+  testPop._modelTestUpstream =
+    testPop._modelTestMode === "upstream" ? options.sourceLabel || "" : "";
   testPop._modelTestModel = models[0] || "";
+  testPop._modelTestDefaultMeta = options.sourceMeta || "";
   testPop._modelTestRunning = false;
   testPop._modelTestMessages = [];
   testPop._modelTestStickToBottom = true;
@@ -3284,10 +3330,11 @@ function resetModelTestConversation(pop) {
   pop.querySelector(".model-test-followups").hidden = true;
   pop.querySelector(".model-test-scroll-latest").hidden = true;
   pop.querySelector(".model-test-conversation").scrollTop = 0;
+  resetModelTestRoute(pop);
   updateModelTestContext(pop);
   setModelTestStatus(
     pop,
-    pop._modelTestModel ? "就绪" : "请先同步模型",
+    pop._modelTestModel ? "就绪" : modelTestEmptyStatus(pop),
     "idle",
   );
 }
@@ -3306,7 +3353,8 @@ function changeModelTestModel(select) {
       label.innerHTML = ICONS.layers + esc(modelLabel);
       label.title = modelLabel;
     });
-  setModelTestStatus(pop, model ? "就绪" : "请先同步模型", "idle");
+  resetModelTestRoute(pop);
+  setModelTestStatus(pop, model ? "就绪" : modelTestEmptyStatus(pop), "idle");
   updateModelTestControls(pop);
   pop.querySelector(".model-test-input")?.focus();
 }
@@ -3338,7 +3386,7 @@ function updateModelTestControls(source) {
   const hasModel = Boolean(String(modelSelect?.value || "").trim());
   if (input) {
     input.disabled = !hasModel;
-    input.placeholder = !hasModel ? "请先同步上游模型" : running ? "可先编辑下一条消息…" : pop._modelTestMessages?.length ? "继续提问，模型会结合前文回答…" : "输入问题，和模型开始对话…";
+    input.placeholder = !hasModel ? (pop._modelTestMode === "alias" ? "没有可测试的模型映射" : "请先同步上游模型") : running ? "可先编辑下一条消息…" : pop._modelTestMessages?.length ? "继续提问，模型会结合前文回答…" : "输入问题，和模型开始对话…";
   }
   pop.querySelectorAll("[data-model-test-prompt]").forEach((button) => { button.disabled = running || !hasModel; });
   const newChat = pop.querySelector(".model-test-new-chat");
@@ -4096,7 +4144,7 @@ function modelTestEmptyTextReason(finishReason, hasReasoning, hasToolCalls) {
   return "模型未返回文本，请重试或切换模型";
 }
 
-function modelTestHTTPError(raw, status) {
+function modelTestHTTPError(raw, status, response) {
   let payload;
   try {
     payload = JSON.parse(raw);
@@ -4105,7 +4153,51 @@ function modelTestHTTPError(raw, status) {
   const message =
     (typeof error === "string" ? error : error?.message) || raw || "HTTP " + status;
   const upstreamStatus = payload?.upstream_status;
-  return upstreamStatus ? "上游 HTTP " + upstreamStatus + "：" + message : message;
+  const detail = upstreamStatus
+    ? "上游 HTTP " + upstreamStatus + "：" + message
+    : message;
+  const route = modelTestResponseRoute(response);
+  return route ? route.upstream + " / " + route.model + "：" + detail : detail;
+}
+
+function decodeModelTestHeader(value) {
+  const raw = String(value || "");
+  try {
+    return decodeURIComponent(raw);
+  } catch (e) {
+    return raw;
+  }
+}
+
+function modelTestResponseRoute(response) {
+  const upstream = decodeModelTestHeader(
+    response?.headers?.get?.("X-Model-Test-Upstream"),
+  );
+  const model = decodeModelTestHeader(
+    response?.headers?.get?.("X-Model-Test-Model"),
+  );
+  return upstream && model ? { upstream, model } : null;
+}
+
+function resetModelTestRoute(pop) {
+  const meta = pop?.querySelector("[data-model-test-route]");
+  if (!meta) return;
+  const label = pop._modelTestDefaultMeta || "";
+  meta.textContent = label;
+  meta.title = label;
+}
+
+function showModelTestRoute(pop, route) {
+  if (!pop || !route) return;
+  const meta = pop.querySelector("[data-model-test-route]");
+  if (!meta) return;
+  const target = route.upstream + " / " + route.model;
+  meta.textContent = "→ " + target;
+  meta.title = "本次请求路由到 " + target;
+}
+
+function modelTestEmptyStatus(pop) {
+  return pop?._modelTestMode === "alias" ? "请先添加模型映射" : "请先同步模型";
 }
 
 async function runModelTest(btn) {
@@ -4177,16 +4269,17 @@ async function runModelTest(btn) {
     const response = await apiFetch("/api/test-model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        upstream: pop._modelTestUpstream,
-        model,
-        messages,
-      }),
+      body: JSON.stringify(
+        pop._modelTestMode === "alias"
+          ? { alias: model, messages }
+          : { upstream: pop._modelTestUpstream, model, messages },
+      ),
       signal: controller.signal,
     });
     if (!response.ok) {
-      throw new Error(modelTestHTTPError(await response.text(), response.status));
+      throw new Error(modelTestHTTPError(await response.text(), response.status, response));
     }
+    showModelTestRoute(pop, modelTestResponseRoute(response));
     if (!response.body) throw new Error("当前浏览器不支持流式响应");
 
     setModelTestStatus(pop, "生成中", "running");
