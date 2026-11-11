@@ -139,21 +139,18 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 		frame, err := reader.Next()
 		line := frame.Data
 		if err != nil {
-			if err == io.EOF {
-				if line == "" {
-					break
-				}
-				err = nil
-			} else {
-				// 客户端取消请求（例如 Codex 中断当前轮次）会令上游流读取返回
-				// context.Canceled；这不是上游故障，直接返回，避免噪声日志。
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
-				}
-				log.Printf("读取流失败：%v", err)
-				emitClaudeError(map[string]any{"message": err.Error()}, "failed to read upstream stream")
+			// Reader 已交付所有缓存事件。结束原因后的传输截断不影响已完成的回答；
+			// 继续等待到这里，仍可保留 finish_reason 后的独立用量分块。
+			if errors.Is(err, io.EOF) || (terminalFinishSeen && errors.Is(err, io.ErrUnexpectedEOF)) {
+				break
+			}
+			// 客户端取消请求时直接返回，避免噪声日志。
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
 			}
+			log.Printf("读取流失败：协议=Chat->Anthropic 模型=%q 已收到结束原因=%t 错误=%v", model, terminalFinishSeen, err)
+			emitClaudeError(map[string]any{"message": err.Error()}, "failed to read upstream stream")
+			return
 		}
 		payload, isDataLine := frame.Data, frame.Data != ""
 		if debugMode && debugLogBodies && isDataLine {

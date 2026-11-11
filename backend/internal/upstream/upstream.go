@@ -85,6 +85,7 @@ type ttfbReadCloser struct {
 	model       string
 	keySlot     string
 	exitLabel   string
+	received    int64
 }
 
 func (r *ttfbReadCloser) Read(p []byte) (int, error) {
@@ -103,6 +104,7 @@ func (r *ttfbReadCloser) Read(p []byte) (int, error) {
 		<-timedOut
 	}
 	if n > 0 {
+		r.received += int64(n)
 		r.once.Do(func() {
 			ttfb := time.Since(r.start)
 			log.Printf("[首字节耗时] 上游=%s 模型=%s 密钥=%s 出口=%s 耗时=%s", r.upstream, r.model, r.keySlot, r.exitLabel, ttfb.Round(time.Millisecond))
@@ -114,6 +116,11 @@ func (r *ttfbReadCloser) Read(p []byte) (int, error) {
 		})
 		// 保留独立的超时原因，避免流转换器把它误判为客户端主动取消而静默退出。
 		return n, fmt.Errorf("%w: no data received for %s", errUpstreamStreamIdleTimeout, r.idleTimeout)
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		// 保留错误链，供协议层区分已完成回答的尾部截断和真正的中途断流。
+		// 只记录密钥槽位，不包含密钥或响应正文。
+		return n, fmt.Errorf("upstream stream interrupted (upstream=%s, model=%s, key_slot=%s, exit=%s, received=%d bytes): %w", r.upstream, r.model, r.keySlot, r.exitLabel, r.received, err)
 	}
 	return n, err
 }
@@ -743,8 +750,8 @@ func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, pro
 			}
 		}
 		if err != nil {
-			consume(parser.Flush())
-			if err == io.EOF || clientGone {
+			terminal := consume(parser.Flush())
+			if errors.Is(err, io.EOF) || clientGone || (terminal && errors.Is(err, io.ErrUnexpectedEOF)) {
 				return nil
 			}
 			return err

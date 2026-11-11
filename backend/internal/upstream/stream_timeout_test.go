@@ -3,15 +3,81 @@ package upstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"llmrelay/backend/internal/sse"
 )
+
+func TestNativeStreamsKeepTerminalAtUnexpectedEOF(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol UpstreamType
+		terminal string
+	}{
+		{"chat", UpstreamOpenAI, "data: [DONE]"},
+		{"anthropic", UpstreamAnthropic, `data: {"type":"message_stop"}`},
+		{"responses", UpstreamResponses, `data: {"type":"response.completed"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, complete := range []bool{false, true} {
+				raw := tc.terminal
+				if !complete {
+					raw = strings.TrimSuffix(raw, "}")
+					if tc.protocol == UpstreamOpenAI {
+						raw = "data: [DON"
+					}
+				}
+				body := io.NopCloser(io.MultiReader(strings.NewReader(raw), iotest.ErrReader(io.ErrUnexpectedEOF)))
+				recorder := httptest.NewRecorder()
+				err := proxyNativePassthroughStream(recorder, body, tc.protocol, nil)
+				if complete && err != nil {
+					t.Fatalf("complete terminal event returned %v", err)
+				}
+				if !complete && !errors.Is(err, io.ErrUnexpectedEOF) {
+					t.Fatalf("truncated terminal event returned %v, want unexpected EOF", err)
+				}
+				if recorder.Body.String() != raw {
+					t.Fatalf("passthrough changed bytes: %q, want %q", recorder.Body.String(), raw)
+				}
+			}
+		})
+	}
+}
+
+func TestUpstreamStreamReadErrorIncludesRoutingContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, "data: partial\n\n")
+	}))
+	defer server.Close()
+	zero := 0
+	body, _, _, err := CallPreparedUpstreamStream(context.Background(), []byte(`{"stream":true}`), "broken-upstream", "broken-model", &UpstreamConfig{
+		BaseURL: server.URL, APIType: UpstreamOpenAI, APIKey: "secret-key", MaxRetries: &zero,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("error=%v, want unexpected EOF", err)
+	}
+	for _, want := range []string{"broken-upstream", "broken-model", "direct", fmt.Sprintf("received=%d", len(data))} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error=%q, missing context %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "secret-key") {
+		t.Fatalf("read error exposed the upstream API key: %v", err)
+	}
+}
 
 func TestUpstreamStreamIdleTimeoutCancelsStalledReads(t *testing.T) {
 	for _, tc := range []struct {

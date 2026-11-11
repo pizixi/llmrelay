@@ -292,22 +292,18 @@ func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.R
 		frame, err := reader.Next()
 		line := frame.Data
 		if err != nil {
-			if err == io.EOF {
-				if line == "" {
-					break
-				}
-			}
-			if err != io.EOF {
-				// 客户端取消请求（例如 Codex 中断当前轮次）会令上游流读取返回
-				// context.Canceled；这不是上游故障，按正常结束处理即可，避免噪声日志。
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					break
-				}
-				log.Printf("读取流失败：%v", err)
-				streamFailed = true
-				streamFailure = StreamErrorObject(map[string]any{"message": err.Error()}, "failed to read upstream stream")
+			// 仅在已收到有效结束原因时容忍尾部传输截断，不能把中途断流标记为完成。
+			if errors.Is(err, io.EOF) || (terminalFinishSeen && errors.Is(err, io.ErrUnexpectedEOF)) {
 				break
 			}
+			// 客户端取消请求时结束处理，避免噪声日志。
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				break
+			}
+			log.Printf("读取流失败：协议=Chat->Responses 模型=%q 已收到结束原因=%t 错误=%v", model, terminalFinishSeen, err)
+			streamFailed = true
+			streamFailure = StreamErrorObject(map[string]any{"message": err.Error()}, "failed to read upstream stream")
+			break
 		}
 		payload, isDataLine := frame.Data, frame.Data != ""
 		if debugMode && debugLogBodies && isDataLine {

@@ -2,13 +2,90 @@ package stream
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
+
+	"llmrelay/backend/internal/stats"
 )
+
+func TestChatBridgesHandleUnexpectedEOF(t *testing.T) {
+	previousPath := stats.Path()
+	stats.SetPath(filepath.Join(t.TempDir(), "usage.db"))
+	t.Cleanup(func() { stats.SetPath(previousPath) })
+
+	content := `data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}` + "\n\n"
+	finish := `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`
+	usage := `data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":7,"total_tokens":10}}`
+	for _, target := range []struct {
+		name     string
+		run      func(http.ResponseWriter, io.ReadCloser)
+		terminal string
+		failure  string
+	}{
+		{
+			name: "anthropic",
+			run: func(w http.ResponseWriter, body io.ReadCloser) {
+				ClaudeStreamHandler(w, body, "test", "test")
+			},
+			terminal: "event: message_stop\n", failure: "event: error\n",
+		},
+		{
+			name: "responses",
+			run: func(w http.ResponseWriter, body io.ReadCloser) {
+				ResponsesStreamHandler(w, nil, &http.Response{Body: body}, "test", "test", nil, nil, nil, nil, nil)
+			},
+			terminal: "event: response.completed\n", failure: "event: response.failed\n",
+		},
+	} {
+		for _, tc := range []struct {
+			name    string
+			raw     string
+			err     error
+			success bool
+			usage   bool
+		}{
+			{name: "finished with trailing usage", raw: content + finish + "\n\n" + usage + "\n\n", success: true, usage: true},
+			{name: "unterminated finish event", raw: content + finish, success: true},
+			{name: "unterminated usage event", raw: content + finish + "\n\n" + usage, success: true, usage: true},
+			{name: "premature EOF", raw: strings.TrimRight(content, "\n")},
+			{name: "truncated finish JSON", raw: content + `data: {"choices":[{"finish_reason":"st`},
+			{name: "timeout after finish", raw: content + finish + "\n\n", err: errors.New("upstream stream idle timeout")},
+			{name: "error event after finish", raw: content + finish + "\n\ndata: {\"error\":{\"message\":\"upstream failed\"}}\n\n"},
+		} {
+			t.Run(target.name+"/"+tc.name, func(t *testing.T) {
+				readErr := tc.err
+				if readErr == nil {
+					readErr = fmt.Errorf("transport: %w", io.ErrUnexpectedEOF)
+				}
+				body := io.NopCloser(iotest.DataErrReader(io.MultiReader(strings.NewReader(tc.raw), iotest.ErrReader(readErr))))
+				defer body.Close()
+				recorder := httptest.NewRecorder()
+				target.run(recorder, body)
+				got := recorder.Body.String()
+				if !strings.Contains(got, "partial") {
+					t.Fatalf("partial content was lost: %s", got)
+				}
+				if tc.success {
+					if strings.Count(got, target.terminal) != 1 || strings.Contains(got, target.failure) {
+						t.Fatalf("completed response was reported as failed: %s", got)
+					}
+					if tc.usage && !strings.Contains(got, `"output_tokens":7`) {
+						t.Fatalf("trailing usage was lost: %s", got)
+					}
+				} else if !strings.Contains(got, target.failure) || strings.Contains(got, target.terminal) {
+					t.Fatalf("interrupted response was reported as completed: %s", got)
+				}
+			})
+		}
+	}
+}
 
 func TestClaudeStreamReportsReadTimeoutWithoutSuccessfulTerminal(t *testing.T) {
 	reader, writer := io.Pipe()
