@@ -74,19 +74,32 @@ var errUpstreamStreamIdleTimeout = errors.New("upstream stream idle timeout")
 // ttfbReadCloser 记录实际首字节耗时，并限制每次等待上游数据的时间。
 // 不限制流的总时长，也不把向慢速客户端写数据的时间计入上游空闲时间。
 type ttfbReadCloser struct {
-	inner       io.ReadCloser
-	once        sync.Once
-	timeoutOnce sync.Once
-	ctx         context.Context
-	cancel      context.CancelCauseFunc
-	idleTimeout time.Duration
-	start       time.Time
-	upstream    string
-	model       string
-	keySlot     string
-	exitLabel   string
-	received    int64
+	inner         io.ReadCloser
+	once          sync.Once
+	timeoutOnce   sync.Once
+	ctx           context.Context
+	cancel        context.CancelCauseFunc
+	idleTimeout   time.Duration
+	start         time.Time
+	lastData      time.Time
+	upstream      string
+	model         string
+	keySlot       string
+	exitLabel     string
+	received      int64
+	protocol      string
+	contentLength int64
+	uncompressed  bool
+	requestID     string
 }
+
+type upstreamStreamReadError struct {
+	detail string
+	cause  error
+}
+
+func (e *upstreamStreamReadError) Error() string { return e.detail + ": " + e.cause.Error() }
+func (e *upstreamStreamReadError) Unwrap() error { return e.cause }
 
 func (r *ttfbReadCloser) Read(p []byte) (int, error) {
 	if len(p) == 0 {
@@ -105,22 +118,30 @@ func (r *ttfbReadCloser) Read(p []byte) (int, error) {
 	}
 	if n > 0 {
 		r.received += int64(n)
+		r.lastData = time.Now()
 		r.once.Do(func() {
 			ttfb := time.Since(r.start)
-			log.Printf("[首字节耗时] 上游=%s 模型=%s 密钥=%s 出口=%s 耗时=%s", r.upstream, r.model, r.keySlot, r.exitLabel, ttfb.Round(time.Millisecond))
+			log.Printf("[首字节耗时] 上游=%s 模型=%s 密钥=%s 出口=%s 耗时=%s 请求=%s", r.upstream, r.model, r.keySlot, r.exitLabel, ttfb.Round(time.Millisecond), r.requestID)
 		})
 	}
 	if errors.Is(context.Cause(r.ctx), errUpstreamStreamIdleTimeout) {
 		r.timeoutOnce.Do(func() {
-			log.Printf("[上游流读取超时] 上游=%s 模型=%s 密钥=%s 出口=%s 空闲时限=%s", r.upstream, r.model, r.keySlot, r.exitLabel, r.idleTimeout)
+			log.Printf("[上游流读取超时] 上游=%s 模型=%s 密钥=%s 出口=%s 空闲时限=%s 请求=%s", r.upstream, r.model, r.keySlot, r.exitLabel, r.idleTimeout, r.requestID)
 		})
 		// 保留独立的超时原因，避免流转换器把它误判为客户端主动取消而静默退出。
 		return n, fmt.Errorf("%w: no data received for %s", errUpstreamStreamIdleTimeout, r.idleTimeout)
 	}
-	if errors.Is(err, io.ErrUnexpectedEOF) {
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		// 保留错误链，供协议层区分已完成回答的尾部截断和真正的中途断流。
 		// 只记录密钥槽位，不包含密钥或响应正文。
-		return n, fmt.Errorf("upstream stream interrupted (upstream=%s, model=%s, key_slot=%s, exit=%s, received=%d bytes): %w", r.upstream, r.model, r.keySlot, r.exitLabel, r.received, err)
+		lastData := r.lastData
+		if lastData.IsZero() {
+			lastData = r.start
+		}
+		return n, &upstreamStreamReadError{
+			detail: fmt.Sprintf("upstream stream interrupted (request=%s, upstream=%s, model=%s, key_slot=%s, exit=%s, received=%d bytes, elapsed=%s, idle=%s, protocol=%s, content_length=%d, decompressed=%t, context=%v)", r.requestID, r.upstream, r.model, r.keySlot, r.exitLabel, r.received, time.Since(r.start).Round(time.Millisecond), time.Since(lastData).Round(time.Millisecond), r.protocol, r.contentLength, r.uncompressed, context.Cause(r.ctx)),
+			cause:  err,
+		}
 	}
 	return n, err
 }
@@ -326,109 +347,152 @@ func callPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 	if upstream == nil || upstream.BaseURL == "" {
 		return nil, 500, nil, fmt.Errorf("upstream not configured")
 	}
+	ctx, cancelStream := context.WithCancel(ctx)
+	requestID := RandomString(12)
 
 	apiKey, apiKeyIndex, apiKeys := SelectUpstreamAPIKey(upstreamName, upstream)
 	retryDelay := 1 * time.Second
 	attemptLimit := UpstreamAttemptLimit(upstream, len(apiKeys))
 	rateLimitRetriesByExit := make(map[string]int)
-	for attempt := 0; attempt < attemptLimit; attempt++ {
-		select {
-		case <-ctx.Done():
-			return nil, 0, nil, ctx.Err()
-		default:
-		}
-		up, err := BuildUpstreamRequest(GetUpstreamEndpoint(upstream), apiKey, preparedBody, upstream)
-		if err != nil {
-			return nil, http.StatusInternalServerError, nil, fmt.Errorf("build upstream request: %w", err)
-		}
-		attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
-		up = up.WithContext(attemptCtx)
-		ApplyNativeProtocolHeadersFromContext(up)
-		if upstream.APIType == UpstreamAnthropic {
-			ApplyAnthropicProtocolHeadersFromContext(up)
-		}
-		startTTFB := time.Now()
-		client, exitLabel := GetHTTPClientForUpstream(true, upstream)
-		resp, err := client.Do(up)
-		if err != nil {
-			cancelAttempt(nil)
-			if ctx.Err() != nil {
+	attemptCursor := 0
+	open := func() (io.ReadCloser, int, http.Header, error) {
+		for attemptCursor < attemptLimit {
+			attempt := attemptCursor
+			attemptCursor++
+			select {
+			case <-ctx.Done():
 				return nil, 0, nil, ctx.Err()
+			default:
 			}
-			log.Printf("[上游流连接失败] 上游=%s 模型=%s 密钥=%s 出口=%s 尝试=%d/%d 错误=%v", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, attempt+1, attemptLimit, err)
-			if attempt+1 >= attemptLimit {
-				return nil, http.StatusBadGateway, nil, fmt.Errorf("upstream stream request failed after %d attempt(s): %w", attempt+1, err)
+			up, err := BuildUpstreamRequest(GetUpstreamEndpoint(upstream), apiKey, preparedBody, upstream)
+			if err != nil {
+				return nil, http.StatusInternalServerError, nil, fmt.Errorf("build upstream request: %w", err)
 			}
-			if err := WaitForRetry(ctx, retryDelay, ""); err != nil {
-				return nil, 0, nil, err
+			attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
+			up = up.WithContext(attemptCtx)
+			ApplyNativeProtocolHeadersFromContext(up)
+			if upstream.APIType == UpstreamAnthropic {
+				ApplyAnthropicProtocolHeadersFromContext(up)
 			}
-			retryDelay = NextRetryDelay(retryDelay)
-			continue
-		}
-		resp.Body = &ttfbReadCloser{
-			inner:       resp.Body,
-			ctx:         attemptCtx,
-			cancel:      cancelAttempt,
-			idleTimeout: idleTimeout,
-			start:       startTTFB,
-			upstream:    EffectiveUpstreamName(upstreamName),
-			model:       modelID,
-			keySlot:     FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)),
-			exitLabel:   exitLabel,
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return resp.Body, resp.StatusCode, resp.Header, nil
-		}
-		errBody, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		preserveRaw := len(rawErrors) > 0 && rawErrors[0]
-		if readErr != nil {
-			if !preserveRaw {
-				errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
-			}
-			return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("read upstream stream error response: %w", readErr)
-		}
-		if ShouldRetryUpstreamStatus(resp.StatusCode) {
-			log.Printf("[上游重试] 上游=%s 模型=%s 密钥=%s 出口=%s 状态码=%d Retry-After=%q", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, resp.StatusCode, resp.Header.Get("Retry-After"))
-			if debugMode && debugLogBodies {
-				log.Printf("[上游重试响应体] %s", TruncatePreview(string(errBody), 1024))
-			}
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if rateLimitRetriesByExit[exitLabel] >= max429RetriesPerExit {
-					if !preserveRaw {
-						errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
-					}
-					return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained rate limited on exit %s after %d retries", exitLabel, max429RetriesPerExit)
+			startTTFB := time.Now()
+			client, exitLabel := GetHTTPClientForUpstream(true, upstream)
+			resp, err := client.Do(up)
+			if err != nil {
+				cancelAttempt(nil)
+				if ctx.Err() != nil {
+					return nil, 0, nil, ctx.Err()
 				}
-				rateLimitRetriesByExit[exitLabel]++
+				log.Printf("[上游流连接失败] 请求=%s 上游=%s 模型=%s 密钥=%s 出口=%s 尝试=%d/%d 错误=%v", requestID, EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, attempt+1, attemptLimit, err)
+				if attempt+1 >= attemptLimit {
+					return nil, http.StatusBadGateway, nil, fmt.Errorf("upstream stream request failed after %d attempt(s): %w", attempt+1, err)
+				}
+				if err := WaitForRetry(ctx, retryDelay, ""); err != nil {
+					return nil, 0, nil, err
+				}
+				retryDelay = NextRetryDelay(retryDelay)
+				continue
 			}
-			if attempt+1 >= attemptLimit {
+			resp.Body = &ttfbReadCloser{
+				inner:         resp.Body,
+				ctx:           attemptCtx,
+				cancel:        cancelAttempt,
+				idleTimeout:   idleTimeout,
+				start:         startTTFB,
+				protocol:      resp.Proto,
+				contentLength: resp.ContentLength,
+				uncompressed:  resp.Uncompressed,
+				requestID:     fmt.Sprintf("%s/%d", requestID, attempt+1),
+				upstream:      EffectiveUpstreamName(upstreamName),
+				model:         modelID,
+				keySlot:       FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)),
+				exitLabel:     exitLabel,
+			}
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return resp.Body, resp.StatusCode, resp.Header, nil
+			}
+			errBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			preserveRaw := len(rawErrors) > 0 && rawErrors[0]
+			if readErr != nil {
 				if !preserveRaw {
 					errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
 				}
-				return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained unavailable after %d attempt(s)", attempt+1)
+				return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("read upstream stream error response: %w", readErr)
 			}
-			waitDelay := retryDelay
-			if len(apiKeys) > 1 {
-				apiKey, apiKeyIndex = RotateUpstreamAPIKey(apiKeys, apiKeyIndex)
-				if strings.TrimSpace(resp.Header.Get("Retry-After")) == "" && waitDelay > 300*time.Millisecond {
-					waitDelay = 300 * time.Millisecond
+			if ShouldRetryUpstreamStatus(resp.StatusCode) {
+				log.Printf("[上游重试] 上游=%s 模型=%s 密钥=%s 出口=%s 状态码=%d Retry-After=%q", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, resp.StatusCode, resp.Header.Get("Retry-After"))
+				if debugMode && debugLogBodies {
+					log.Printf("[上游重试响应体] %s", TruncatePreview(string(errBody), 1024))
 				}
+				if resp.StatusCode == http.StatusTooManyRequests {
+					if rateLimitRetriesByExit[exitLabel] >= max429RetriesPerExit {
+						if !preserveRaw {
+							errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
+						}
+						return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained rate limited on exit %s after %d retries", exitLabel, max429RetriesPerExit)
+					}
+					rateLimitRetriesByExit[exitLabel]++
+				}
+				if attempt+1 >= attemptLimit {
+					if !preserveRaw {
+						errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
+					}
+					return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream remained unavailable after %d attempt(s)", attempt+1)
+				}
+				waitDelay := retryDelay
+				if len(apiKeys) > 1 {
+					apiKey, apiKeyIndex = RotateUpstreamAPIKey(apiKeys, apiKeyIndex)
+					if strings.TrimSpace(resp.Header.Get("Retry-After")) == "" && waitDelay > 300*time.Millisecond {
+						waitDelay = 300 * time.Millisecond
+					}
+				}
+				if err := WaitForRetry(ctx, waitDelay, resp.Header.Get("Retry-After")); err != nil {
+					return nil, 0, nil, err
+				}
+				retryDelay = NextRetryDelay(retryDelay)
+				continue
 			}
-			if err := WaitForRetry(ctx, waitDelay, resp.Header.Get("Retry-After")); err != nil {
-				return nil, 0, nil, err
+			// 不可重试错误：立即返回。
+			log.Printf("[上游错误] 上游=%s 模型=%s 状态码=%d 端点=%s", EffectiveUpstreamName(upstreamName), modelID, resp.StatusCode, GetUpstreamEndpoint(upstream))
+			if !preserveRaw {
+				errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
 			}
-			retryDelay = NextRetryDelay(retryDelay)
-			continue
+			return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream error")
 		}
-		// 不可重试错误：立即返回。
-		log.Printf("[上游错误] 上游=%s 模型=%s 状态码=%d 端点=%s", EffectiveUpstreamName(upstreamName), modelID, resp.StatusCode, GetUpstreamEndpoint(upstream))
-		if !preserveRaw {
-			errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
-		}
-		return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("upstream error")
+		return nil, http.StatusBadGateway, nil, fmt.Errorf("upstream stream attempts exhausted")
 	}
-	return nil, http.StatusBadGateway, nil, fmt.Errorf("upstream stream attempts exhausted")
+	body, status, headers, err := open()
+	if err != nil {
+		cancelStream()
+		return body, status, headers, err
+	}
+	reopen := func(cause error) (io.ReadCloser, error) {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attemptCursor >= attemptLimit {
+			return nil, cause
+		}
+		if len(apiKeys) > 1 {
+			apiKey, apiKeyIndex = RotateUpstreamAPIKey(apiKeys, apiKeyIndex)
+		}
+		log.Printf("[上游流重试] 请求=%s 上游=%s 模型=%s 密钥=%s 尝试=%d/%d 原因=%v", requestID, EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), attemptCursor+1, attemptLimit, cause)
+		if err := WaitForRetry(ctx, retryDelay, ""); err != nil {
+			return nil, err
+		}
+		retryDelay = NextRetryDelay(retryDelay)
+		next, _, _, err := open()
+		if err != nil && next != nil {
+			_ = next.Close()
+			return nil, err
+		}
+		return next, err
+	}
+	retrying := &retryStreamBody{ctx: ctx, cancel: cancelStream, current: body, reopen: reopen, requestID: requestID}
+	if upstream.APIType == UpstreamOpenAI && chatStreamReplayEnabled(ctx) && attemptLimit > 1 {
+		return newChatReplayStream(retrying), status, headers, nil
+	}
+	return retrying, status, headers, nil
 }
 
 func CallUpstreamStream(ctx context.Context, reqBody []byte, upstreamName, modelID string, upstream *UpstreamConfig) (io.ReadCloser, int, http.Header, error) {

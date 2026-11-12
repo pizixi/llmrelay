@@ -69,7 +69,7 @@ func TestUpstreamStreamReadErrorIncludesRoutingContext(t *testing.T) {
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("error=%v, want unexpected EOF", err)
 	}
-	for _, want := range []string{"broken-upstream", "broken-model", "direct", fmt.Sprintf("received=%d", len(data))} {
+	for _, want := range []string{"broken-upstream", "broken-model", "direct", fmt.Sprintf("received=%d", len(data)), "elapsed=", "idle=", "protocol=HTTP/1.1", "content_length=1000", "decompressed=false", "context=<nil>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error=%q, missing context %q", err, want)
 		}

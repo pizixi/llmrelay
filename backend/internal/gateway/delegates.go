@@ -52,6 +52,7 @@ func callPreparedUpstreamStream(ctx context.Context, body []byte, upstreamName, 
 }
 
 func callUpstreamStream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig) (io.ReadCloser, int, http.Header, error) {
+	ctx = upstream.WithChatStreamReplay(ctx)
 	return upstream.CallUpstreamStream(ctx, body, upstreamName, model, target)
 }
 

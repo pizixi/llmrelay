@@ -168,6 +168,10 @@ func ClaudeStreamHandler(w http.ResponseWriter, respBody io.ReadCloser, model, u
 		if !isDataLine {
 			continue
 		}
+		if frame.Name == "ping" && payload == `{"type":"ping"}` {
+			emitClaudeEvent("ping", map[string]any{"type": "ping"})
+			continue
+		}
 
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {

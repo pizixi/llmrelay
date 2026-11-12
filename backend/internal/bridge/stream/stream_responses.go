@@ -317,6 +317,13 @@ func ResponsesStreamHandler(w http.ResponseWriter, _ *http.Request, resp *http.R
 		if !isDataLine {
 			continue
 		}
+		if frame.Name == "ping" && payload == `{"type":"ping"}` {
+			_, _ = w.Write([]byte(": ping\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			continue
+		}
 
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
