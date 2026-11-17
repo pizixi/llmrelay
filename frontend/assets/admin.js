@@ -53,6 +53,12 @@ const ICONS = {
   grip: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
   moon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
   sun: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
+  terminal:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+  pause:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="9" y1="5" x2="9" y2="19"/><line x1="15" y1="5" x2="15" y2="19"/></svg>',
+  arrowDown:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="5 12 12 19 19 12"/></svg>',
 };
 
 /* ===== 主题 ===== */
@@ -140,6 +146,7 @@ function activateAdminTab(tabName, options) {
 	if (activeName === "usage" && typeof loadUsageRecords === "function") {
 		loadUsageRecords();
 	}
+  if (typeof syncLogStreamWithTab === "function") syncLogStreamWithTab(activeName === "logs");
 
   try {
     localStorage.setItem(ADMIN_TAB_STORAGE_KEY, activeName);
@@ -7445,6 +7452,25 @@ function usageLatencyTone(value, kind) {
   return "is-normal";
 }
 
+// usageUpstreamKeySlot renders which upstream credential answered the call,
+// e.g. "KEY 2/3". Records written before key slots were tracked show nothing.
+function usageUpstreamKeySlot(item) {
+  const index = Math.max(0, Number(item.upstream_key_index) || 0);
+  const total = Math.max(0, Number(item.upstream_key_total) || 0);
+  if (!index || !total) return "";
+  return (
+    '<span class="usage-key-slot" title="本次请求使用上游第 ' +
+    index +
+    " 个密钥，共 " +
+    total +
+    ' 个"><em>KEY</em><b>' +
+    index +
+    "/" +
+    total +
+    "</b></span>"
+  );
+}
+
 function usageRecordRowHtml(item) {
   const time = usageTimeParts(item.called_at);
   const requestCount = Math.max(1, Number(item.request_count) || 1);
@@ -7453,6 +7479,7 @@ function usageRecordRowHtml(item) {
       ? '<span class="usage-aggregate">历史聚合 × ' + fmt(requestCount) + "</span>"
       : "";
   const keyName = item.api_key_name || "未记录密钥";
+  const upstreamKeySlot = usageUpstreamKeySlot(item);
   const requestModel = item.request_model || "-";
   const upstreamName = item.upstream_name || "-";
   const upstreamModel = item.upstream_model || "-";
@@ -7487,31 +7514,35 @@ function usageRecordRowHtml(item) {
     escAttr(upstreamModel) +
     '">' +
     esc(upstreamModel) +
-    '</span><span class="usage-route-provider">' +
+    '</span><span class="usage-route-tail"><span class="usage-route-provider">' +
     ICONS.server +
     '<span title="' +
     escAttr(upstreamName) +
     '">' +
     esc(upstreamName) +
-    "</span></span></div></td>" +
-    '<td class="usage-performance-cell"><div class="usage-performance-grid"><span><em>首字</em><b class="' +
+    "</span></span>" +
+    upstreamKeySlot +
+    "</span></div></td>" +
+    '<td class="usage-performance-cell"><div class="usage-metric-line">' +
+    '<span class="usage-metric"><em>首字</em><b class="' +
     usageLatencyTone(item.first_byte_ms, "first") +
     '">' +
     esc(firstByte) +
-    '</b></span><span><em>总耗时</em><b class="' +
+    '</b></span><span class="usage-metric"><em>总耗时</em><b class="' +
     usageLatencyTone(item.duration_ms, "total") +
     '">' +
     esc(duration) +
     "</b></span></div></td>" +
-    '<td class="usage-token-cell"><div class="usage-token-line"><span class="usage-token-metric is-total"><em>合计</em><b>' +
+    '<td class="usage-token-cell"><div class="usage-metric-line">' +
+    '<span class="usage-metric is-total"><em>合计</em><b>' +
     fmt(total) +
-    '</b></span><span class="usage-token-metric is-prompt"><i></i><em>输入</em><b>' +
+    '</b></span><span class="usage-metric is-prompt"><em>输入</em><b>' +
     fmt(prompt) +
-    '</b></span><span class="usage-token-metric is-cached' +
+    '</b></span><span class="usage-metric is-cached' +
     (cached > 0 ? " has-value" : "") +
-    '"><i></i><em>缓存命中</em><b>' +
+    '"><em>缓存</em><b>' +
     fmt(cached) +
-    '</b></span><span class="usage-token-metric is-completion"><i></i><em>输出</em><b>' +
+    '</b></span><span class="usage-metric is-completion"><em>输出</em><b>' +
     fmt(completion) +
     "</b></span></div></td>" +
     '<td class="usage-action"><button class="btn-icon btn-icon-danger" type="button" title="删除使用记录" aria-label="删除使用记录" onclick="deleteUsageRecord(' +
@@ -7638,6 +7669,181 @@ function fmt(n) {
   return (n == null ? 0 : n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/* ===== 实时日志 ===== */
+const LOG_MAX_ENTRIES = 800;
+let logSource = null;
+let logEntries = [];
+let logPaused = false;
+let logStreamingTabActive = false;
+let logReconnectTimer = null;
+let logLastSeq = 0;
+
+function logLevelClass(level) {
+  if (level === "error") return "is-error";
+  if (level === "warn") return "is-warn";
+  return "is-info";
+}
+
+function logTimeLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function logEntryHtml(entry) {
+  return (
+    '<div class="log-line ' +
+    logLevelClass(entry.level) +
+    '"><span class="log-time">' +
+    esc(logTimeLabel(entry.time)) +
+    '</span><span class="log-message">' +
+    esc(entry.message) +
+    "</span></div>"
+  );
+}
+
+function isLogViewPinnedToEnd(view) {
+  return view.scrollHeight - view.scrollTop - view.clientHeight < 48;
+}
+
+function renderLogs() {
+  const view = document.getElementById("logView");
+  if (!view) return;
+  const empty = document.getElementById("logEmpty");
+  if (empty) empty.hidden = logEntries.length > 0;
+  view.querySelectorAll(".log-line").forEach((el) => el.remove());
+  if (!logEntries.length) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "log-lines";
+  wrapper.innerHTML = logEntries.map(logEntryHtml).join("");
+  view.appendChild(wrapper);
+  scrollLogsToEnd();
+}
+
+function appendLogs(entries) {
+  if (!entries.length) return;
+  logEntries = logEntries.concat(entries);
+  if (logEntries.length > LOG_MAX_ENTRIES) {
+    logEntries = logEntries.slice(logEntries.length - LOG_MAX_ENTRIES);
+    renderLogs();
+    return;
+  }
+  const view = document.getElementById("logView");
+  if (!view) return;
+  const empty = document.getElementById("logEmpty");
+  if (empty) empty.hidden = true;
+  let wrapper = view.querySelector(".log-lines");
+  if (!wrapper) {
+    wrapper = document.createElement("div");
+    wrapper.className = "log-lines";
+    view.appendChild(wrapper);
+  }
+  const pinned = isLogViewPinnedToEnd(view);
+  wrapper.insertAdjacentHTML("beforeend", entries.map(logEntryHtml).join(""));
+  const overflow = wrapper.children.length - LOG_MAX_ENTRIES;
+  for (let i = 0; i < overflow; i++) wrapper.removeChild(wrapper.firstElementChild);
+  if (pinned && !logPaused) scrollLogsToEnd();
+}
+
+function scrollLogsToEnd() {
+  const view = document.getElementById("logView");
+  if (view) view.scrollTop = view.scrollHeight;
+}
+
+function setLogStatus(state, text) {
+  const status = document.getElementById("logStatus");
+  const label = document.getElementById("logStatusText");
+  if (status) status.dataset.state = state;
+  if (label) label.textContent = text;
+}
+
+function setLogPaused(paused) {
+  logPaused = paused;
+  const button = document.getElementById("logPauseBtn");
+  if (!button) return;
+  button.classList.toggle("is-active", !paused);
+  const label = button.querySelector(".btn-label");
+  if (label) label.textContent = paused ? "继续" : "暂停";
+  button.title = paused ? "继续自动滚动" : "暂停自动滚动";
+  if (!paused) scrollLogsToEnd();
+}
+
+function toggleLogPause() {
+  setLogPaused(!logPaused);
+}
+
+function clearLogView() {
+  logEntries = [];
+  const view = document.getElementById("logView");
+  if (view) {
+    const wrapper = view.querySelector(".log-lines");
+    if (wrapper) wrapper.remove();
+  }
+  const empty = document.getElementById("logEmpty");
+  if (empty) empty.hidden = false;
+}
+
+function stopLogStream() {
+  if (logReconnectTimer) {
+    clearTimeout(logReconnectTimer);
+    logReconnectTimer = null;
+  }
+  if (logSource) {
+    logSource.close();
+    logSource = null;
+  }
+}
+
+function startLogStream() {
+  stopLogStream();
+  if (typeof EventSource === "undefined") {
+    setLogStatus("error", "浏览器不支持实时推送");
+    return;
+  }
+  setLogStatus("connecting", "连接中…");
+  const source = new EventSource("/api/logs?stream=1&after=" + logLastSeq);
+  logSource = source;
+  source.onopen = () => setLogStatus("live", "实时连接");
+  source.onmessage = (event) => {
+    let entry;
+    try {
+      entry = JSON.parse(event.data);
+    } catch (e) {
+      return;
+    }
+    if (!entry || !entry.message) return;
+    logLastSeq = Math.max(logLastSeq, Number(entry.seq) || 0);
+    appendLogs([entry]);
+  };
+  source.onerror = () => {
+    stopLogStream();
+    setLogStatus("error", "连接中断，正在重连");
+    logReconnectTimer = setTimeout(() => {
+      logReconnectTimer = null;
+      if (logStreamingTabActive) startLogStream();
+    }, 2500);
+  };
+}
+
+function restartLogStream() {
+  logLastSeq = 0;
+  clearLogView();
+  startLogStream();
+}
+
+function syncLogStreamWithTab(active) {
+  logStreamingTabActive = Boolean(active);
+  if (active) {
+    if (!logSource) startLogStream();
+    requestAnimationFrame(() => {
+      if (!logPaused) scrollLogsToEnd();
+    });
+    return;
+  }
+  stopLogStream();
+  setLogStatus("idle", "未连接");
+}
+
 /* ===== 初始化 ===== */
 function initAdminPage() {
   initAdminTabs();
@@ -7663,6 +7869,7 @@ function initAdminPage() {
   loadConfig();
   loadAPIKeys();
   loadStats();
+  setLogPaused(false);
 }
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initAdminPage, { once: true });

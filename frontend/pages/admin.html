@@ -17,7 +17,6 @@
 </div>
 <div>
 <div class="logo-text">LLM Relay</div>
-<div class="logo-sub">通用 LLM 代理网关</div>
 </div>
 </div>
 <div class="header-toolbar">
@@ -29,6 +28,7 @@
 <button class="header-tab" id="tab-trigger-models" type="button" role="tab" aria-selected="false" aria-controls="tab-models" tabindex="-1" data-tab="models" data-icon="layers" title="模型路由"><span class="tab-label">模型路由</span></button>
 <button class="header-tab" id="tab-trigger-search" type="button" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1" data-tab="search" data-icon="search" title="Web Search"><span class="tab-label">Web Search</span></button>
 <button class="header-tab" id="tab-trigger-proxy" type="button" role="tab" aria-selected="false" aria-controls="tab-proxy" tabindex="-1" data-tab="proxy" data-icon="globe" title="SOCKS5"><span class="tab-label">SOCKS5</span></button>
+<button class="header-tab" id="tab-trigger-logs" type="button" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1" data-tab="logs" data-icon="terminal" title="实时日志"><span class="tab-label">实时日志</span></button>
 </nav>
 <div class="header-actions">
 <span class="header-chip">Admin</span>
@@ -49,7 +49,6 @@
 <div class="card-head usage-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>使用记录</h2>
-<div class="card-desc">按调用、路由、性能和 Token 构成查看每次成功请求</div>
 </div>
 <div class="usage-toolbar">
 <div class="filter-date"><input id="usageDateFilter" class="usage-date-input" type="date" data-clearable-input aria-label="按日期筛选" onchange="loadUsageRecords(0)"></div>
@@ -62,14 +61,13 @@
 </div>
 <div class="active-filters" id="usageActiveFilters" aria-label="已选筛选条件" hidden></div>
 <div class="usage-table-scroll"><table class="tbl usage-table" id="usageTable"><thead><tr><th class="usage-call-col">调用信息</th><th class="usage-route-col">模型路由</th><th class="usage-performance-col">性能</th><th class="usage-token-col">Token 用量</th><th class="usage-action">操作</th></tr></thead><tbody><tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">正在加载使用记录</div></div></td></tr></tbody></table></div>
-<div class="usage-pagination" aria-label="使用记录分页"><div class="usage-filter-summary" id="usageFilterSummary" aria-live="polite"><div class="usage-filter-summary-heading"><div class="usage-filter-summary-title">当前筛选汇总</div></div><div class="usage-filter-summary-items"><span class="usage-summary-requests"><b id="usageSummaryRequests">0</b><em>请求</em></span><span class="usage-summary-prompt"><b id="usageSummaryPrompt">0</b><em>输入</em></span><span class="usage-summary-cached"><b id="usageSummaryCached">0</b><em>缓存命中</em></span><span class="usage-summary-completion"><b id="usageSummaryCompletion">0</b><em>输出</em></span><span class="usage-summary-total"><b id="usageSummaryTotal">0</b><em>合计 Token</em></span></div></div><div class="usage-pagination-actions"><span class="usage-page-range" id="usageSummary"></span><div class="usage-page-controls"><button class="btn-icon" id="usagePrev" type="button" title="上一页" aria-label="上一页" onclick="changeUsagePage(-1)">&#x2039;</button><label class="usage-page-indicator" id="usagePageIndicator" aria-live="polite"><span>第</span><input id="usagePageInput" class="usage-page-input" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="当前页码" onchange="jumpToUsagePage()" onkeydown="handleUsagePageInputKeydown(event)"><span class="usage-page-divider">/</span><b class="usage-page-total" id="usageTotalPages">1</b><em>页</em></label><button class="btn-icon" id="usageNext" type="button" title="下一页" aria-label="下一页" onclick="changeUsagePage(1)">&#x203A;</button></div></div></div>
+<div class="usage-pagination" aria-label="使用记录分页"><div class="usage-filter-summary" id="usageFilterSummary" aria-live="polite"><div class="usage-filter-summary-items"><span class="usage-summary-requests"><b id="usageSummaryRequests">0</b><em>请求</em></span><span class="usage-summary-prompt"><b id="usageSummaryPrompt">0</b><em>输入</em></span><span class="usage-summary-cached"><b id="usageSummaryCached">0</b><em>缓存</em></span><span class="usage-summary-completion"><b id="usageSummaryCompletion">0</b><em>输出</em></span><span class="usage-summary-total"><b id="usageSummaryTotal">0</b><em>合计</em></span></div></div><div class="usage-pagination-actions"><span class="usage-page-range" id="usageSummary"></span><div class="usage-page-controls"><button class="btn-icon" id="usagePrev" type="button" title="上一页" aria-label="上一页" onclick="changeUsagePage(-1)">&#x2039;</button><label class="usage-page-indicator" id="usagePageIndicator" aria-live="polite"><span>第</span><input id="usagePageInput" class="usage-page-input" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="当前页码" onchange="jumpToUsagePage()" onkeydown="handleUsagePageInputKeydown(event)"><span class="usage-page-divider">/</span><b class="usage-page-total" id="usageTotalPages">1</b><em>页</em></label><button class="btn-icon" id="usageNext" type="button" title="下一页" aria-label="下一页" onclick="changeUsagePage(1)">&#x203A;</button></div></div></div>
 </section>
 
 <section class="card tab-panel" id="tab-api-keys" role="tabpanel" aria-labelledby="tab-trigger-api-keys" data-tab-panel="api-keys" hidden>
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>API 密钥</h2>
-<div class="card-desc">创建用于调用网关 <code>/v1</code> 接口的密钥；密钥只保存在本地配置中。</div>
 </div>
 <div class="card-head-actions"><button class="btn btn-primary" data-icon="plus" onclick="createAPIKey()">创建密钥</button><button class="btn btn-default" data-icon="refresh" onclick="loadAPIKeys()">刷新</button></div>
 </div>
@@ -81,7 +79,6 @@
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>多上游配置</h2>
-<div class="card-desc">配置上游端点、协议类型、模型白名单与独立代理</div>
 </div>
 <div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
 <label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="scheduleFilterUpstreamRows()"></label>
@@ -104,7 +101,6 @@
 <section class="routing-section routing-models">
 <div class="routing-section-head">
 <h3 class="routing-section-title">模型映射</h3>
-<div class="routing-section-desc">将请求模型按权重路由到一个或多个上游模型</div>
 <div class="routing-section-actions"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
 <div class="table-scroll">
@@ -117,7 +113,6 @@
 <section class="routing-section routing-effort">
 <div class="routing-section-head">
 <h3 class="routing-section-title"><span id="effortMapTitle">推理力度映射（全局）</span></h3>
-<div class="routing-section-desc">映射客户端 reasoning effort 到上游取值</div>
 <div class="routing-section-actions"><button class="btn btn-primary" data-icon="plus" onclick="addEffortRow()">添加映射</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
 <div class="table-scroll">
@@ -134,7 +129,6 @@
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Hosted Web Search 自动回退</h2>
-<div class="card-desc card-desc-single">所有上游均先尝试原生搜索；明确不支持时自动使用这里配置的全局搜索服务。</div>
 </div>
 <div class="card-head-actions"><label class="head-switch" id="webSearchEnabledGroup" title="启用网关搜索回退">
 <span class="head-switch-text">启用网关搜索回退</span>
@@ -162,7 +156,6 @@
 <div class="card-head">
 <div class="card-head-main">
 <h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>SOCKS5 代理</h2>
-<div class="card-desc">管理 SOCKS5 代理地址；在上游配置中按需选择代理</div>
 </div>
 <div class="card-head-actions proxy-head-actions"><button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
 </div>
@@ -171,6 +164,24 @@
 <thead><tr><th class="col-name">名称</th><th class="col-addr">地址</th><th class="col-user">用户名</th><th class="col-pass">密码</th><th class="col-action"></th></tr></thead>
 <tbody></tbody>
 </table>
+</div>
+</section>
+
+<section class="card tab-panel" id="tab-logs" role="tabpanel" aria-labelledby="tab-trigger-logs" data-tab-panel="logs" hidden>
+<div class="card-head">
+<div class="card-head-main">
+<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>实时日志</h2>
+</div>
+<div class="card-head-actions log-toolbar">
+<span class="log-status" id="logStatus" data-state="idle" aria-live="polite"><i></i><span id="logStatusText">未连接</span></span>
+<button class="btn btn-default is-active" id="logPauseBtn" type="button" data-icon="pause" onclick="toggleLogPause()" title="暂停滚动"><span class="btn-label">暂停</span></button>
+<button class="btn btn-default" type="button" data-icon="trash" onclick="clearLogView()" title="清空视图"><span class="btn-label">清空</span></button>
+<button class="btn btn-default" type="button" data-icon="arrowDown" onclick="scrollLogsToEnd()" title="跳到最新"><span class="btn-label">最新</span></button>
+<button class="btn btn-default" type="button" data-icon="refresh" onclick="restartLogStream()" title="重新连接"><span class="btn-label">重连</span></button>
+</div>
+</div>
+<div class="log-view" id="logView" role="log" aria-live="off" aria-relevant="additions" tabindex="0">
+<div class="log-empty" id="logEmpty"><b>等待日志输出</b><span>服务器控制台输出会实时同步到这里</span></div>
 </div>
 </section>
 </main>

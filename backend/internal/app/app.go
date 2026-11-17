@@ -16,6 +16,7 @@ import (
 	"llmrelay/backend/internal/gateway"
 	"llmrelay/backend/internal/httpapi"
 	"llmrelay/backend/internal/httpapi/admin"
+	"llmrelay/backend/internal/logs"
 	"llmrelay/backend/internal/stats"
 )
 
@@ -30,6 +31,7 @@ func defaultAPIAccessKey() string {
 
 // Run 配置并启动 LLM Relay HTTP 服务。
 func Run(assets embed.FS) {
+	logs.Install(os.Stderr)
 	port := "8000"
 	databasePath := "llmrelay.db"
 	adminPassword := "123456"

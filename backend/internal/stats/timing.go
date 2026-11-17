@@ -18,6 +18,8 @@ type usageSample struct {
 	upstreamModel    string
 	apiKeyID         string
 	apiKeyName       string
+	upstreamKeyIndex int
+	upstreamKeyTotal int
 	promptTokens     int64
 	cachedTokens     int64
 	completionTokens int64
@@ -30,13 +32,15 @@ type RequestTiming struct {
 	id        uint64
 	startedAt time.Time
 
-	mu           sync.Mutex
-	firstWriteAt time.Time
-	finishedAt   time.Time
-	finished     bool
-	pending      []usageSample
-	apiKeyID     string
-	apiKeyName   string
+	mu               sync.Mutex
+	firstWriteAt     time.Time
+	finishedAt       time.Time
+	finished         bool
+	pending          []usageSample
+	apiKeyID         string
+	apiKeyName       string
+	upstreamKeyIndex int
+	upstreamKeyTotal int
 }
 
 var (
@@ -57,15 +61,55 @@ func newRequestTiming(ctx context.Context) *RequestTiming {
 	return timing
 }
 
-func (t *RequestTiming) attachAPIKey(sample *usageSample) {
-	if t == nil || sample == nil {
+// RecordUpstreamKeySlot remembers which upstream credential was used by the
+// request that owns ctx. The last successful attempt wins, so retries that
+// rotate to another key report the key that actually answered.
+func RecordUpstreamKeySlot(ctx context.Context, index, total int) {
+	if index < 0 || total <= 0 {
+		return
+	}
+	timing := requestTimingFromContext(ctx)
+	if timing == nil {
+		return
+	}
+	timing.mu.Lock()
+	timing.upstreamKeyIndex = index + 1
+	timing.upstreamKeyTotal = total
+	timing.mu.Unlock()
+}
+
+type requestIdentity struct {
+	apiKeyID         string
+	apiKeyName       string
+	upstreamKeyIndex int
+	upstreamKeyTotal int
+}
+
+func (t *RequestTiming) identityLocked() requestIdentity {
+	if t == nil {
+		return requestIdentity{}
+	}
+	return requestIdentity{
+		apiKeyID:         t.apiKeyID,
+		apiKeyName:       t.apiKeyName,
+		upstreamKeyIndex: t.upstreamKeyIndex,
+		upstreamKeyTotal: t.upstreamKeyTotal,
+	}
+}
+
+func (identity requestIdentity) attach(sample *usageSample) {
+	if sample == nil {
 		return
 	}
 	if sample.apiKeyID == "" {
-		sample.apiKeyID = t.apiKeyID
+		sample.apiKeyID = identity.apiKeyID
 	}
 	if sample.apiKeyName == "" {
-		sample.apiKeyName = t.apiKeyName
+		sample.apiKeyName = identity.apiKeyName
+	}
+	if sample.upstreamKeyTotal == 0 {
+		sample.upstreamKeyIndex = identity.upstreamKeyIndex
+		sample.upstreamKeyTotal = identity.upstreamKeyTotal
 	}
 }
 
@@ -111,9 +155,10 @@ func (t *RequestTiming) addUsage(sample usageSample) {
 		t.mu.Unlock()
 		return
 	}
-	t.attachAPIKey(&sample)
+	identity := t.identityLocked()
 	startedAt, firstByteMS, durationMS := t.metricsLocked()
 	t.mu.Unlock()
+	identity.attach(&sample)
 	recordUsageSample(sample, startedAt, firstByteMS, durationMS)
 }
 
@@ -146,11 +191,12 @@ func (t *RequestTiming) finish() {
 	t.finishedAt = time.Now()
 	pending := append([]usageSample(nil), t.pending...)
 	t.pending = nil
+	identity := t.identityLocked()
 	startedAt, firstByteMS, durationMS := t.metricsLocked()
 	t.mu.Unlock()
 	requestTimingRegistry.Delete(t.id)
 	for _, sample := range pending {
-		t.attachAPIKey(&sample)
+		identity.attach(&sample)
 		recordUsageSample(sample, startedAt, firstByteMS, durationMS)
 	}
 }
@@ -169,6 +215,8 @@ func recordUsageSample(sample usageSample, calledAt time.Time, firstByteMS, dura
 		durationMS,
 		sample.apiKeyID,
 		sample.apiKeyName,
+		sample.upstreamKeyIndex,
+		sample.upstreamKeyTotal,
 	)
 }
 

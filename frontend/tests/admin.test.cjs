@@ -280,3 +280,44 @@ test("模型映射测试通过别名请求并展示本次实际路由", async ()
   assert.equal(result.requests[0].upstream, undefined);
   assert.equal(result.route, "→ primary / real-model");
 });
+
+test("使用记录显示上游密钥序号与总数", () => {
+  const render = admin.usageUpstreamKeySlot;
+  assert.match(render({ upstream_key_index: 2, upstream_key_total: 3 }), /KEY<\/em><b>2\/3</);
+  assert.equal(render({ upstream_key_index: 0, upstream_key_total: 0 }), "");
+  assert.equal(render({}), "");
+});
+
+test("使用记录行包含密钥序号、路由与性能指标", () => {
+  const createElement = () => {
+    const text = { nodeValue: "", textContent: "" };
+    return {
+      set textContent(value) { text.nodeValue = value; },
+      get textContent() { return text.nodeValue; },
+      set innerHTML(value) {
+        text.nodeValue = String(value).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+      },
+      get innerHTML() { return text.nodeValue; },
+    };
+  };
+  admin.document = Object.assign({}, admin.document, { createElement });
+  const html = admin.usageRecordRowHtml({
+    id: 7,
+    called_at: "2026-11-17T20:31:05+08:00",
+    api_key_name: "claude-code",
+    request_model: "claude-sonnet-4-5",
+    upstream_name: "anthropic",
+    upstream_model: "claude-sonnet-4-5-20250929",
+    upstream_key_index: 1,
+    upstream_key_total: 4,
+    prompt_tokens: 12,
+    cached_tokens: 3,
+    completion_tokens: 4,
+    total_tokens: 16,
+    first_byte_ms: 420,
+    duration_ms: 1200,
+  });
+  assert.match(html, /usage-key-slot/);
+  assert.match(html, /<b>1\/4</);
+  assert.match(html, /usage-metric is-total/);
+});

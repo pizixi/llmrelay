@@ -37,6 +37,8 @@ type UsageRecord struct {
 	UpstreamModel    string `json:"upstream_model"`
 	APIKeyID         string `json:"api_key_id,omitempty"`
 	APIKeyName       string `json:"api_key_name,omitempty"`
+	UpstreamKeyIndex int    `json:"upstream_key_index"`
+	UpstreamKeyTotal int    `json:"upstream_key_total"`
 	CalledAt         string `json:"called_at"`
 	PromptTokens     int64  `json:"prompt_tokens"`
 	CachedTokens     int64  `json:"cached_tokens"`
@@ -169,7 +171,7 @@ func loadSQLiteStats(path string) error {
 	return nil
 }
 
-func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName string, promptTokens, cachedTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64) bool {
+func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName string, promptTokens, cachedTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64, upstreamKeyIndex, upstreamKeyTotal int) bool {
 	if !usingSQLite() {
 		return false
 	}
@@ -204,8 +206,8 @@ func recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName 
 	firstByteMS = max(firstByteMS, 0)
 	durationMS = max(durationMS, firstByteMS)
 	_, err = db.Exec(`INSERT INTO usage_records
-		(request_model, upstream_name, upstream_model, api_key_id, api_key_name, called_at, called_date, prompt_tokens, cached_tokens, completion_tokens, total_tokens, first_byte_ms, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, model, upstreamName, upstreamModel, apiKeyID, apiKeyName, calledAt.UnixMilli(), calledAt.Format("2006-01-02"), promptTokens, cachedTokens, completionTokens, totalTokens, firstByteMS, durationMS)
+		(request_model, upstream_name, upstream_model, api_key_id, api_key_name, called_at, called_date, prompt_tokens, cached_tokens, completion_tokens, total_tokens, first_byte_ms, duration_ms, upstream_key_index, upstream_key_total)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, model, upstreamName, upstreamModel, apiKeyID, apiKeyName, calledAt.UnixMilli(), calledAt.Format("2006-01-02"), promptTokens, cachedTokens, completionTokens, totalTokens, firstByteMS, durationMS, max(upstreamKeyIndex, 0), max(upstreamKeyTotal, 0))
 	if err != nil {
 		log.Printf("写入 SQLite 用量失败: %v", err)
 	}
@@ -416,7 +418,7 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 	}
 	args = append(args, query.Limit, query.Offset)
 	rows, err := db.Query(`SELECT usage_records.id, usage_records.request_model, usage_records.upstream_name, usage_records.upstream_model, usage_records.called_at,
-		usage_records.api_key_id, `+apiKeyNameExpression+`, usage_records.prompt_tokens, usage_records.cached_tokens, usage_records.completion_tokens, usage_records.total_tokens, usage_records.request_count, usage_records.first_byte_ms, usage_records.duration_ms
+		usage_records.api_key_id, `+apiKeyNameExpression+`, usage_records.upstream_key_index, usage_records.upstream_key_total, usage_records.prompt_tokens, usage_records.cached_tokens, usage_records.completion_tokens, usage_records.total_tokens, usage_records.request_count, usage_records.first_byte_ms, usage_records.duration_ms
 		FROM `+from+` WHERE `+where+` ORDER BY usage_records.called_at DESC, usage_records.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return page, err
@@ -426,7 +428,7 @@ func ListUsageRecords(query UsageQuery) (UsagePage, error) {
 		var value UsageRecord
 		var calledAt int64
 		if err := rows.Scan(&value.ID, &value.RequestModel, &value.UpstreamName, &value.UpstreamModel, &calledAt,
-			&value.APIKeyID, &value.APIKeyName,
+			&value.APIKeyID, &value.APIKeyName, &value.UpstreamKeyIndex, &value.UpstreamKeyTotal,
 			&value.PromptTokens, &value.CachedTokens, &value.CompletionTokens, &value.TotalTokens, &value.RequestCount, &value.FirstByteMS, &value.DurationMS); err != nil {
 			return page, err
 		}

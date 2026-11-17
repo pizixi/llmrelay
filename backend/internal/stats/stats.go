@@ -211,11 +211,11 @@ func RecordUsage(model, upstreamName, upstreamModel string, promptTokens, comple
 
 // RecordUsageWithTiming persists a completed call and its user-visible latency.
 func RecordUsageWithTiming(model, upstreamName, upstreamModel string, promptTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64) {
-	recordUsageWithAPIKey(model, upstreamName, upstreamModel, promptTokens, 0, completionTokens, totalTokens, calledAt, firstByteMS, durationMS, "", "")
+	recordUsageWithAPIKey(model, upstreamName, upstreamModel, promptTokens, 0, completionTokens, totalTokens, calledAt, firstByteMS, durationMS, "", "", 0, 0)
 }
 
-func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptTokens, cachedTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64, apiKeyID, apiKeyName string) {
-	if recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName, promptTokens, cachedTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS) {
+func recordUsageWithAPIKey(model, upstreamName, upstreamModel string, promptTokens, cachedTokens, completionTokens, totalTokens int64, calledAt time.Time, firstByteMS, durationMS int64, apiKeyID, apiKeyName string, upstreamKeyIndex, upstreamKeyTotal int) {
+	if recordSQLiteUsage(model, upstreamName, upstreamModel, apiKeyID, apiKeyName, promptTokens, cachedTokens, completionTokens, totalTokens, calledAt, firstByteMS, durationMS, upstreamKeyIndex, upstreamKeyTotal) {
 		return
 	}
 	CheckAndResetDailyStats()

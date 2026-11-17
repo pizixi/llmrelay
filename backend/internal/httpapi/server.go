@@ -28,6 +28,7 @@ func NewHandler() http.Handler {
 	mux.HandleFunc("/api/keys/", middleware.Admin(admin.AdminAPIKeysHandler))
 	mux.HandleFunc("/api/stats", middleware.Admin(admin.AdminStatsHandler))
 	mux.HandleFunc("/api/usage", middleware.Admin(admin.AdminUsageHandler))
+	mux.HandleFunc("/api/logs", middleware.Admin(admin.AdminLogsHandler))
 	mux.HandleFunc("/api/reload", middleware.Admin(admin.ReloadHandler))
 	mux.HandleFunc("/api/sync-models", middleware.Admin(admin.AdminSyncModelsHandler))
 	mux.HandleFunc("/api/test-model", middleware.Admin(admin.AdminTestModelHandler))

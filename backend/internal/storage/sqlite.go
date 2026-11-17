@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
     upstream_model TEXT NOT NULL,
     api_key_id TEXT NOT NULL DEFAULT '',
     api_key_name TEXT NOT NULL DEFAULT '',
+    upstream_key_index INTEGER NOT NULL DEFAULT 0,
+    upstream_key_total INTEGER NOT NULL DEFAULT 0,
     called_at INTEGER NOT NULL,
     called_date TEXT NOT NULL,
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
@@ -112,6 +114,8 @@ func ensureUsageTimingColumns(db *sql.DB) error {
 		"cached_tokens INTEGER NOT NULL DEFAULT 0",
 		"first_byte_ms INTEGER NOT NULL DEFAULT 0",
 		"duration_ms INTEGER NOT NULL DEFAULT 0",
+		"upstream_key_index INTEGER NOT NULL DEFAULT 0",
+		"upstream_key_total INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, definition := range definitions {
 		column := strings.Fields(definition)[0]

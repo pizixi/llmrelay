@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"llmrelay/backend/internal/sse"
+	"llmrelay/backend/internal/stats"
 )
 
 // ======================== 上游端点 ========================
@@ -268,6 +269,7 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 			continue
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			stats.RecordUpstreamKeySlot(ctx, apiKeyIndex, len(apiKeys))
 			ttfb := time.Since(startTTFB)
 			log.Printf("[首字节耗时] 上游=%s 模型=%s 密钥=%s 出口=%s 耗时=%s", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, ttfb.Round(time.Millisecond))
 			b, readErr := io.ReadAll(resp.Body)
@@ -408,6 +410,7 @@ func callPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 				exitLabel:     exitLabel,
 			}
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				stats.RecordUpstreamKeySlot(ctx, apiKeyIndex, len(apiKeys))
 				return resp.Body, resp.StatusCode, resp.Header, nil
 			}
 			errBody, readErr := io.ReadAll(resp.Body)
