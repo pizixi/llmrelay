@@ -2506,7 +2506,6 @@ select.m-select {
   flex-direction: column;
   width: min(960px, calc(100vw - 32px));
   max-width: 960px;
-  height: min(78vh, 820px);
   max-height: calc(100vh - 32px);
   overflow: hidden;
   border-radius: 8px;
@@ -2552,7 +2551,7 @@ select.m-select {
 }
 
 .alias-target-options-list {
-  max-height: min(52vh, 460px);
+  max-height: min(50vh, 420px);
   padding: 5px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -3974,7 +3973,6 @@ select.m-select {
   overflow: hidden;
   width: min(960px, calc(100vw - 32px));
   max-width: 960px;
-  height: min(78vh, 820px);
   max-height: calc(100vh - 32px);
 }
 
@@ -4222,7 +4220,7 @@ select.m-select {
 /* Model list container — larger radius */
 .model-list {
   position: relative;
-  max-height: 62vh;
+  max-height: min(60vh, 520px);
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
