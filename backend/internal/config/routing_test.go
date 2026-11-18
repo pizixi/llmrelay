@@ -15,7 +15,8 @@ func TestResolveRequestModelBalancesAcrossAllMatchingUpstreams(t *testing.T) {
 			"backup":  {BaseURL: "https://backup.example/v1", CustomModels: []string{"shared-model"}},
 			"other":   {BaseURL: "https://other.example/v1", CustomModels: []string{"other-model"}},
 		},
-		UpstreamOrder: []string{"primary", "backup", "other"},
+		UpstreamOrder:     []string{"primary", "backup", "other"},
+		AllowDirectModels: true,
 	})
 
 	for index, want := range []string{"primary", "backup", "primary", "backup"} {
@@ -27,6 +28,47 @@ func TestResolveRequestModelBalancesAcrossAllMatchingUpstreams(t *testing.T) {
 
 	if _, _, upstreamName, _, _, matched := ResolveRequestModel("missing-model"); matched || upstreamName != "primary" {
 		t.Fatalf("unknown model route = upstream=%q matched=%t; want first upstream for error context and no match", upstreamName, matched)
+	}
+}
+
+func TestResolveRequestModelRejectsDirectModelsByDefault(t *testing.T) {
+	previous := Snapshot()
+	t.Cleanup(func() { ApplyConfig(previous) })
+
+	ApplyConfig(AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"upstream-model"}},
+		},
+		UpstreamOrder: []string{"primary"},
+		ModelAlias: map[string]ModelAlias{
+			"public-model": {Targets: []ModelAliasTarget{{Upstream: "primary", TargetModel: "upstream-model", Weight: 1, Enabled: true}}},
+		},
+	})
+
+	if _, _, _, _, _, matched := ResolveRequestModel("upstream-model"); matched {
+		t.Fatal("direct upstream model must not be routable while only model mappings are exposed")
+	}
+	model, _, upstreamName, upstream, aliasMatched, matched := ResolveRequestModel("public-model")
+	if model != "upstream-model" || upstreamName != "primary" || upstream == nil || !aliasMatched || !matched {
+		t.Fatalf("mapped route = model=%q upstream=%q config=%#v aliasMatched=%t matched=%t", model, upstreamName, upstream, aliasMatched, matched)
+	}
+}
+
+func TestResolveRequestModelAllowsDirectModelsWhenEnabled(t *testing.T) {
+	previous := Snapshot()
+	t.Cleanup(func() { ApplyConfig(previous) })
+
+	ApplyConfig(AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"upstream-model"}},
+		},
+		UpstreamOrder:     []string{"primary"},
+		AllowDirectModels: true,
+	})
+
+	model, _, upstreamName, upstream, aliasMatched, matched := ResolveRequestModel("upstream-model")
+	if model != "upstream-model" || upstreamName != "primary" || upstream == nil || aliasMatched || !matched {
+		t.Fatalf("direct route = model=%q upstream=%q config=%#v aliasMatched=%t matched=%t", model, upstreamName, upstream, aliasMatched, matched)
 	}
 }
 

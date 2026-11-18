@@ -14,6 +14,104 @@ const admin = vm.createContext({
 vm.runInContext(adminSource, admin);
 const parse = (...args) => admin.parseBulkUpstreams(...args);
 
+test("添加别名旁提供设置按钮并通过弹窗模板编辑路由配置", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../pages/admin.html"), "utf8");
+  const modelsStart = html.indexOf('id="tab-models"');
+  const models = html.slice(modelsStart, html.indexOf('<section class="card tab-panel"', modelsStart));
+  assert.match(models, /onclick="addAliasRow\(\)"[^>]*>添加别名<\/button><button[^>]*id="modelRoutingSettingsButton"[^>]*onclick="openModelRoutingSettings\(this\)"[^>]*>设置<\/button>/);
+  assert.match(models, /aria-haspopup="dialog"/);
+  assert.doesNotMatch(models, /id="modelRoutingFailureThreshold"/);
+  const template = html.match(/<template id="modelRoutingSettingsTemplate">([\s\S]*?)<\/template>/);
+  assert.ok(template);
+  const policy = template[1];
+  assert.match(policy, /id="modelRoutingTitle"/);
+  for (const id of ["modelRoutingStrategy", "modelRoutingMaxAttempts", "modelRoutingFailureThreshold", "modelRoutingCooldownSeconds", "modelRoutingFailover", "modelRoutingCooldown"]) {
+    assert.ok(policy.includes('id="' + id + '"'), id);
+  }
+  assert.match(policy, /id="modelRoutingFailureThreshold"[^>]*value="3"/);
+  assert.match(policy, /id="modelRoutingCooldownSeconds"[^>]*value="180"/);
+  assert.match(policy, /onsubmit="event.preventDefault\(\); saveModelRoutingSettings\(this\)"/);
+  assert.match(policy, /<button[^>]*type="submit"[^>]*>保存设置<\/button>/);
+  assert.match(policy, /<button[^>]*onclick="closePopover\(\)"[^>]*>取消<\/button>/);
+});
+
+test("路由策略默认优先级选择并启用故障切换与冷却", () => {
+  const value = JSON.parse(JSON.stringify(admin.normalizeModelRoutingConfig()));
+  assert.deepEqual(value, {
+    strategy: "priority", disable_failover: false, max_attempts: 0,
+    disable_cooldown: false, failure_threshold: 3, cooldown_seconds: 180,
+  });
+});
+
+test("路由策略表单读取和回显保留关闭开关及加权轮询配置", () => {
+  const inputs = {
+    modelRoutingStrategy: { value: "weighted_round_robin" },
+    modelRoutingMaxAttempts: { value: "3" },
+    modelRoutingFailureThreshold: { value: "2" },
+    modelRoutingCooldownSeconds: { value: "120" },
+    modelRoutingFailover: { type: "checkbox", checked: false },
+    modelRoutingCooldown: { type: "checkbox", checked: false },
+  };
+  const context = vm.createContext({
+    URL, localStorage: { getItem: () => null }, setInterval() {},
+    document: { readyState: "loading", addEventListener() {}, getElementById: (id) => inputs[id] },
+  });
+  vm.runInContext(adminSource, context);
+  context.collectModelRoutingConfig();
+  const value = JSON.parse(vm.runInContext("JSON.stringify(modelRoutingData)", context));
+  assert.equal(value.strategy, "weighted_round_robin");
+  assert.equal(value.max_attempts, 3);
+  assert.equal(value.failure_threshold, 2);
+  assert.equal(value.cooldown_seconds, 120);
+  assert.equal(value.disable_failover, true);
+  assert.equal(value.disable_cooldown, true);
+  inputs.modelRoutingFailover.checked = true;
+  inputs.modelRoutingCooldown.checked = true;
+  inputs.modelRoutingMaxAttempts.value = "0";
+  context.renderModelRoutingConfig();
+  assert.equal(inputs.modelRoutingFailover.checked, false);
+  assert.equal(inputs.modelRoutingCooldown.checked, false);
+  assert.equal(Number(inputs.modelRoutingMaxAttempts.value), 3);
+});
+
+test("设置弹窗保存成功后关闭，保存失败保留编辑并恢复配置状态", async () => {
+  for (const success of [true, false]) {
+    const inputs = {
+      modelRoutingStrategy: { value: "weighted_round_robin" },
+      modelRoutingMaxAttempts: { value: "4" },
+      modelRoutingFailureThreshold: { value: "5" },
+      modelRoutingCooldownSeconds: { value: "240" },
+      modelRoutingFailover: { type: "checkbox", checked: false },
+      modelRoutingCooldown: { type: "checkbox", checked: false },
+    };
+    const context = vm.createContext({
+      URL, localStorage: { getItem: () => null }, setInterval() {},
+      document: { readyState: "loading", addEventListener() {}, getElementById: id => inputs[id] },
+    });
+    vm.runInContext(adminSource, context);
+    vm.runInContext("modelRoutingData = normalizeModelRoutingConfig()", context);
+    const initial = vm.runInContext("JSON.stringify(modelRoutingData)", context);
+    const trigger = { disabled: false };
+    const pop = { _triggerEl: trigger };
+    context.testPopover = pop;
+    vm.runInContext("activePopover = testPopover", context);
+    let closed = false;
+    context.closePopover = () => { assert.equal(trigger.disabled, false); closed = true; };
+    context.saveConfig = async section => {
+      assert.equal(section, "路由配置");
+      assert.equal(trigger.disabled, true);
+      assert.equal(vm.runInContext("modelRoutingData.failure_threshold", context), 5);
+      assert.equal(vm.runInContext("modelRoutingData.cooldown_seconds", context), 240);
+      return success;
+    };
+    await context.saveModelRoutingSettings({ reportValidity: () => true, closest: () => pop });
+    assert.equal(closed, success);
+    assert.equal(trigger.disabled, false);
+    if (success) assert.equal(vm.runInContext("modelRoutingData.failure_threshold", context), 5);
+    else assert.equal(vm.runInContext("JSON.stringify(modelRoutingData)", context), initial);
+  }
+});
+
 test("批量上游识别逐行分隔符并保留 URL 路径和 Key", () => {
   const result = parse("# 上游列表\r\n\r\nhttps://api.example.com/v1 | sk-one | 主上游\r\napi.other.com/v1,sk-two\nhttps://third.example.com\tsk-three\nhttps://fourth.example.com sk-four\nhttps://fifth.example.com，sk-five", "", "anthropic");
   assert.equal(result.errors.length, 0);

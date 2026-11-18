@@ -36,7 +36,9 @@ func prepareChatPassthroughBody(body []byte, model, effort string, forward bool)
 }
 
 func callPreparedUpstream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig, raw ...bool) ([]byte, int, http.Header, error) {
-	return upstream.CallPreparedUpstream(ctx, body, upstreamName, model, target, raw...)
+	response, status, headers, err := upstream.CallPreparedUpstream(ctx, body, upstreamName, model, target, raw...)
+	observeUpstreamResult(ctx, response, status, err)
+	return response, status, headers, err
 }
 
 func prepareOpenAIUpstreamBody(body []byte, model string, target *UpstreamConfig) ([]byte, error) {
@@ -44,16 +46,20 @@ func prepareOpenAIUpstreamBody(body []byte, model string, target *UpstreamConfig
 }
 
 func callUpstream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig, raw ...bool) ([]byte, int, http.Header, error) {
-	return upstream.CallUpstream(ctx, body, upstreamName, model, target, raw...)
+	response, status, headers, err := upstream.CallUpstream(ctx, body, upstreamName, model, target, raw...)
+	observeUpstreamResult(ctx, response, status, err)
+	return response, status, headers, err
 }
 
 func callPreparedUpstreamStream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig, raw ...bool) (io.ReadCloser, int, http.Header, error) {
-	return upstream.CallPreparedUpstreamStream(ctx, body, upstreamName, model, target, raw...)
+	response, status, headers, err := upstream.CallPreparedUpstreamStream(ctx, body, upstreamName, model, target, raw...)
+	return observeUpstreamStream(ctx, response, status, headers, err, target)
 }
 
 func callUpstreamStream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig) (io.ReadCloser, int, http.Header, error) {
 	ctx = upstream.WithChatStreamReplay(ctx)
-	return upstream.CallUpstreamStream(ctx, body, upstreamName, model, target)
+	response, status, headers, err := upstream.CallUpstreamStream(ctx, body, upstreamName, model, target)
+	return observeUpstreamStream(ctx, response, status, headers, err, target)
 }
 
 func copyFilteredResponseHeaders(dst, src http.Header) {

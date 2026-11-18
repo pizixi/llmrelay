@@ -101,7 +101,7 @@
 <section class="routing-section routing-models">
 <div class="routing-section-head">
 <h3 class="routing-section-title">模型映射</h3>
-<div class="routing-section-actions"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
+<div class="routing-section-actions"><label class="head-switch" title="关闭时，/v1/models 和请求路由仅接受模型映射中的别名"><span class="head-switch-text">允许直接使用上游模型</span><span class="switch"><input id="allowDirectModels" type="checkbox"><span class="switch-slider"></span></span></label><div class="routing-model-buttons"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-default" id="modelRoutingSettingsButton" type="button" data-icon="settings" aria-haspopup="dialog" aria-controls="modelRoutingSettingsDialog" aria-expanded="false" onclick="openModelRoutingSettings(this)">设置</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div></div>
 </div>
 <div class="table-scroll">
 <table class="tbl" id="aliasTable">
@@ -186,6 +186,22 @@
 </section>
 </main>
 </div>
+<template id="modelRoutingSettingsTemplate">
+<div class="popover-header"><h3 class="popover-title" id="modelRoutingTitle">路由与故障切换</h3><button class="btn-icon" type="button" aria-label="关闭" onclick="closePopover()">×</button></div>
+<form class="routing-settings-form" onsubmit="event.preventDefault(); saveModelRoutingSettings(this)">
+<div class="routing-settings-grid">
+<div class="form-group"><label for="modelRoutingStrategy">别名选择策略</label><select id="modelRoutingStrategy" class="m-select"><option value="priority">高权重优先（同权重轮询）</option><option value="weighted_round_robin">加权轮询</option></select></div>
+<div class="form-group"><label for="modelRoutingMaxAttempts">最多尝试目标数 <span class="hint">0 为全部</span></label><input id="modelRoutingMaxAttempts" type="number" min="0" max="1000" step="1" value="0" required></div>
+<div class="form-group"><label for="modelRoutingFailureThreshold">连续故障冷却阈值</label><input id="modelRoutingFailureThreshold" type="number" min="1" max="100" step="1" value="3" required></div>
+<div class="form-group"><label for="modelRoutingCooldownSeconds">冷却时间（秒）</label><input id="modelRoutingCooldownSeconds" type="number" min="1" max="86400" step="1" value="180" required></div>
+</div>
+<div class="routing-settings-toggles">
+<label class="head-switch"><span class="head-switch-text">自动故障切换</span><span class="switch"><input id="modelRoutingFailover" type="checkbox" checked><span class="switch-slider"></span></span></label>
+<label class="head-switch" title="429 仅重试和切换目标，始终不触发模型冷却"><span class="head-switch-text">故障模型冷却</span><span class="switch"><input id="modelRoutingCooldown" type="checkbox" checked><span class="switch-slider"></span></span></label>
+</div>
+<div class="routing-settings-footer"><button class="btn btn-default" type="button" onclick="closePopover()">取消</button><button class="btn btn-success" type="submit">保存设置</button></div>
+</form>
+</template>
 <div id="toast"></div>
 <script src="/assets/marked.min.js"></script>
 <script src="/assets/purify.min.js"></script>

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"llmrelay/backend/internal/config"
 	"llmrelay/backend/internal/domain"
 )
 
@@ -90,5 +91,52 @@ func TestDecodeUpstreamModelIDsAcceptsCommonShapes(t *testing.T) {
 func TestDecodeUpstreamModelIDsRejectsUnrecognizedSuccessEnvelope(t *testing.T) {
 	if _, err := decodeUpstreamModelIDs([]byte(`{"status":"ok"}`)); err == nil {
 		t.Fatal("decode unexpectedly accepted an envelope without a model list")
+	}
+}
+
+func TestGetRoutableModelInfosExposesOnlyAliasesByDefault(t *testing.T) {
+	previous := config.Snapshot()
+	t.Cleanup(func() { config.ApplyConfig(previous) })
+	config.ApplyConfig(config.AppConfig{
+		Upstreams: map[string]*domain.UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"upstream-only", "both"}},
+		},
+		UpstreamOrder: []string{"primary"},
+		ModelAlias: map[string]config.ModelAlias{
+			"public-only": {Targets: []config.ModelAliasTarget{{Upstream: "primary", TargetModel: "upstream-only", Weight: 1, Enabled: true}}},
+			"both":        {Targets: []config.ModelAliasTarget{{Upstream: "primary", TargetModel: "upstream-only", Weight: 1, Enabled: true}}},
+		},
+	})
+
+	var ids []string
+	for _, model := range GetRoutableModelInfos() {
+		ids = append(ids, model.ID)
+	}
+	if want := []string{"both", "public-only"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("model IDs = %#v, want %#v", ids, want)
+	}
+}
+
+func TestGetRoutableModelInfosIncludesDirectModelsWhenEnabled(t *testing.T) {
+	previous := config.Snapshot()
+	t.Cleanup(func() { config.ApplyConfig(previous) })
+	config.ApplyConfig(config.AppConfig{
+		Upstreams: map[string]*domain.UpstreamConfig{
+			"primary": {BaseURL: "https://primary.example/v1", CustomModels: []string{"upstream-only", "both"}},
+		},
+		UpstreamOrder:     []string{"primary"},
+		AllowDirectModels: true,
+		ModelAlias: map[string]config.ModelAlias{
+			"both": {Targets: []config.ModelAliasTarget{{Upstream: "primary", TargetModel: "upstream-only", Weight: 1, Enabled: true}}},
+		},
+	})
+
+	owners := map[string]string{}
+	for _, model := range GetRoutableModelInfos() {
+		owners[model.ID] = model.OwnedBy
+	}
+	want := map[string]string{"upstream-only": "primary", "both": "alias"}
+	if !reflect.DeepEqual(owners, want) {
+		t.Fatalf("models = %#v, want %#v", owners, want)
 	}
 }

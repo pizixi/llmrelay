@@ -12,11 +12,13 @@ func Snapshot() AppConfig {
 	configMu.RLock()
 	result := AppConfig{
 		ModelAlias:            make(map[string]ModelAlias, len(modelAlias)),
+		ModelRouting:          modelRouting,
 		ReasoningEffortMap:    CloneStringMap(reasoningEffortMap),
 		WebSearch:             webSearchCfg,
 		APIKeys:               CloneAPIKeys(apiKeys),
 		Upstreams:             make(map[string]*UpstreamConfig, len(upstreamCfgs)),
 		UpstreamOrder:         append([]string(nil), upstreamOrder...),
+		AllowDirectModels:     allowDirectModels,
 		DefaultUpstream:       defaultUpstreamName,
 		LegacyDefaultUpstream: legacyDefaultRoute,
 	}

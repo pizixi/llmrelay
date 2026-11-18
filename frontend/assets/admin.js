@@ -14,6 +14,7 @@ const ICONS = {
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
   save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h7m4 0h7M3 12h5m4 0h9M3 20h9m4 0h5"/><circle cx="12" cy="4" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="14" cy="20" r="2"/></svg>',
   logout:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
   key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
@@ -202,6 +203,8 @@ let aliasData = {},
   upstreamOrder = [],
   socks5Data = [],
   webSearchData = {},
+  modelRoutingData = {},
+  allowDirectModels = false,
   searxngInstances = [],
   apiKeysData = [];
 
@@ -600,6 +603,13 @@ async function loadConfig() {
     effortData = { ...globalEffortData };
     socks5Data = cfg.socks5_proxies || [];
     webSearchData = { ...(cfg.web_search || {}) };
+    modelRoutingData = normalizeModelRoutingConfig(cfg.model_routing);
+    renderModelRoutingConfig();
+    allowDirectModels = !!cfg.allow_direct_models;
+    const allowDirectModelsInput = document.getElementById("allowDirectModels");
+    if (allowDirectModelsInput) {
+      allowDirectModelsInput.checked = allowDirectModels;
+    }
     applyModelList(cfg);
     if (Object.keys(modelListByUpstream).length === 0) {
       try {
@@ -863,13 +873,16 @@ async function saveConfigSilent(options) {
   collectEfforts();
   collectSocks5();
   collectWebSearchConfig();
+  collectAllowDirectModels();
   const cfg = {
     model_alias: aliasData,
+    model_routing: modelRoutingData,
     reasoning_effort_map: globalEffortData,
     web_search: webSearchData,
     socks5_proxies: socks5Data,
     upstreams: upstreamData,
     upstream_order: upstreamOrder,
+    allow_direct_models: allowDirectModels,
   };
   const qs = options && options.skipModelSync ? "?skip_model_sync=1" : "";
   const r = await apiFetch("/api/config" + qs, {
@@ -5464,7 +5477,7 @@ function buildAliasTargetSelectedRows(targets) {
         '<label class="alias-target-weight"><span>权重</span><input type="number" min="1" max="1000000" step="1" value="' +
         target.weight +
         '" oninput="updateAliasTargetEditorState(this)" onkeydown="handleAliasTargetWeightKeydown(event)" onblur="commitAliasTargetWeightInput(this)"></label>' +
-        '<span class="alias-target-percent">0%</span>' +
+        '<span class="alias-target-percent"></span>' +
         '<button type="button" class="btn-icon btn-icon-danger" onclick="removeAliasTarget(this)" title="删除此上游模型" aria-label="删除 ' +
         escAttr(target.upstream + " / " + target.target_model) +
         '">' +
@@ -5802,6 +5815,7 @@ function updateAliasTargetEditorState(source) {
   );
   const enabledTargets = targets.filter((target) => target.enabled);
   const totalWeight = enabledTargets.reduce((sum, target) => sum + target.weight, 0);
+  const highestWeight = enabledTargets.reduce((highest, target) => Math.max(highest, target.weight), 0);
   pop.querySelectorAll(".alias-target-selected-row").forEach((row) => {
     const weight = aliasTargetWeightFromRow(row);
     const enabled = aliasTargetEnabledFromRow(row);
@@ -5812,7 +5826,9 @@ function updateAliasTargetEditorState(source) {
       label.textContent =
         !enabled
           ? "已禁用"
-          : percent.toFixed(percent >= 10 ? 0 : 1) + "%";
+          : modelRoutingData.strategy === "weighted_round_robin"
+            ? percent.toFixed(percent >= 10 ? 0 : 1) + "%"
+            : weight === highestWeight ? "优先" : "备用";
   });
   pop.querySelectorAll(".alias-target-option").forEach((option) => {
     const isSelected = selected.has(
@@ -6409,6 +6425,92 @@ function collectWebSearchConfig() {
   };
 }
 
+function collectAllowDirectModels() {
+  const input = document.getElementById("allowDirectModels");
+  if (input) allowDirectModels = !!input.checked;
+}
+
+function normalizeModelRoutingConfig(value = {}) {
+  const number = (field, fallback, min, max) => {
+    const parsed = Number(value[field] ?? fallback);
+    return Number.isInteger(parsed) && parsed >= min && parsed <= max
+      ? parsed
+      : fallback;
+  };
+  return {
+    strategy: value.strategy === "weighted_round_robin" ? "weighted_round_robin" : "priority",
+    disable_failover: !!value.disable_failover,
+    max_attempts: number("max_attempts", 0, 0, 1000),
+    disable_cooldown: !!value.disable_cooldown,
+    failure_threshold: number("failure_threshold", 3, 1, 100),
+    cooldown_seconds: number("cooldown_seconds", 180, 1, 86400),
+  };
+}
+
+const modelRoutingFields = {
+  strategy: "modelRoutingStrategy",
+  max_attempts: "modelRoutingMaxAttempts",
+  failure_threshold: "modelRoutingFailureThreshold",
+  cooldown_seconds: "modelRoutingCooldownSeconds",
+  disable_failover: "modelRoutingFailover",
+  disable_cooldown: "modelRoutingCooldown",
+};
+
+function renderModelRoutingConfig() {
+  for (const [field, id] of Object.entries(modelRoutingFields)) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    if (input.type === "checkbox") input.checked = !modelRoutingData[field];
+    else input.value = modelRoutingData[field];
+  }
+}
+
+function collectModelRoutingConfig() {
+  const value = { ...modelRoutingData };
+  for (const [field, id] of Object.entries(modelRoutingFields)) {
+    const input = document.getElementById(id);
+    if (input) value[field] = input.type === "checkbox" ? !input.checked : input.value;
+  }
+  modelRoutingData = normalizeModelRoutingConfig(value);
+}
+
+function openModelRoutingSettings(trigger) {
+  const template = document.getElementById("modelRoutingSettingsTemplate");
+  const container = document.querySelector(".container");
+  const pop = openPopover(trigger, template.innerHTML, () => {
+    container.inert = false;
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.focus();
+  });
+  pop.id = "modelRoutingSettingsDialog";
+  pop.classList.add("routing-settings-popover");
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-modal", "true");
+  pop.setAttribute("aria-labelledby", "modelRoutingTitle");
+  container.inert = true;
+  trigger.setAttribute("aria-expanded", "true");
+  modelRoutingData = normalizeModelRoutingConfig(modelRoutingData);
+  renderModelRoutingConfig();
+  pop.querySelector("select").focus();
+}
+
+async function saveModelRoutingSettings(form) {
+  if (!form.reportValidity()) return;
+  const pop = form.closest(".routing-settings-popover");
+  const trigger = pop._triggerEl;
+  const previous = { ...modelRoutingData };
+  let saved = false;
+  trigger.disabled = true;
+  collectModelRoutingConfig();
+  try {
+    saved = await saveConfig("路由配置");
+  } finally {
+    if (!saved) modelRoutingData = previous;
+    trigger.disabled = false;
+  }
+  if (saved && activePopover === pop) closePopover();
+}
+
 async function saveConfig(section) {
   collectUpstreams();
   const aliasError = validateAliasRows();
@@ -6416,20 +6518,23 @@ async function saveConfig(section) {
     showToast(aliasError.message, "error");
     aliasError.element?.scrollIntoView({ behavior: "smooth", block: "center" });
     aliasError.element?.focus?.();
-    return;
+    return false;
   }
   collectAliases();
   const cleanup = reconcileRemovedUpstreamModelMappings();
   collectEfforts();
   collectSocks5();
   collectWebSearchConfig();
+  collectAllowDirectModels();
   const cfg = {
     model_alias: aliasData,
+    model_routing: modelRoutingData,
     reasoning_effort_map: globalEffortData,
     web_search: webSearchData,
     socks5_proxies: socks5Data,
     upstreams: upstreamData,
     upstream_order: upstreamOrder,
+    allow_direct_models: allowDirectModels,
   };
   const label = section || "配置";
   const saveBtns = Array.from(
@@ -6458,9 +6563,11 @@ async function saveConfig(section) {
       : "";
     showToast(label + "已保存" + cleanupSuffix, "success");
     loadConfig();
+    return true;
   } catch (e) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     showToast(label + "保存失败: " + e.message, "error");
+    return false;
   } finally {
     saveBtns.forEach((btn) => {
       btn.disabled = false;

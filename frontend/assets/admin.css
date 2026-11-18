@@ -1296,6 +1296,56 @@ header {
 }
 
 /* ===== Form Groups ===== */
+.routing-models > .routing-section-head > .routing-section-actions {
+  flex-wrap: wrap;
+}
+
+.routing-model-buttons {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.popover.routing-settings-popover {
+  max-width: 640px;
+}
+
+.routing-settings-form {
+  display: grid;
+  gap: 20px;
+}
+
+.routing-settings-grid,
+.routing-settings-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.routing-settings-grid .form-group {
+  margin-bottom: 0;
+}
+
+.routing-settings-toggles .head-switch {
+  justify-content: space-between;
+}
+
+.routing-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  .routing-settings-grid,
+  .routing-settings-toggles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .form-group {
   margin-bottom: 16px;
 }

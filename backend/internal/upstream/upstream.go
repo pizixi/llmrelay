@@ -238,6 +238,7 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 	retryDelay := 1 * time.Second
 	attemptLimit := UpstreamAttemptLimit(upstream, len(apiKeys))
 	rateLimitRetriesByExit := make(map[string]int)
+	rejectedCredentials := make(map[int]bool)
 	for attempt := 0; attempt < attemptLimit; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -289,6 +290,10 @@ func CallPreparedUpstream(ctx context.Context, preparedBody []byte, upstreamName
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		preserveRaw := len(rawResponse) > 0 && rawResponse[0]
+		if nextKey, nextIndex, ok := nextUnrejectedCredential(resp.StatusCode, apiKeys, apiKeyIndex, rejectedCredentials); ok && attempt+1 < attemptLimit {
+			apiKey, apiKeyIndex = nextKey, nextIndex
+			continue
+		}
 		if ShouldRetryUpstreamStatus(resp.StatusCode) {
 			log.Printf("[上游重试] 上游=%s 模型=%s 密钥=%s 出口=%s 状态码=%d Retry-After=%q", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, resp.StatusCode, resp.Header.Get("Retry-After"))
 			if debugMode && debugLogBodies {
@@ -356,6 +361,7 @@ func callPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 	retryDelay := 1 * time.Second
 	attemptLimit := UpstreamAttemptLimit(upstream, len(apiKeys))
 	rateLimitRetriesByExit := make(map[string]int)
+	rejectedCredentials := make(map[int]bool)
 	attemptCursor := 0
 	open := func() (io.ReadCloser, int, http.Header, error) {
 		for attemptCursor < attemptLimit {
@@ -421,6 +427,10 @@ func callPreparedUpstreamStream(ctx context.Context, preparedBody []byte, upstre
 					errBody = MapUpstreamErrorBody(errBody, upstream.APIType)
 				}
 				return io.NopCloser(bytes.NewReader(errBody)), resp.StatusCode, resp.Header.Clone(), fmt.Errorf("read upstream stream error response: %w", readErr)
+			}
+			if nextKey, nextIndex, ok := nextUnrejectedCredential(resp.StatusCode, apiKeys, apiKeyIndex, rejectedCredentials); ok && attempt+1 < attemptLimit {
+				apiKey, apiKeyIndex = nextKey, nextIndex
+				continue
 			}
 			if ShouldRetryUpstreamStatus(resp.StatusCode) {
 				log.Printf("[上游重试] 上游=%s 模型=%s 密钥=%s 出口=%s 状态码=%d Retry-After=%q", EffectiveUpstreamName(upstreamName), modelID, FormatUpstreamAPIKeySlot(apiKeyIndex, len(apiKeys)), exitLabel, resp.StatusCode, resp.Header.Get("Retry-After"))
@@ -790,7 +800,7 @@ func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, pro
 			if observe != nil {
 				observe(event)
 			}
-			terminal = isNativeStreamTerminal(event, protocol) || terminal
+			terminal = IsNativeStreamTerminal(event, protocol) || terminal
 		}
 		return terminal
 	}
@@ -824,6 +834,12 @@ func proxyNativePassthroughStream(w http.ResponseWriter, body io.ReadCloser, pro
 			return err
 		}
 	}
+}
+
+// IsNativeStreamTerminal identifies protocol events after which the upstream
+// response is complete. Chat finish_reason may still be followed by usage.
+func IsNativeStreamTerminal(event sse.Event, protocol UpstreamType) bool {
+	return isNativeStreamTerminal(event, protocol)
 }
 
 func isNativeStreamTerminal(event sse.Event, protocol UpstreamType) bool {

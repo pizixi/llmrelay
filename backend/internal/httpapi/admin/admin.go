@@ -207,8 +207,7 @@ func AdminSyncModelsHandler(w http.ResponseWriter, r *http.Request) {
 type adminModelTestRequest struct {
 	Upstream string `json:"upstream"`
 	// Alias tests a configured model mapping instead of a single upstream model.
-	// The target upstream and model are resolved with the same weighted routing
-	// used by real gateway requests.
+	// The target upstream and model follow the configured selection strategy.
 	Alias    string                  `json:"alias"`
 	Model    string                  `json:"model"`
 	Prompt   string                  `json:"prompt"`
@@ -435,11 +434,13 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 		availableModelsByUpstream := groupModelsByUpstream(availableModels)
 		resp := map[string]any{
 			"model_alias":                  cfg.ModelAlias,
+			"model_routing":                cfg.ModelRouting,
 			"reasoning_effort_map":         cfg.ReasoningEffortMap,
 			"web_search":                   cfg.WebSearch,
 			"socks5_proxies":               cfg.Socks5Proxies,
 			"upstreams":                    cfg.Upstreams,
 			"upstream_order":               cfg.UpstreamOrder,
+			"allow_direct_models":          cfg.AllowDirectModels,
 			"available_models":             availableModels,
 			"available_models_by_upstream": availableModelsByUpstream,
 		}
@@ -447,12 +448,20 @@ func AdminConfigHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		configUpdateMu.Lock()
 		defer configUpdateMu.Unlock()
-		var cfg AppConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		var update struct {
+			AppConfig
+			ModelRouting *config.ModelRoutingConfig `json:"model_routing"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
 			http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
 			return
 		}
+		cfg := update.AppConfig
 		previous := currentConfig()
+		cfg.ModelRouting = previous.ModelRouting
+		if update.ModelRouting != nil {
+			cfg.ModelRouting = *update.ModelRouting
+		}
 		if cfg.APIKeys == nil {
 			// The general configuration form predates managed API keys and does
 			// not submit them. Keep keys owned by /api/api-keys intact.

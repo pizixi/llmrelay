@@ -147,7 +147,11 @@ var (
 	defaultUpstreamName string
 	reasoningEffortMap  = map[string]string{}
 	webSearchCfg        WebSearchConfig
-	apiAccessKey        string
+	// allowDirectModels mirrors AppConfig.AllowDirectModels. The legacy test
+	// suite was written for direct upstream model routing, so it defaults to
+	// true; tests for the mappings-only default flip it to false.
+	allowDirectModels = true
+	apiAccessKey      string
 
 	modelMu                    sync.RWMutex
 	modelsCache                []ModelInfo
@@ -187,6 +191,7 @@ func syncLegacyConfig() {
 		WebSearch:          webSearchCfg,
 		Upstreams:          upstreamCfgs,
 		DefaultUpstream:    defaultUpstreamName,
+		AllowDirectModels:  allowDirectModels,
 		Socks5Proxies:      socks5Proxies,
 		ActiveSocks5:       activeSocks5,
 	}

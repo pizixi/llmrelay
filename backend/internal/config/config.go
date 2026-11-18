@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"llmrelay/backend/internal/storage"
 )
@@ -14,14 +13,16 @@ import (
 // ======================== 配置 ========================
 
 var (
-	configPath = "llmrelay.db"
-	modelAlias = map[string]ModelAlias{}
+	configPath   = "llmrelay.db"
+	modelAlias   = map[string]ModelAlias{}
+	modelRouting = NormalizeModelRoutingConfig(ModelRoutingConfig{})
 
 	reasoningEffortMap  = map[string]string{}
 	webSearchCfg        WebSearchConfig
 	apiKeys             []APIKey
 	upstreamOrder       []string
 	legacyDefaultRoute  bool
+	allowDirectModels   bool
 	configMu            sync.RWMutex
 	aliasTargetCounters sync.Map
 	modelRouteCounters  sync.Map
@@ -161,13 +162,14 @@ func ValidateConfig(cfg *AppConfig) error {
 	if err := ValidateWebSearchConfig(cfg.WebSearch); err != nil {
 		return err
 	}
-	return nil
+	return ValidateModelRoutingConfig(cfg.ModelRouting)
 }
 
 func NormalizeConfig(cfg *AppConfig) {
 	explicitLegacyDefault := strings.TrimSpace(cfg.DefaultUpstream) != ""
 	cfg.LegacyDefaultUpstream = explicitLegacyDefault
 	cfg.APIKeys = NormalizeAPIKeys(cfg.APIKeys)
+	cfg.ModelRouting = NormalizeModelRoutingConfig(cfg.ModelRouting)
 	if cfg.ModelAlias == nil {
 		cfg.ModelAlias = map[string]ModelAlias{}
 	}
@@ -363,6 +365,7 @@ func ApplyConfig(cfg AppConfig) {
 		})
 	}
 	apiKeys = CloneAPIKeys(cfg.APIKeys)
+	modelRouting = NormalizeModelRoutingConfig(cfg.ModelRouting)
 
 	if cfg.ReasoningEffortMap != nil {
 		reasoningEffortMap = cfg.ReasoningEffortMap
@@ -375,6 +378,7 @@ func ApplyConfig(cfg AppConfig) {
 	}
 	upstreamOrder = append([]string(nil), cfg.UpstreamOrder...)
 	legacyDefaultRoute = cfg.LegacyDefaultUpstream
+	allowDirectModels = cfg.AllowDirectModels
 	if legacyDefaultRoute {
 		defaultUpstreamName = strings.TrimSpace(cfg.DefaultUpstream)
 	} else {
@@ -416,6 +420,7 @@ func changedRoutingModelsLocked(cfg AppConfig) (map[string]struct{}, bool) {
 	oldOrder := append([]string(nil), upstreamOrder...)
 	oldDefaultName := defaultUpstreamName
 	oldLegacyDefault := legacyDefaultRoute
+	oldAllowDirectModels := allowDirectModels
 
 	changed := make(map[string]struct{})
 	if cfg.ModelAlias != nil {
@@ -486,14 +491,17 @@ func changedRoutingModelsLocked(cfg AppConfig) (map[string]struct{}, bool) {
 	// An unrestricted upstream (empty custom_models) can receive any direct
 	// model, so a change to it or to the candidate order cannot be represented
 	// by a finite key set.  Cancel all tracked requests in that case.
+	// Direct routing is only in play while the allowlist permits it; when the
+	// setting itself flips, every tracked request is canceled below anyway.
+	directModelsActive := oldAllowDirectModels || cfg.AllowDirectModels
 	cancelAll := false
 	for upstreamName := range changedUpstreams {
-		if isUnrestrictedUpstream(oldUpstreams[upstreamName]) || isUnrestrictedUpstream(cfg.Upstreams[upstreamName]) {
+		if directModelsActive && (isUnrestrictedUpstream(oldUpstreams[upstreamName]) || isUnrestrictedUpstream(cfg.Upstreams[upstreamName])) {
 			cancelAll = true
 			break
 		}
 	}
-	if !cancelAll && orderChanged {
+	if !cancelAll && orderChanged && directModelsActive {
 		for _, upstream := range oldUpstreams {
 			if isUnrestrictedUpstream(upstream) {
 				cancelAll = true
@@ -509,11 +517,16 @@ func changedRoutingModelsLocked(cfg AppConfig) (map[string]struct{}, bool) {
 			}
 		}
 	}
-	if !cancelAll && legacyChanged && (oldLegacyDefault || cfg.LegacyDefaultUpstream) {
+	if !cancelAll && legacyChanged && directModelsActive && (oldLegacyDefault || cfg.LegacyDefaultUpstream) {
 		if isUnrestrictedUpstream(oldUpstreams[oldDefaultName]) ||
 			isUnrestrictedUpstream(cfg.Upstreams[strings.TrimSpace(cfg.DefaultUpstream)]) {
 			cancelAll = true
 		}
+	}
+	// Toggling the public allowlist changes whether every non-alias model is
+	// routable, which cannot be expressed as a finite set of changed names.
+	if !cancelAll && oldAllowDirectModels != cfg.AllowDirectModels {
+		cancelAll = true
 	}
 	return changed, cancelAll
 }
@@ -603,90 +616,12 @@ func upstreamOrdersEqual(left, right []string, leftUpstreams, rightUpstreams map
 
 // ResolveRequestModel 解析请求模型，并返回配置的路由表是否允许该请求。
 // 模型别名属于显式路由，因此优先于按模型名自动选择的上游。
-// 没有别名时，所有 custom_models 中包含该模型的上游共同参与轮询。
+// 没有别名时，仅在允许直接使用上游模型（AllowDirectModels）的情况下，
+// 所有 custom_models 中包含该模型的上游共同参与轮询。
 func ResolveRequestModel(model string) (string, ModelAlias, string, *UpstreamConfig, bool, bool) {
-	m := strings.TrimSpace(model)
-	alias := ModelAlias{}
-	configMu.RLock()
-	found, aliasMatched := modelAlias[m]
-	if aliasMatched {
-		alias = CloneModelAlias(found)
-		if len(alias.Targets) > 0 {
-			counterValue, _ := aliasTargetCounters.LoadOrStore(m, &atomic.Uint64{})
-			counter := counterValue.(*atomic.Uint64)
-			target := SelectWeightedAliasTarget(alias.Targets, counter.Add(1)-1)
-			if strings.TrimSpace(target.TargetModel) == "" || strings.TrimSpace(target.Upstream) == "" {
-				// A saved mapping whose targets are all disabled is intentionally
-				// inactive. Do not silently fall back to the first upstream; report
-				// it as unavailable until an operator enables a target again.
-				configMu.RUnlock()
-				return m, alias, "", nil, true, false
-			}
-			alias.TargetModel = target.TargetModel
-			alias.Upstream = target.Upstream
-		}
-	}
-	if alias.TargetModel != "" {
-		m = alias.TargetModel
-	}
-	if aliasMatched {
-		upstreamName, upstream := resolveUpstreamLocked(alias.Upstream)
-		configMu.RUnlock()
-		if m == "" {
-			m = strings.TrimSpace(model)
-		}
-		return m, alias, upstreamName, upstream, true, true
-	}
-
-	candidates := make([]string, 0, len(upstreamCfgs))
-	for _, name := range NormalizeUpstreamOrder(upstreamOrder, upstreamCfgs) {
-		if upstream := upstreamCfgs[name]; upstream != nil && upstreamHasModel(upstream, m) {
-			candidates = append(candidates, name)
-		}
-	}
-	if len(candidates) > 0 {
-		counterValue, _ := modelRouteCounters.LoadOrStore(m, &atomic.Uint64{})
-		counter := counterValue.(*atomic.Uint64)
-		selectedName := candidates[(counter.Add(1)-1)%uint64(len(candidates))]
-		selected := CloneUpstreamConfig(upstreamCfgs[selectedName])
-		configMu.RUnlock()
-		return m, alias, selectedName, selected, false, true
-	}
-
-	// Compatibility for old configurations that explicitly declared a default
-	// unrestricted upstream. New configurations never populate this field, so
-	// they cannot accidentally regain default-upstream routing.
-	if legacyDefaultRoute {
-		legacyDefault := upstreamCfgs[defaultUpstreamName]
-		if legacyDefault == nil || len(legacyDefault.CustomModels) != 0 {
-			legacyDefault = nil
-		}
-		if legacyDefault != nil && strings.TrimSpace(defaultUpstreamName) != "" {
-			selected := CloneUpstreamConfig(legacyDefault)
-			configMu.RUnlock()
-			return m, alias, defaultUpstreamName, selected, false, true
-		}
-	}
-
-	// Keep a useful upstream name in the not-found error path without treating
-	// that upstream as a match. The handler rejects the request when matched is
-	// false.
-	fallbackName := ""
-	var fallback *UpstreamConfig
-	if legacyDefaultRoute && strings.TrimSpace(defaultUpstreamName) != "" {
-		fallbackName = defaultUpstreamName
-		fallback = CloneUpstreamConfig(upstreamCfgs[fallbackName])
-	}
-	if fallback == nil {
-		names := NormalizeUpstreamOrder(upstreamOrder, upstreamCfgs)
-		if len(names) > 0 {
-			fallbackName = names[0]
-			fallback = CloneUpstreamConfig(upstreamCfgs[fallbackName])
-		}
-	}
-	configMu.RUnlock()
-	return m, alias, fallbackName, fallback, false, false
-
+	routes, matched, _ := ResolveRequestModelCandidates(model)
+	route := routes[0]
+	return route.Model, route.Alias, route.UpstreamName, route.Upstream, route.AliasMatched, matched
 }
 
 func upstreamHasModel(upstream *UpstreamConfig, model string) bool {

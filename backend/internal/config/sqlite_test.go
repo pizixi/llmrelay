@@ -366,3 +366,79 @@ func TestSQLiteConfigPreservesUpstreamIDAcrossRename(t *testing.T) {
 		t.Fatalf("renamed alias target was not persisted: %#v", targets)
 	}
 }
+
+func TestSQLiteConfigRoundTripsAllowDirectModelsAndDefaultsToMappingsOnly(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "llmrelay.db")
+	initial := AppConfig{
+		Upstreams: map[string]*UpstreamConfig{
+			"primary": {BaseURL: "https://example.com/v1", APIType: UpstreamOpenAI},
+		},
+		UpstreamOrder: []string{"primary"},
+	}
+	if err := SaveConfig(databasePath, initial); err != nil {
+		t.Fatalf("save initial config: %v", err)
+	}
+	got, err := LoadConfig(databasePath)
+	if err != nil {
+		t.Fatalf("load initial config: %v", err)
+	}
+	if got.AllowDirectModels {
+		t.Fatal("new configuration must default to exposing only model mappings")
+	}
+
+	initial.AllowDirectModels = true
+	if err := SaveConfig(databasePath, initial); err != nil {
+		t.Fatalf("save enabled config: %v", err)
+	}
+	got, err = LoadConfig(databasePath)
+	if err != nil {
+		t.Fatalf("load enabled config: %v", err)
+	}
+	if !got.AllowDirectModels {
+		t.Fatal("allow_direct_models was not persisted")
+	}
+}
+
+func TestSQLiteConfigAddsAllowDirectModelsColumnToOlderGatewaySettings(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "llmrelay.db")
+	db, err := storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE gateway_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    default_upstream_id INTEGER,
+    active_proxy_mode TEXT NOT NULL DEFAULT 'direct',
+    active_proxy_id INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO gateway_settings(id, default_upstream_id, active_proxy_mode) VALUES (1, NULL, 'direct');`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadConfig(databasePath)
+	if err != nil {
+		t.Fatalf("load older gateway settings schema: %v", err)
+	}
+	if got.AllowDirectModels {
+		t.Fatal("upgraded configuration must join the mappings-only default")
+	}
+
+	db, err = storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var columnCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('gateway_settings') WHERE name = 'allow_direct_models'`).Scan(&columnCount); err != nil {
+		t.Fatal(err)
+	}
+	if columnCount != 1 {
+		t.Fatal("allow_direct_models column was not added")
+	}
+}

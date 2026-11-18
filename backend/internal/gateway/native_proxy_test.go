@@ -339,7 +339,8 @@ func TestChatHandlerAutomaticDirectRouteRecordsSameModelUsageAndTiming(t *testin
 				CustomModels: []string{"same-model"},
 			},
 		},
-		UpstreamOrder: []string{"primary"},
+		UpstreamOrder:     []string{"primary"},
+		AllowDirectModels: true,
 	})
 
 	handler := stats.TrackRequest(ChatCompletionsHandler)

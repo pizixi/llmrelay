@@ -72,9 +72,12 @@ func TestConvertedChatStreamRecoversAfterDeliveredOutput(t *testing.T) {
 				if scenario == "disabled retries" {
 					retries = 0
 				}
-				config.ApplyConfig(config.AppConfig{Upstreams: map[string]*config.UpstreamConfig{
-					"retry-test": {BaseURL: upstream.URL, APIType: UpstreamOpenAI, CustomModels: []string{"retry-model"}, MaxRetries: &retries},
-				}})
+				config.ApplyConfig(config.AppConfig{
+					Upstreams: map[string]*config.UpstreamConfig{
+						"retry-test": {BaseURL: upstream.URL, APIType: UpstreamOpenAI, CustomModels: []string{"retry-model"}, MaxRetries: &retries},
+					},
+					AllowDirectModels: true,
+				})
 				path := "/v1/messages"
 				handler := ClaudeMessagesHandler
 				request := `{"model":"retry-model","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"test"}]}`

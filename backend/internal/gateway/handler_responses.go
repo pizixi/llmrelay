@@ -5,49 +5,19 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 
 	bridgestate "llmrelay/backend/internal/bridge/state"
 )
 
 func ResponsesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	defer r.Body.Close()
-	body, readStatus, err := readAPIRequestBody(w, r)
-	if err != nil {
-		writeExternalAPIError(w, r.URL.Path, readStatus, "invalid_request_error", err.Error())
-		return
-	}
+	serveModelRequest(w, r, serveResponses)
+}
 
-	cnt := requestCount.Add(1)
-	if debugMode && debugLogBodies {
-		log.Printf("[请求 #%d] POST /v1/responses\n%s", cnt, string(body))
-	}
-
-	envelope, err := DecodeNativeRequestEnvelope(body)
-	if err != nil {
-		writeExternalAPIError(w, r.URL.Path, http.StatusBadRequest, "invalid_request_error", "Invalid JSON")
-		return
-	}
-	requestedModel := strings.TrimSpace(envelope.Model)
-	r, releaseModelRequest := trackModelRequest(r, requestedModel)
-	defer releaseModelRequest()
-	resolvedModel, modelAliasInfo, upstreamName, upstream, aliasMatched, modelMatched := resolveRequestModel(envelope.Model)
-	if resolvedModel == "" {
-		writeExternalAPIError(w, r.URL.Path, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return
-	}
-	if !modelMatched {
-		writeModelNotFoundError(w, r.URL.Path, requestedModel)
-		return
-	}
-	if upstream == nil {
-		writeExternalAPIError(w, r.URL.Path, http.StatusInternalServerError, "upstream_configuration_error", "selected upstream is not configured: "+upstreamName)
-		return
-	}
+func serveResponses(w http.ResponseWriter, r *http.Request, request routedRequest) {
+	var err error
+	body, envelope, requestedModel := request.Body, request.Envelope, request.RequestedModel
+	resolvedModel, modelAliasInfo := request.Route.Model, request.Route.Alias
+	upstreamName, upstream, aliasMatched := request.Route.UpstreamName, request.Route.Upstream, request.Route.AliasMatched
 	decision := decideProtocolBridge(WireResponses, upstream, effectiveBridgeMode(r, upstream))
 	strictBridge := decision.Mode == BridgeModeStrict
 	effortMap := getReasoningEffortMapForAlias(modelAliasInfo)

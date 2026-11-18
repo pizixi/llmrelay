@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"llmrelay/backend/internal/config"
 )
 
 func installRoutingTestConfig(t *testing.T, upstreamURL string) {
@@ -85,6 +87,9 @@ func TestResolveRequestModelUsesWeightedAliasTargets(t *testing.T) {
 	}}
 	configMu.Unlock()
 	syncLegacyConfig()
+	cfg := config.Snapshot()
+	cfg.ModelRouting.Strategy = config.RoutingWeightedRoundRobin
+	config.ApplyConfig(cfg)
 
 	wantModels := []string{
 		"primary-model", "primary-model", "primary-model", "backup-model",
@@ -256,5 +261,83 @@ func TestRoutableModelListIncludesDefaultModelsAndAliases(t *testing.T) {
 	}
 	if gotOwners["both"] != "alias" {
 		t.Fatalf("duplicate model owner = %q, want alias precedence", gotOwners["both"])
+	}
+}
+
+func TestDirectModelsAreRejectedAndHiddenUnlessExplicitlyAllowed(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"default-only","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	installRoutingTestConfig(t, server.URL+"/v1")
+	restoreAllowDirectModels := allowDirectModels
+	t.Cleanup(func() { allowDirectModels = restoreAllowDirectModels })
+	configMu.Lock()
+	allowDirectModels = false
+	configMu.Unlock()
+	syncLegacyConfig()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"default-only","messages":[{"role":"user","content":"hello"}]
+	}`))
+	chatCompletionsHandler(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404; body=%s", response.Code, response.Body.String())
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("direct model request reached upstream %d time(s)", calls.Load())
+	}
+
+	var ids []string
+	for _, model := range getRoutableModelInfos() {
+		ids = append(ids, model.ID)
+	}
+	if want := []string{"alias-only", "both"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("model IDs = %#v, want %#v", ids, want)
+	}
+
+	// 别名仍然可用，并映射到真实上游模型。
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"alias-only","messages":[{"role":"user","content":"hello"}]
+	}`))
+	chatCompletionsHandler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("alias status=%d, want 200; body=%s", response.Code, response.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("alias request upstream calls=%d, want 1", calls.Load())
+	}
+}
+
+func TestDirectModelRoutingRestoredWhenAllowlistEnabled(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"default-only","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	installRoutingTestConfig(t, server.URL+"/v1")
+	restoreAllowDirectModels := allowDirectModels
+	t.Cleanup(func() { allowDirectModels = restoreAllowDirectModels })
+	configMu.Lock()
+	allowDirectModels = true
+	configMu.Unlock()
+	syncLegacyConfig()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"default-only","messages":[{"role":"user","content":"hello"}]
+	}`))
+	chatCompletionsHandler(response, request)
+	if response.Code != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d; body=%s", response.Code, calls.Load(), response.Body.String())
 	}
 }

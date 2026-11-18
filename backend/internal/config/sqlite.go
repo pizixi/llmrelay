@@ -147,7 +147,18 @@ CREATE TABLE IF NOT EXISTS gateway_settings (
     active_proxy_mode TEXT NOT NULL DEFAULT 'direct'
         CHECK (active_proxy_mode IN ('direct', 'round_robin', 'rate_limit_switch', 'rate_limit_switch_no_direct', 'fixed')),
     active_proxy_id INTEGER REFERENCES socks5_proxies(id) ON DELETE SET NULL,
+    allow_direct_models INTEGER NOT NULL DEFAULT 0 CHECK (allow_direct_models IN (0, 1)),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS model_routing_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    strategy TEXT NOT NULL DEFAULT 'priority',
+    disable_failover INTEGER NOT NULL DEFAULT 0 CHECK (disable_failover IN (0, 1)),
+    max_attempts INTEGER NOT NULL DEFAULT 0,
+    disable_cooldown INTEGER NOT NULL DEFAULT 0 CHECK (disable_cooldown IN (0, 1)),
+    failure_threshold INTEGER NOT NULL DEFAULT 3,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 180
 );
 `
 
@@ -168,6 +179,9 @@ func ensureConfigSchema(db *sql.DB) error {
 		if err := ensureUpstreamProxyColumn(db); err != nil {
 			return err
 		}
+		if err := ensureGatewayAllowDirectModelsColumn(db); err != nil {
+			return err
+		}
 		return ensureModelAliasTargetEnabledColumn(db)
 	}
 	if err != nil {
@@ -180,6 +194,9 @@ func ensureConfigSchema(db *sql.DB) error {
 		return err
 	}
 	if err := ensureUpstreamProxyColumn(db); err != nil {
+		return err
+	}
+	if err := ensureGatewayAllowDirectModelsColumn(db); err != nil {
 		return err
 	}
 	return ensureModelAliasTargetEnabledColumn(db)
@@ -253,6 +270,44 @@ func ensureUpstreamProxyColumn(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE upstreams ADD COLUMN proxy_addr TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add upstream proxy column: %w", err)
+	}
+	return nil
+}
+
+// ensureGatewayAllowDirectModelsColumn upgrades normalized databases created
+// before the public model allowlist setting existed. Existing databases join
+// the mappings-only default, matching a fresh install; operators who still
+// need direct upstream models can enable the switch in the admin UI.
+func ensureGatewayAllowDirectModelsColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(gateway_settings)")
+	if err != nil {
+		return fmt.Errorf("inspect gateway settings schema: %w", err)
+	}
+	defer rows.Close()
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan gateway settings schema: %w", err)
+		}
+		if name == "allow_direct_models" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read gateway settings schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close gateway settings schema rows: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE gateway_settings ADD COLUMN allow_direct_models INTEGER NOT NULL DEFAULT 0 CHECK (allow_direct_models IN (0, 1))`); err != nil {
+		return fmt.Errorf("add gateway allow_direct_models column: %w", err)
 	}
 	return nil
 }
@@ -698,13 +753,15 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 		defaultUpstreamID sql.NullInt64
 		activeProxyMode   string
 		activeProxyID     sql.NullInt64
+		allowDirectModels int
 	)
-	err = db.QueryRow(`SELECT default_upstream_id, active_proxy_mode, active_proxy_id
-		FROM gateway_settings WHERE id = 1`).Scan(&defaultUpstreamID, &activeProxyMode, &activeProxyID)
+	err = db.QueryRow(`SELECT default_upstream_id, active_proxy_mode, active_proxy_id, allow_direct_models
+		FROM gateway_settings WHERE id = 1`).Scan(&defaultUpstreamID, &activeProxyMode, &activeProxyID, &allowDirectModels)
 	if err != nil && err != sql.ErrNoRows {
 		return cfg, err
 	}
 	if err == nil {
+		cfg.AllowDirectModels = allowDirectModels != 0
 		if defaultUpstreamID.Valid {
 			cfg.DefaultUpstream = upstreamNamesByID[defaultUpstreamID.Int64]
 			cfg.LegacyDefaultUpstream = cfg.DefaultUpstream != ""
@@ -727,6 +784,15 @@ func readNormalizedConfig(db *sql.DB) (AppConfig, error) {
 	}
 
 	var webSearch WebSearchConfig
+	var disableFailover, disableCooldown int
+	err = db.QueryRow(`SELECT strategy, disable_failover, max_attempts, disable_cooldown, failure_threshold, cooldown_seconds
+		FROM model_routing_settings WHERE id = 1`).Scan(&cfg.ModelRouting.Strategy, &disableFailover,
+		&cfg.ModelRouting.MaxAttempts, &disableCooldown, &cfg.ModelRouting.FailureThreshold, &cfg.ModelRouting.CooldownSeconds)
+	if err != nil && err != sql.ErrNoRows {
+		return cfg, err
+	}
+	cfg.ModelRouting.DisableFailover = disableFailover != 0
+	cfg.ModelRouting.DisableCooldown = disableCooldown != 0
 	var webSearchEnabled int
 	err = db.QueryRow(`SELECT enabled, provider, fallback_provider, base_url, api_key,
 		searxng_mode, searxng_directory_url, max_results, timeout_seconds,
@@ -752,6 +818,7 @@ func writeNormalizedConfig(tx *sql.Tx, cfg AppConfig) error {
 	// removed configuration item cannot remain as an orphan.
 	for _, statement := range []string{
 		"DELETE FROM gateway_settings",
+		"DELETE FROM model_routing_settings",
 		"DELETE FROM alias_reasoning_effort_mappings",
 		"DELETE FROM model_alias_targets",
 		"DELETE FROM model_aliases",
@@ -930,8 +997,15 @@ func writeNormalizedConfig(tx *sql.Tx, cfg AppConfig) error {
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO gateway_settings
-		(id, default_upstream_id, active_proxy_mode, active_proxy_id) VALUES (1, ?, ?, ?)`,
-		defaultUpstreamID, activeMode, activeProxyID); err != nil {
+		(id, default_upstream_id, active_proxy_mode, active_proxy_id, allow_direct_models) VALUES (1, ?, ?, ?, ?)`,
+		defaultUpstreamID, activeMode, activeProxyID, boolToSQLite(cfg.AllowDirectModels)); err != nil {
+		return err
+	}
+	policy := NormalizeModelRoutingConfig(cfg.ModelRouting)
+	if _, err := tx.Exec(`INSERT INTO model_routing_settings
+		(id, strategy, disable_failover, max_attempts, disable_cooldown, failure_threshold, cooldown_seconds)
+		VALUES (1, ?, ?, ?, ?, ?, ?)`, policy.Strategy, boolToSQLite(policy.DisableFailover), policy.MaxAttempts,
+		boolToSQLite(policy.DisableCooldown), policy.FailureThreshold, policy.CooldownSeconds); err != nil {
 		return err
 	}
 	return nil

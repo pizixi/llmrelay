@@ -341,28 +341,31 @@ func GetAliasModelInfos() []ModelInfo {
 	return models
 }
 
-// GetRoutableModelInfos 与请求路由保持一致：将别名作为公开模型名，
-// 同时包含所有上游声明支持的直接模型。两者同名时别名优先。
+// GetRoutableModelInfos 与请求路由保持一致：默认只将别名作为公开模型名，
+// 因为对外提供的模型必须来自模型映射。启用 AllowDirectModels 后，额外
+// 包含所有上游声明支持的直接模型，两者同名时别名优先。
 func GetRoutableModelInfos() []ModelInfo {
 	snapshot := config.Snapshot()
 	now := time.Now().Unix()
 	byID := make(map[string]ModelInfo)
-	for _, upstreamName := range config.NormalizeUpstreamOrder(snapshot.UpstreamOrder, snapshot.Upstreams) {
-		upstream := snapshot.Upstreams[upstreamName]
-		if upstream == nil {
-			continue
-		}
-		for _, rawModel := range upstream.CustomModels {
-			model := strings.TrimSpace(rawModel)
-			if model == "" {
+	if snapshot.AllowDirectModels {
+		for _, upstreamName := range config.NormalizeUpstreamOrder(snapshot.UpstreamOrder, snapshot.Upstreams) {
+			upstream := snapshot.Upstreams[upstreamName]
+			if upstream == nil {
 				continue
 			}
-			if _, exists := byID[model]; !exists {
-				byID[model] = ModelInfo{
-					ID:      model,
-					Object:  "model",
-					Created: now,
-					OwnedBy: EffectiveUpstreamName(upstreamName),
+			for _, rawModel := range upstream.CustomModels {
+				model := strings.TrimSpace(rawModel)
+				if model == "" {
+					continue
+				}
+				if _, exists := byID[model]; !exists {
+					byID[model] = ModelInfo{
+						ID:      model,
+						Object:  "model",
+						Created: now,
+						OwnedBy: EffectiveUpstreamName(upstreamName),
+					}
 				}
 			}
 		}

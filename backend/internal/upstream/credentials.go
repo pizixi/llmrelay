@@ -151,6 +151,22 @@ func ShouldRetryUpstreamStatus(status int) bool {
 	}
 }
 
+// Authentication, permission and quota failures can be specific to one key.
+// Try each remaining credential within max_retries before failing the target.
+func nextUnrejectedCredential(status int, keys []string, current int, rejected map[int]bool) (string, int, bool) {
+	if status != http.StatusUnauthorized && status != http.StatusForbidden && status != http.StatusPaymentRequired {
+		return "", current, false
+	}
+	rejected[current] = true
+	for offset := 1; offset < len(keys); offset++ {
+		next := (current + offset) % len(keys)
+		if !rejected[next] {
+			return keys[next], next, true
+		}
+	}
+	return "", current, false
+}
+
 func UpstreamAttemptLimit(upstream *UpstreamConfig, keyCount int) int {
 	const defaultRetries = 3
 	retries := defaultRetries

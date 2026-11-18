@@ -14,6 +14,7 @@ import (
 type AppConfig = domain.AppConfig
 type ModelAlias = domain.ModelAlias
 type ModelAliasTarget = domain.ModelAliasTarget
+type ModelRoutingConfig = domain.ModelRoutingConfig
 type UpstreamConfig = domain.UpstreamConfig
 type UpstreamType = domain.UpstreamType
 type BridgeMode = domain.BridgeMode
@@ -38,6 +39,14 @@ var (
 	upstreamCfgs        = map[string]*UpstreamConfig{}
 	defaultUpstreamName string
 )
+
+// AllowDirectModels reports whether clients may call upstream model names that
+// are not declared as model mappings.
+func AllowDirectModels() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return allowDirectModels
+}
 
 func ValidateWebSearchConfig(config WebSearchConfig) error {
 	return websearch.ValidateWebSearchConfig(config)

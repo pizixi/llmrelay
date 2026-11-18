@@ -75,7 +75,8 @@ type APIKey struct {
 }
 
 type AppConfig struct {
-	ModelAlias map[string]ModelAlias `json:"model_alias"`
+	ModelAlias   map[string]ModelAlias `json:"model_alias"`
+	ModelRouting ModelRoutingConfig    `json:"model_routing"`
 
 	ReasoningEffortMap map[string]string `json:"reasoning_effort_map"`
 	WebSearch          WebSearchConfig   `json:"web_search,omitempty"`
@@ -88,6 +89,10 @@ type AppConfig struct {
 	Upstream      *UpstreamConfig            `json:"upstream,omitempty"`
 	Upstreams     map[string]*UpstreamConfig `json:"upstreams,omitempty"`
 	UpstreamOrder []string                   `json:"upstream_order,omitempty"`
+	// AllowDirectModels controls whether the public API accepts upstream model
+	// names that are not declared as model mappings. When false (the default),
+	// only alias names are exposed by /v1/models and routable by clients.
+	AllowDirectModels bool `json:"allow_direct_models,omitempty"`
 	// DefaultUpstream is retained for decoding old configurations. New routing
 	// never uses a default upstream and selects by the requested model.
 	DefaultUpstream string `json:"default_upstream,omitempty"`
@@ -95,6 +100,17 @@ type AppConfig struct {
 	// from the compatibility value generated while normalizing old callers.
 	// It is never serialized or exposed by the admin API.
 	LegacyDefaultUpstream bool `json:"-"`
+}
+
+// ModelRoutingConfig controls target selection and request-level failover.
+// Zero values enable priority routing, failover and model-specific cooldowns.
+type ModelRoutingConfig struct {
+	Strategy         string `json:"strategy"`
+	DisableFailover  bool   `json:"disable_failover"`
+	MaxAttempts      int    `json:"max_attempts"`
+	DisableCooldown  bool   `json:"disable_cooldown"`
+	FailureThreshold int    `json:"failure_threshold"`
+	CooldownSeconds  int    `json:"cooldown_seconds"`
 }
 
 type ModelAlias struct {
