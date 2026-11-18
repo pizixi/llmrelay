@@ -2504,10 +2504,10 @@ select.m-select {
 .alias-target-popover {
   display: flex;
   flex-direction: column;
-  width: min(840px, calc(100vw - 48px));
-  max-width: 840px;
-  height: min(620px, calc(100vh - 48px));
-  max-height: calc(100vh - 48px);
+  width: min(960px, calc(100vw - 32px));
+  max-width: 960px;
+  height: min(78vh, 820px);
+  max-height: calc(100vh - 32px);
   overflow: hidden;
   border-radius: 8px;
 }
@@ -2552,7 +2552,7 @@ select.m-select {
 }
 
 .alias-target-options-list {
-  max-height: min(304px, calc(100vh - 190px));
+  max-height: min(52vh, 460px);
   padding: 5px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -3972,6 +3972,10 @@ select.m-select {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  width: min(960px, calc(100vw - 32px));
+  max-width: 960px;
+  height: min(78vh, 820px);
+  max-height: calc(100vh - 32px);
 }
 
 .model-picker-popover .model-list {
@@ -4218,7 +4222,7 @@ select.m-select {
 /* Model list container — larger radius */
 .model-list {
   position: relative;
-  max-height: 440px;
+  max-height: 62vh;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
