@@ -63,8 +63,28 @@ func NextUpstreamAPIKeyIndex(name string, total int) int {
 
 type routingPolicyContextKey struct{}
 
+type requestRoutingPolicy struct {
+	config                    domain.ModelRoutingConfig
+	trackKeyHealth            bool
+	rotateKeysOnTargetFailure bool
+}
+
 func WithRoutingPolicy(ctx context.Context, policy domain.ModelRoutingConfig) context.Context {
-	return context.WithValue(ctx, routingPolicyContextKey{}, policy)
+	return withRoutingPolicy(ctx, policy, !policy.DisableCooldown)
+}
+
+// WithSingleTargetRoutingPolicy bypasses Key cooldown and keeps the configured
+// per-request Key rotation.
+func WithSingleTargetRoutingPolicy(ctx context.Context, policy domain.ModelRoutingConfig) context.Context {
+	return withRoutingPolicy(ctx, policy, false)
+}
+
+func withRoutingPolicy(ctx context.Context, policy domain.ModelRoutingConfig, trackKeyHealth bool) context.Context {
+	return context.WithValue(ctx, routingPolicyContextKey{}, requestRoutingPolicy{
+		config:                    policy,
+		trackKeyHealth:            trackKeyHealth,
+		rotateKeysOnTargetFailure: !policy.DisableCooldown,
+	})
 }
 
 func ModelTargetAvailability(name, model string, upstream *UpstreamConfig) (bool, time.Duration) {

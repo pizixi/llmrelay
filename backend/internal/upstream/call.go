@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"llmrelay/backend/internal/domain"
 	"llmrelay/backend/internal/routing/health"
 	"llmrelay/backend/internal/stats"
 )
@@ -27,7 +26,7 @@ type upstreamCall struct {
 	body                   []byte
 	name, model, endpoint  string
 	upstream               *UpstreamConfig
-	policy                 domain.ModelRoutingConfig
+	policy                 requestRoutingPolicy
 	target                 health.Target
 	keys                   []string
 	keyIndex               int
@@ -61,8 +60,7 @@ func (err *ResponseError) Unwrap() error { return err.cause }
 
 func newUpstreamCall(ctx context.Context, body []byte, name, model string, upstream *UpstreamConfig, raw []bool) *upstreamCall {
 	keys := GetUpstreamAPIKeys(upstream)
-	policy, tracked := ctx.Value(routingPolicyContextKey{}).(domain.ModelRoutingConfig)
-	policy.DisableCooldown = !tracked || policy.DisableCooldown
+	policy, _ := ctx.Value(routingPolicyContextKey{}).(requestRoutingPolicy)
 	call := &upstreamCall{
 		ctx: ctx, body: body, name: name, model: model, upstream: upstream,
 		endpoint: GetUpstreamEndpoint(upstream), policy: policy, keys: keys,
@@ -70,7 +68,7 @@ func newUpstreamCall(ctx context.Context, body []byte, name, model string, upstr
 		limit:    UpstreamAttemptLimit(upstream, len(keys)), retryDelay: time.Second,
 		raw: len(raw) > 0 && raw[0],
 	}
-	if !policy.DisableCooldown {
+	if policy.trackKeyHealth {
 		call.target = health.NewTarget(name, model, upstream)
 	}
 	return call
@@ -87,11 +85,11 @@ func (call *upstreamCall) chooseKey(acquire bool) (string, int, *health.KeyAttem
 		if call.rejected[index] {
 			continue
 		}
-		if call.policy.DisableCooldown {
+		if !call.policy.trackKeyHealth {
 			return key, index, nil, true
 		}
 		if acquire {
-			attempt, _ := call.target.TryKey(key, call.policy)
+			attempt, _ := call.target.TryKey(key, call.policy.config)
 			if attempt != nil {
 				return key, index, attempt, true
 			}
@@ -262,7 +260,7 @@ func (call *upstreamCall) open() (upstreamReply, error) {
 		}
 		// These failures can vary by key, even for the same upstream model.
 		if len(call.keys) > 1 && (failure.Kind == "authentication_or_quota" || failure.Kind == "permission" ||
-			(!call.policy.DisableCooldown && failure.Cooldown && failure.Failover)) {
+			(call.policy.rotateKeysOnTargetFailure && failure.Cooldown && failure.Failover)) {
 			if call.rejected == nil {
 				call.rejected = make(map[int]bool)
 			}

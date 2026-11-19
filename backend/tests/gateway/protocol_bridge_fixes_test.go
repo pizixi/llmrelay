@@ -509,7 +509,7 @@ func TestChatBridgeRejectsMalformedSuccessfulUpstreamResponse(t *testing.T) {
 			}`))
 			response := httptest.NewRecorder()
 			chatCompletionsHandler(response, request)
-			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "upstream_unavailable") {
+			if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "upstream_protocol_error") {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
 		})

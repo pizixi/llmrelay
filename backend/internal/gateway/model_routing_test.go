@@ -54,13 +54,22 @@ func writeRoutingSuccess(w http.ResponseWriter, apiType UpstreamType, stream boo
 	}
 }
 
-func installFailoverConfig(t *testing.T, primary, backup *httptest.Server, primaryType, backupType UpstreamType, policy config.ModelRoutingConfig) config.AppConfig {
+func isolateModelRoutingTest(t *testing.T) {
 	t.Helper()
 	previous, previousPath := config.Snapshot(), stats.Path()
 	usagePath := filepath.Join(t.TempDir(), "usage.db")
-	t.Cleanup(func() { config.ApplyConfig(previous); stats.SetPath(previousPath); stats.LoadTokenStats() })
+	t.Cleanup(func() {
+		config.ApplyConfig(previous)
+		stats.SetPath(previousPath)
+		stats.LoadTokenStats()
+	})
 	stats.SetPath(usagePath)
 	stats.LoadTokenStats()
+}
+
+func installFailoverConfig(t *testing.T, primary, backup *httptest.Server, primaryType, backupType UpstreamType, policy config.ModelRoutingConfig) config.AppConfig {
+	t.Helper()
+	isolateModelRoutingTest(t)
 	noRetries := 0
 	cfg := config.AppConfig{
 		ModelRouting: policy,
@@ -177,6 +186,99 @@ func TestModelFailoverStatusPolicyAndCooldown(t *testing.T) {
 				t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
 			}
 		})
+	}
+}
+
+func TestSingleModelTargetBypassesCooldown(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			const failure = `{"error":{"message":"primary key rejected"}}`
+			var primaryCalls, backupCalls atomic.Int32
+			var recovered atomic.Bool
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryCalls.Add(1)
+				if recovered.Load() {
+					writeRoutingSuccess(w, UpstreamOpenAI, stream)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, failure)
+			}))
+			defer primary.Close()
+			backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupCalls.Add(1)
+				writeRoutingSuccess(w, UpstreamOpenAI, stream)
+			}))
+			defer backup.Close()
+			cfg := installFailoverConfig(t, primary, backup, UpstreamOpenAI, UpstreamOpenAI, config.ModelRoutingConfig{FailureThreshold: 1})
+			setBackupEnabled := func(enabled bool) {
+				cfg.ModelAlias["alias"].Targets[0].Enabled = enabled
+				config.ApplyConfig(cfg)
+			}
+			body := fmt.Sprintf(`{"model":"alias","stream":%t,"messages":[]}`, stream)
+			request := func() *httptest.ResponseRecorder {
+				response := httptest.NewRecorder()
+				ChatCompletionsHandler(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+				return response
+			}
+
+			setBackupEnabled(false)
+			for range 2 {
+				response := request()
+				if response.Code != http.StatusUnauthorized || response.Body.String() != failure || response.Header().Get("Retry-After") != "30" {
+					t.Fatalf("single target returned status=%d headers=%v body=%s", response.Code, response.Header(), response.Body)
+				}
+			}
+			setBackupEnabled(true)
+			if response := request(); response.Code != http.StatusOK || primaryCalls.Load() != 3 || backupCalls.Load() != 1 {
+				t.Fatalf("failover returned status=%d primary calls=%d backup calls=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body)
+			}
+			if response := request(); response.Code != http.StatusOK || primaryCalls.Load() != 3 || backupCalls.Load() != 2 {
+				t.Fatalf("cooled primary was not skipped: status=%d primary calls=%d backup calls=%d", response.Code, primaryCalls.Load(), backupCalls.Load())
+			}
+			setBackupEnabled(false)
+			recovered.Store(true)
+			if response := request(); response.Code != http.StatusOK || primaryCalls.Load() != 4 || backupCalls.Load() != 2 {
+				t.Fatalf("recovered single target returned status=%d primary calls=%d backup calls=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body)
+			}
+		})
+	}
+}
+
+func TestSingleDirectModelStillRetriesOtherKeys(t *testing.T) {
+	var rejectedCalls, successfulCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer rejected-key" {
+			rejectedCalls.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		successfulCalls.Add(1)
+		writeRoutingSuccess(w, UpstreamOpenAI, false)
+	}))
+	defer server.Close()
+	isolateModelRoutingTest(t)
+	oneRetry := 1
+	config.ApplyConfig(config.AppConfig{
+		AllowDirectModels: true,
+		ModelAlias:        map[string]config.ModelAlias{},
+		ModelRouting:      config.ModelRoutingConfig{FailureThreshold: 1},
+		Upstreams: map[string]*config.UpstreamConfig{
+			"single-direct": {BaseURL: server.URL, APIType: UpstreamOpenAI, APIKey: "rejected-key\nworking-key", CustomModels: []string{"direct-model"}, MaxRetries: &oneRetry},
+		},
+	})
+	for range 4 {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"direct-model","messages":[]}`))
+		ChatCompletionsHandler(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "backup-ok") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body)
+		}
+	}
+	if rejectedCalls.Load() != 2 || successfulCalls.Load() != 4 {
+		t.Fatalf("calls rejected key=%d working key=%d", rejectedCalls.Load(), successfulCalls.Load())
 	}
 }
 

@@ -55,8 +55,8 @@ type ModelRoute struct {
 // ResolveRequestModelCandidates returns each target once in request order.
 // Alias failover is limited to the alias's enabled targets. Direct models keep
 // their existing round-robin starting point and try the remaining matches.
-// The optional availability callback excludes cooling or busy recovery targets
-// from balancing, while retaining them in the result for final admission checks.
+// When balancing multiple targets, the optional availability callback excludes
+// cooling or busy recovery targets while retaining them in the result.
 func ResolveRequestModelCandidates(model string, availability ...func(ModelRoute) bool) ([]ModelRoute, bool, ModelRoutingConfig) {
 	model = strings.TrimSpace(model)
 	configMu.RLock()
@@ -84,33 +84,35 @@ func ResolveRequestModelCandidates(model string, availability ...func(ModelRoute
 		if len(targets) == 0 {
 			return []ModelRoute{{Model: model, Alias: alias, AliasMatched: true}}, false, policy
 		}
-		var first ModelAliasTarget
-		targetAvailable := func(target ModelAliasTarget) bool {
-			if policy.DisableCooldown || len(availability) == 0 {
-				return true
+		if len(targets) > 1 {
+			var first ModelAliasTarget
+			targetAvailable := func(target ModelAliasTarget) bool {
+				if policy.DisableCooldown || len(availability) == 0 {
+					return true
+				}
+				return isAvailable(ModelRoute{Model: target.TargetModel, UpstreamName: target.Upstream, Upstream: CloneUpstreamConfig(upstreamCfgs[target.Upstream])})
 			}
-			return isAvailable(ModelRoute{Model: target.TargetModel, UpstreamName: target.Upstream, Upstream: CloneUpstreamConfig(upstreamCfgs[target.Upstream])})
-		}
-		if policy.Strategy == RoutingWeightedRoundRobin {
-			var availableTargets []ModelAliasTarget
-			for _, target := range targets {
-				if targetAvailable(target) {
-					availableTargets = append(availableTargets, target)
+			if policy.Strategy == RoutingWeightedRoundRobin {
+				var availableTargets []ModelAliasTarget
+				for _, target := range targets {
+					if targetAvailable(target) {
+						availableTargets = append(availableTargets, target)
+					}
+				}
+				if len(availableTargets) > 0 {
+					value, _ := aliasTargetCounters.LoadOrStore(model, &atomic.Uint64{})
+					first = SelectWeightedAliasTarget(availableTargets, value.(*atomic.Uint64).Add(1)-1)
 				}
 			}
-			if len(availableTargets) > 0 {
-				value, _ := aliasTargetCounters.LoadOrStore(model, &atomic.Uint64{})
-				first = SelectWeightedAliasTarget(availableTargets, value.(*atomic.Uint64).Add(1)-1)
-			}
-		}
-		sort.SliceStable(targets, func(i, j int) bool { return targets[i].Weight > targets[j].Weight })
-		rotateEqualWeightTargets(model, targets, targetAvailable)
-		if first.Upstream != "" {
-			for index, target := range targets {
-				if target == first {
-					copy(targets[1:index+1], targets[:index])
-					targets[0] = first
-					break
+			sort.SliceStable(targets, func(i, j int) bool { return targets[i].Weight > targets[j].Weight })
+			rotateEqualWeightTargets(model, targets, targetAvailable)
+			if first.Upstream != "" {
+				for index, target := range targets {
+					if target == first {
+						copy(targets[1:index+1], targets[:index])
+						targets[0] = first
+						break
+					}
 				}
 			}
 		}
@@ -132,7 +134,10 @@ func ResolveRequestModelCandidates(model string, availability ...func(ModelRoute
 			}
 		}
 	}
-	if len(routes) > 0 {
+	if len(routes) == 1 {
+		return routes, true, policy
+	}
+	if len(routes) > 1 {
 		var availableRoutes, unavailableRoutes []ModelRoute
 		for _, route := range routes {
 			if isAvailable(route) {

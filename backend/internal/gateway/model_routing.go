@@ -67,9 +67,17 @@ func serveModelRequest(w http.ResponseWriter, r *http.Request, serve func(http.R
 		writeModelNotFoundError(w, r.URL.Path, model)
 		return
 	}
+	ctx := r.Context()
+	if len(routes) == 1 {
+		ctx = upstream.WithSingleTargetRoutingPolicy(ctx, policy)
+		policy.DisableFailover = true
+		policy.DisableCooldown = true
+	} else {
+		ctx = upstream.WithRoutingPolicy(ctx, policy)
+	}
+	r = r.WithContext(ctx)
 	attempts := 0
 	var retryDelay time.Duration
-	r = r.WithContext(upstream.WithRoutingPolicy(r.Context(), policy))
 	for index, route := range routes {
 		if r.Context().Err() != nil {
 			return
@@ -99,6 +107,10 @@ func serveModelRequest(w http.ResponseWriter, r *http.Request, serve func(http.R
 			serve(response, attemptRequest, request)
 		}
 		if r.Context().Err() != nil {
+			return
+		}
+		if policy.DisableFailover && policy.DisableCooldown {
+			response.finish()
 			return
 		}
 		failure := health.ClassifyFailure(response.statusCode(), response.errorBody.Bytes())
