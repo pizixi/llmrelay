@@ -20,8 +20,8 @@ const parse = (...args) => admin.parseBulkUpstreams(...args);
 test("添加别名旁提供设置按钮并通过弹窗模板编辑路由配置", () => {
   const html = fs.readFileSync(path.join(__dirname, "../pages/admin.html"), "utf8");
   const modelsStart = html.indexOf('id="tab-models"');
-  const models = html.slice(modelsStart, html.indexOf('<section class="card tab-panel"', modelsStart));
-  assert.match(models, /onclick="addAliasRow\(\)"[^>]*>添加别名<\/button><button[^>]*id="modelRoutingSettingsButton"[^>]*onclick="openModelRoutingSettings\(this\)"[^>]*>设置<\/button>/);
+  const models = html.slice(modelsStart, html.indexOf('id="tab-search"', modelsStart));
+  assert.match(models, /onclick="addAliasRow\(\)"[\s\S]*?>\s*添加别名\s*<\/button\s*>\s*<button[\s\S]*?id="modelRoutingSettingsButton"[\s\S]*?onclick="[\s\S]*?openModelRoutingSettings\(this\)[\s\S]*?>\s*设置\s*<\/button\s*>/);
   assert.match(models, /aria-haspopup="dialog"/);
   assert.doesNotMatch(models, /id="modelRoutingFailureThreshold"/);
   const template = html.match(/<template id="modelRoutingSettingsTemplate">([\s\S]*?)<\/template>/);
@@ -33,9 +33,9 @@ test("添加别名旁提供设置按钮并通过弹窗模板编辑路由配置",
   }
   assert.match(policy, /id="modelRoutingFailureThreshold"[^>]*value="3"/);
   assert.match(policy, /id="modelRoutingCooldownSeconds"[^>]*value="180"/);
-  assert.match(policy, /onsubmit="event.preventDefault\(\); saveModelRoutingSettings\(this\)"/);
-  assert.match(policy, /<button[^>]*type="submit"[^>]*>保存设置<\/button>/);
-  assert.match(policy, /<button[^>]*onclick="closePopover\(\)"[^>]*>取消<\/button>/);
+  assert.match(policy, /onsubmit="[\s\S]*?event\.preventDefault\(\);[\s\S]*?saveModelRoutingSettings\(this\);?[\s\S]*?"/);
+  assert.match(policy, /<button[^>]*type="submit"[^>]*>\s*保存设置\s*<\/button\s*>/);
+  assert.match(policy, /<button[^>]*onclick="closePopover\(\)"[^>]*>\s*取消\s*<\/button\s*>/);
 });
 
 test("路由策略默认优先级选择并启用故障切换与冷却", () => {
@@ -48,8 +48,8 @@ test("路由策略默认优先级选择并启用故障切换与冷却", () => {
 
 test("模型推理映射作为可点开的行字段，全局映射有独立入口", () => {
   const html = fs.readFileSync(path.join(__dirname, "../pages/admin.html"), "utf8");
-  assert.match(html, /<th class="col-effort"[^>]*>推理映射<\/th>/);
-  assert.match(html, /onclick="openGlobalEffortEditor\(this\)">全局推理映射/);
+  assert.match(html, /<th\s+class="col-effort"[^>]*>\s*推理映射\s*<\/th\s*>/);
+  assert.match(html, /onclick="[\s\S]*?openGlobalEffortEditor\(this\)[\s\S]*?>\s*全局推理映射/);
   assert.doesNotMatch(html, /id="effortTable"/);
   const row = admin.aliasRowHtml("example", { reasoning_effort_map: { low: "medium", high: "max" } });
   assert.match(row, /data-field="effort_map"/);
@@ -533,4 +533,15 @@ test("使用记录行包含密钥序号、路由与性能指标", () => {
   assert.match(html, /usage-key-slot/);
   assert.match(html, /<b>1\/4</);
   assert.match(html, /usage-metric is-total/);
+});
+
+test("底部统计在空间不足时使用紧凑数字并保留完整值提示", () => {
+  assert.equal(admin.fmtCompact(0), "0");
+  assert.equal(admin.fmtCompact(999), "999");
+  assert.equal(admin.fmtCompact(1000), "1k");
+  assert.equal(admin.fmtCompact(1500), "1.5k");
+  assert.equal(admin.fmtCompact(12345), "12.3k");
+  assert.equal(admin.fmtCompact(999999), "1M");
+  assert.equal(admin.fmtCompact(1234567), "1.2M");
+  assert.equal(admin.fmtCompact(3400000000), "3.4B");
 });

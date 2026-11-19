@@ -1,198 +1,1114 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLM Relay 管理面板</title>
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/fonts.css">
-<link rel="stylesheet" href="/assets/admin.css">
-</head>
-<body>
-<div class="container">
-<header>
-<div class="logo">
-<div class="logo-mark">
-<img src="/assets/favicon.svg" alt="" aria-hidden="true">
-</div>
-<div>
-<div class="logo-text">LLM Relay</div>
-</div>
-</div>
-<div class="header-toolbar">
-<nav class="header-tabs" role="tablist" aria-label="管理功能">
-<button class="header-tab is-active" id="tab-trigger-stats" type="button" role="tab" aria-selected="true" aria-controls="tab-stats" tabindex="0" data-tab="stats" data-icon="chart" title="用量统计"><span class="tab-label">用量统计</span></button>
-<button class="header-tab" id="tab-trigger-usage" type="button" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1" data-tab="usage" data-icon="inbox" title="使用记录"><span class="tab-label">使用记录</span></button>
-<button class="header-tab" id="tab-trigger-api-keys" type="button" role="tab" aria-selected="false" aria-controls="tab-api-keys" tabindex="-1" data-tab="api-keys" data-icon="key" title="API 密钥"><span class="tab-label">API 密钥</span></button>
-<button class="header-tab" id="tab-trigger-upstreams" type="button" role="tab" aria-selected="false" aria-controls="tab-upstreams" tabindex="-1" data-tab="upstreams" data-icon="server" title="上游配置"><span class="tab-label">上游配置</span></button>
-<button class="header-tab" id="tab-trigger-models" type="button" role="tab" aria-selected="false" aria-controls="tab-models" tabindex="-1" data-tab="models" data-icon="layers" title="模型路由"><span class="tab-label">模型路由</span></button>
-<button class="header-tab" id="tab-trigger-search" type="button" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1" data-tab="search" data-icon="search" title="Web Search"><span class="tab-label">Web Search</span></button>
-<button class="header-tab" id="tab-trigger-proxy" type="button" role="tab" aria-selected="false" aria-controls="tab-proxy" tabindex="-1" data-tab="proxy" data-icon="globe" title="SOCKS5"><span class="tab-label">SOCKS5</span></button>
-<button class="header-tab" id="tab-trigger-logs" type="button" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1" data-tab="logs" data-icon="terminal" title="实时日志"><span class="tab-label">实时日志</span></button>
-</nav>
-<div class="header-actions">
-<span class="header-chip">Admin</span>
-<button class="theme-toggle" onclick="toggleTheme()" title="切换主题"></button>
-<form method="post" action="/logout" style="margin:0"><button class="btn-logout" type="submit" data-icon="logout" title="退出登录"><span class="btn-label">退出</span></button></form>
-</div>
-</div>
-</header>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>LLM Relay 管理面板</title>
+        <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+        <link rel="stylesheet" href="/assets/fonts.css" />
+        <link rel="stylesheet" href="/assets/admin.css" />
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <div class="logo">
+                    <div class="logo-mark">
+                        <img
+                            src="/assets/favicon.svg"
+                            alt=""
+                            aria-hidden="true"
+                        />
+                    </div>
+                    <div>
+                        <div class="logo-text">LLM Relay</div>
+                    </div>
+                </div>
+                <div class="header-toolbar">
+                    <nav
+                        class="header-tabs"
+                        role="tablist"
+                        aria-label="管理功能"
+                    >
+                        <button
+                            class="header-tab is-active"
+                            id="tab-trigger-stats"
+                            type="button"
+                            role="tab"
+                            aria-selected="true"
+                            aria-controls="tab-stats"
+                            tabindex="0"
+                            data-tab="stats"
+                            data-icon="chart"
+                            title="用量统计"
+                        >
+                            <span class="tab-label">用量统计</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-usage"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-usage"
+                            tabindex="-1"
+                            data-tab="usage"
+                            data-icon="inbox"
+                            title="使用记录"
+                        >
+                            <span class="tab-label">使用记录</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-api-keys"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-api-keys"
+                            tabindex="-1"
+                            data-tab="api-keys"
+                            data-icon="key"
+                            title="API 密钥"
+                        >
+                            <span class="tab-label">API 密钥</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-upstreams"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-upstreams"
+                            tabindex="-1"
+                            data-tab="upstreams"
+                            data-icon="server"
+                            title="上游配置"
+                        >
+                            <span class="tab-label">上游配置</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-models"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-models"
+                            tabindex="-1"
+                            data-tab="models"
+                            data-icon="layers"
+                            title="模型路由"
+                        >
+                            <span class="tab-label">模型路由</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-search"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-search"
+                            tabindex="-1"
+                            data-tab="search"
+                            data-icon="search"
+                            title="Web Search"
+                        >
+                            <span class="tab-label">Web Search</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-proxy"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-proxy"
+                            tabindex="-1"
+                            data-tab="proxy"
+                            data-icon="globe"
+                            title="SOCKS5"
+                        >
+                            <span class="tab-label">SOCKS5</span>
+                        </button>
+                        <button
+                            class="header-tab"
+                            id="tab-trigger-logs"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="tab-logs"
+                            tabindex="-1"
+                            data-tab="logs"
+                            data-icon="terminal"
+                            title="实时日志"
+                        >
+                            <span class="tab-label">实时日志</span>
+                        </button>
+                    </nav>
+                    <div class="header-actions">
+                        <span class="header-chip">Admin</span>
+                        <button
+                            class="theme-toggle"
+                            onclick="toggleTheme()"
+                            title="切换主题"
+                        ></button>
+                        <form method="post" action="/logout" style="margin: 0">
+                            <button
+                                class="btn-logout"
+                                type="submit"
+                                data-icon="logout"
+                                title="退出登录"
+                            >
+                                <span class="btn-label">退出</span>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </header>
 
-<main class="tab-panels">
-<section class="card tab-panel is-active" id="tab-stats" role="tabpanel" aria-labelledby="tab-trigger-stats" data-tab-panel="stats">
-<div id="statsContent" class="stats-content">
-<div class="stats-heatmap-skeleton" aria-hidden="true"></div>
-</div>
-</section>
+            <main class="tab-panels">
+                <section
+                    class="card tab-panel is-active"
+                    id="tab-stats"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-stats"
+                    data-tab-panel="stats"
+                >
+                    <div id="statsContent" class="stats-content">
+                        <div
+                            class="stats-heatmap-skeleton"
+                            aria-hidden="true"
+                        ></div>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-usage" role="tabpanel" aria-labelledby="tab-trigger-usage" data-tab-panel="usage" hidden>
-<div class="card-head usage-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>使用记录</h2>
-</div>
-<div class="usage-toolbar">
-<div class="filter-date"><input id="usageDateFilter" class="usage-date-input" type="date" data-clearable-input aria-label="按日期筛选" onchange="loadUsageRecords(0)"></div>
-<select id="usageModelFilter" class="m-select" data-clearable aria-label="按请求模型筛选" onchange="loadUsageRecords(0)"><option value="">全部模型</option></select>
-<select id="usageUpstreamFilter" class="m-select" data-clearable aria-label="按上游筛选" onchange="loadUsageRecords(0)"><option value="">全部上游</option></select>
-<select id="usageAPIKeyFilter" class="m-select" data-clearable aria-label="按密钥名称筛选" onchange="loadUsageRecords(0)"><option value="">全部密钥</option></select>
-<button class="btn btn-default filter-reset" type="button" data-icon="close" data-filter-reset="usage" onclick="resetPageFilters('usage')" title="清空筛选" aria-label="清空筛选" disabled><span class="btn-label">清空筛选</span></button>
-<button class="btn btn-default" data-icon="refresh" onclick="loadUsageRecords()" title="刷新" aria-label="刷新"><span class="btn-label">刷新</span></button>
-</div>
-</div>
-<div class="active-filters" id="usageActiveFilters" aria-label="已选筛选条件" hidden></div>
-<div class="usage-table-scroll"><table class="tbl usage-table" id="usageTable"><thead><tr><th class="usage-call-col">调用信息</th><th class="usage-route-col">模型路由</th><th class="usage-performance-col">性能</th><th class="usage-token-col">Token 用量</th><th class="usage-action">操作</th></tr></thead><tbody><tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">正在加载使用记录</div></div></td></tr></tbody></table></div>
-<div class="usage-pagination" aria-label="使用记录分页"><div class="usage-filter-summary" id="usageFilterSummary" aria-live="polite"><div class="usage-filter-summary-items"><span class="usage-summary-requests"><b id="usageSummaryRequests">0</b><em>请求</em></span><span class="usage-summary-prompt"><b id="usageSummaryPrompt">0</b><em>输入</em></span><span class="usage-summary-cached"><b id="usageSummaryCached">0</b><em>缓存</em></span><span class="usage-summary-completion"><b id="usageSummaryCompletion">0</b><em>输出</em></span><span class="usage-summary-total"><b id="usageSummaryTotal">0</b><em>合计</em></span></div></div><div class="usage-pagination-actions"><span class="usage-page-range" id="usageSummary"></span><div class="usage-page-controls"><button class="btn-icon" id="usagePrev" type="button" title="上一页" aria-label="上一页" onclick="changeUsagePage(-1)">&#x2039;</button><label class="usage-page-indicator" id="usagePageIndicator" aria-live="polite"><span>第</span><input id="usagePageInput" class="usage-page-input" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="当前页码" onchange="jumpToUsagePage()" onkeydown="handleUsagePageInputKeydown(event)"><span class="usage-page-divider">/</span><b class="usage-page-total" id="usageTotalPages">1</b><em>页</em></label><button class="btn-icon" id="usageNext" type="button" title="下一页" aria-label="下一页" onclick="changeUsagePage(1)">&#x203A;</button></div></div></div>
-</section>
+                <section
+                    class="card tab-panel"
+                    id="tab-usage"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-usage"
+                    data-tab-panel="usage"
+                    hidden
+                >
+                    <div class="card-head usage-head">
+                        <div class="card-head-main">
+                            <h2 class="card-title">
+                                <span
+                                    class="dot"
+                                    style="background: var(--accent)"
+                                ></span
+                                >使用记录
+                            </h2>
+                        </div>
+                        <div class="usage-toolbar">
+                            <div class="filter-date">
+                                <input
+                                    id="usageDateFilter"
+                                    class="usage-date-input"
+                                    type="date"
+                                    data-clearable-input
+                                    aria-label="按日期筛选"
+                                    onchange="loadUsageRecords(0)"
+                                />
+                            </div>
+                            <select
+                                id="usageModelFilter"
+                                class="m-select"
+                                data-clearable
+                                aria-label="按请求模型筛选"
+                                onchange="loadUsageRecords(0)"
+                            >
+                                <option value="">全部模型</option>
+                            </select>
+                            <select
+                                id="usageUpstreamFilter"
+                                class="m-select"
+                                data-clearable
+                                aria-label="按上游筛选"
+                                onchange="loadUsageRecords(0)"
+                            >
+                                <option value="">全部上游</option>
+                            </select>
+                            <select
+                                id="usageAPIKeyFilter"
+                                class="m-select"
+                                data-clearable
+                                aria-label="按密钥名称筛选"
+                                onchange="loadUsageRecords(0)"
+                            >
+                                <option value="">全部密钥</option>
+                            </select>
+                            <button
+                                class="btn btn-default filter-reset"
+                                type="button"
+                                data-icon="close"
+                                data-filter-reset="usage"
+                                onclick="resetPageFilters('usage')"
+                                title="清空筛选"
+                                aria-label="清空筛选"
+                                disabled
+                            >
+                                <span class="btn-label">清空筛选</span>
+                            </button>
+                            <button
+                                class="btn btn-default"
+                                data-icon="refresh"
+                                onclick="loadUsageRecords()"
+                                title="刷新"
+                                aria-label="刷新"
+                            >
+                                <span class="btn-label">刷新</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div
+                        class="active-filters"
+                        id="usageActiveFilters"
+                        aria-label="已选筛选条件"
+                        hidden
+                    ></div>
+                    <div class="usage-table-scroll">
+                        <table class="tbl usage-table" id="usageTable">
+                            <thead>
+                                <tr>
+                                    <th class="usage-call-col">调用信息</th>
+                                    <th class="usage-route-col">模型路由</th>
+                                    <th class="usage-performance-col">性能</th>
+                                    <th class="usage-token-col">Token 用量</th>
+                                    <th class="usage-action">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="5">
+                                        <div class="empty-state">
+                                            <div class="empty-state-title">
+                                                正在加载使用记录
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="usage-pagination" aria-label="使用记录分页">
+                        <div
+                            class="usage-filter-summary"
+                            id="usageFilterSummary"
+                            aria-live="polite"
+                        >
+                            <div class="usage-filter-summary-items">
+                                <span class="usage-summary-requests"
+                                    ><b id="usageSummaryRequests">0</b
+                                    ><em>请求</em></span
+                                ><span class="usage-summary-prompt"
+                                    ><b id="usageSummaryPrompt">0</b
+                                    ><em>输入</em></span
+                                ><span class="usage-summary-cached"
+                                    ><b id="usageSummaryCached">0</b
+                                    ><em>缓存</em></span
+                                ><span class="usage-summary-completion"
+                                    ><b id="usageSummaryCompletion">0</b
+                                    ><em>输出</em></span
+                                ><span class="usage-summary-total"
+                                    ><b id="usageSummaryTotal">0</b
+                                    ><em>合计</em></span
+                                >
+                            </div>
+                        </div>
+                        <div class="usage-pagination-actions">
+                            <span
+                                class="usage-page-range"
+                                id="usageSummary"
+                            ></span>
+                            <div class="usage-page-controls">
+                                <button
+                                    class="btn-icon"
+                                    id="usagePrev"
+                                    type="button"
+                                    title="上一页"
+                                    aria-label="上一页"
+                                    onclick="changeUsagePage(-1)"
+                                >
+                                    &#x2039;</button
+                                ><label
+                                    class="usage-page-indicator"
+                                    id="usagePageIndicator"
+                                    aria-live="polite"
+                                    ><span>第</span
+                                    ><input
+                                        id="usagePageInput"
+                                        class="usage-page-input"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        inputmode="numeric"
+                                        value="1"
+                                        aria-label="当前页码"
+                                        onchange="jumpToUsagePage()"
+                                        onkeydown="
+                                            handleUsagePageInputKeydown(event)
+                                        "
+                                    /><span class="usage-page-divider">/</span
+                                    ><b
+                                        class="usage-page-total"
+                                        id="usageTotalPages"
+                                        >1</b
+                                    ><em>页</em></label
+                                ><button
+                                    class="btn-icon"
+                                    id="usageNext"
+                                    type="button"
+                                    title="下一页"
+                                    aria-label="下一页"
+                                    onclick="changeUsagePage(1)"
+                                >
+                                    &#x203A;
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-api-keys" role="tabpanel" aria-labelledby="tab-trigger-api-keys" data-tab-panel="api-keys" hidden>
-<div class="card-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>API 密钥</h2>
-</div>
-<div class="card-head-actions"><button class="btn btn-primary" data-icon="plus" onclick="createAPIKey()">创建密钥</button><button class="btn btn-default" data-icon="refresh" onclick="loadAPIKeys()">刷新</button></div>
-</div>
-<div class="api-key-notice"><span class="api-key-notice-icon">&#9888;</span><span>请在安全环境中复制和保存密钥。删除或停用后，使用该密钥的客户端将无法继续访问。</span></div>
-<div class="table-scroll api-key-table-scroll"><table class="tbl api-key-table" id="apiKeyTable"><thead><tr><th>名称</th><th>API 密钥</th><th>状态</th><th>创建时间</th><th class="col-action"></th></tr></thead><tbody><tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">正在加载 API 密钥</div></div></td></tr></tbody></table></div>
-</section>
+                <section
+                    class="card tab-panel"
+                    id="tab-api-keys"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-api-keys"
+                    data-tab-panel="api-keys"
+                    hidden
+                >
+                    <div class="card-head">
+                        <div class="card-head-main">
+                            <h2 class="card-title">
+                                <span
+                                    class="dot"
+                                    style="background: var(--accent)"
+                                ></span
+                                >API 密钥
+                            </h2>
+                        </div>
+                        <div class="card-head-actions">
+                            <button
+                                class="btn btn-primary"
+                                data-icon="plus"
+                                onclick="createAPIKey()"
+                            >
+                                创建密钥</button
+                            ><button
+                                class="btn btn-default"
+                                data-icon="refresh"
+                                onclick="loadAPIKeys()"
+                            >
+                                刷新
+                            </button>
+                        </div>
+                    </div>
+                    <div class="api-key-notice">
+                        <span class="api-key-notice-icon">&#9888;</span
+                        ><span
+                            >请在安全环境中复制和保存密钥。删除或停用后，使用该密钥的客户端将无法继续访问。</span
+                        >
+                    </div>
+                    <div class="table-scroll api-key-table-scroll">
+                        <table class="tbl api-key-table" id="apiKeyTable">
+                            <thead>
+                                <tr>
+                                    <th>名称</th>
+                                    <th>API 密钥</th>
+                                    <th>状态</th>
+                                    <th>创建时间</th>
+                                    <th class="col-action"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="5">
+                                        <div class="empty-state">
+                                            <div class="empty-state-title">
+                                                正在加载 API 密钥
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-upstreams" role="tabpanel" aria-labelledby="tab-trigger-upstreams" data-tab-panel="upstreams" hidden>
-<div class="card-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>多上游配置</h2>
-</div>
-<div class="card-head-actions upstream-filterbar" aria-label="筛选和操作上游">
-<label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="scheduleFilterUpstreamRows()"></label>
-<select id="upstreamModelFilter" class="m-select" data-clearable aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
-<button class="btn btn-default filter-reset" type="button" data-icon="close" data-filter-reset="upstream" onclick="resetPageFilters('upstream')" title="清空筛选" aria-label="清空筛选" disabled><span class="btn-label">清空筛选</span></button>
-<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()" title="添加上游" aria-label="添加上游"><span class="btn-label">添加上游</span></button><button class="btn btn-default" data-icon="layers" onclick="openBulkUpstreamEditor(this)" title="批量添加" aria-label="批量添加"><span class="btn-label">批量添加</span></button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)" title="同步模型" aria-label="同步模型"><span class="btn-label">同步模型</span></button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')" title="保存上游" aria-label="保存上游"><span class="btn-label">保存上游</span></button>
-</div>
-</div>
-<div class="active-filters" id="upstreamActiveFilters" aria-label="已选筛选条件" hidden></div>
-<div class="table-scroll">
-<table class="tbl" id="upstreamTable">
-<thead><tr><th class="col-drag" aria-label="拖动排序"></th><th class="col-name">名称</th><th class="col-url">Base URL</th><th class="col-key">API Key</th><th class="col-type">接口类型</th><th class="col-bridge" title="兼容模式会降级并告警；严格模式会拒绝有损协议转换">桥接模式</th><th class="col-proxy">代理</th><th class="col-models">模型</th><th class="col-action"></th></tr></thead>
-<tbody></tbody>
-</table>
-</div>
-</section>
+                <section
+                    class="card tab-panel"
+                    id="tab-upstreams"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-upstreams"
+                    data-tab-panel="upstreams"
+                    hidden
+                >
+                    <div class="card-head">
+                        <div class="card-head-main">
+                            <h2 class="card-title">
+                                <span
+                                    class="dot"
+                                    style="background: var(--green)"
+                                ></span
+                                >上游配置
+                            </h2>
+                        </div>
+                        <div
+                            class="card-head-actions upstream-filterbar"
+                            aria-label="筛选和操作上游"
+                        >
+                            <label class="upstream-keyword-search"
+                                ><svg
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <line
+                                        x1="21"
+                                        y1="21"
+                                        x2="16.65"
+                                        y2="16.65"
+                                    ></line></svg
+                                ><input
+                                    id="upstreamKeywordFilter"
+                                    type="search"
+                                    placeholder="搜索名称、地址或协议"
+                                    aria-label="按关键词搜索上游"
+                                    oninput="scheduleFilterUpstreamRows()"
+                            /></label>
+                            <select
+                                id="upstreamModelFilter"
+                                class="m-select"
+                                data-clearable
+                                aria-label="按模型搜索上游"
+                                onchange="filterUpstreamRows()"
+                            >
+                                <option value="">全部模型</option>
+                            </select>
+                            <button
+                                class="btn btn-default filter-reset"
+                                type="button"
+                                data-icon="close"
+                                data-filter-reset="upstream"
+                                onclick="resetPageFilters('upstream')"
+                                title="清空筛选"
+                                aria-label="清空筛选"
+                                disabled
+                            >
+                                <span class="btn-label">清空筛选</span>
+                            </button>
+                            <button
+                                class="btn btn-primary"
+                                data-icon="plus"
+                                onclick="addUpstreamRow()"
+                                title="添加上游"
+                                aria-label="添加上游"
+                            >
+                                <span class="btn-label">添加上游</span></button
+                            ><button
+                                class="btn btn-default"
+                                data-icon="layers"
+                                onclick="openBulkUpstreamEditor(this)"
+                                title="批量添加"
+                                aria-label="批量添加"
+                            >
+                                <span class="btn-label">批量添加</span></button
+                            ><button
+                                class="btn btn-default"
+                                data-icon="sync"
+                                onclick="syncAllUpstreamModels(this)"
+                                title="同步模型"
+                                aria-label="同步模型"
+                            >
+                                <span class="btn-label">同步模型</span></button
+                            ><button
+                                class="btn btn-success"
+                                data-icon="save"
+                                onclick="saveConfig('上游配置')"
+                                title="保存上游"
+                                aria-label="保存上游"
+                            >
+                                <span class="btn-label">保存上游</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div
+                        class="active-filters"
+                        id="upstreamActiveFilters"
+                        aria-label="已选筛选条件"
+                        hidden
+                    ></div>
+                    <div class="table-scroll">
+                        <table class="tbl" id="upstreamTable">
+                            <thead>
+                                <tr>
+                                    <th
+                                        class="col-drag"
+                                        aria-label="拖动排序"
+                                    ></th>
+                                    <th class="col-name">名称</th>
+                                    <th class="col-url">Base URL</th>
+                                    <th class="col-key">API Key</th>
+                                    <th class="col-type">接口类型</th>
+                                    <th
+                                        class="col-bridge"
+                                        title="兼容模式会降级并告警；严格模式会拒绝有损协议转换"
+                                    >
+                                        桥接模式
+                                    </th>
+                                    <th class="col-proxy">代理</th>
+                                    <th class="col-models">模型</th>
+                                    <th class="col-action"></th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-models" role="tabpanel" aria-labelledby="tab-trigger-models" data-tab-panel="models" hidden>
-<div class="model-routing-grid">
-<section class="routing-section routing-models">
-<div class="routing-section-head">
-<h3 class="routing-section-title">模型映射</h3>
-<div class="routing-section-actions"><label class="head-switch" title="关闭时，/v1/models 和请求路由仅接受模型映射中的别名"><span class="head-switch-text">允许直接使用上游模型</span><span class="switch"><input id="allowDirectModels" type="checkbox"><span class="switch-slider"></span></span></label><div class="routing-model-buttons"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-default" id="modelRoutingSettingsButton" type="button" data-icon="settings" aria-haspopup="dialog" aria-controls="modelRoutingSettingsDialog" aria-expanded="false" onclick="openModelRoutingSettings(this)">设置</button><button class="btn btn-default" type="button" data-icon="edit" aria-haspopup="dialog" onclick="openGlobalEffortEditor(this)">全局推理映射</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div></div>
-</div>
-<div class="table-scroll">
-<table class="tbl" id="aliasTable">
-<thead><tr><th class="col-alias">别名（请求名）</th><th class="col-targets">上游模型</th><th class="col-effort" title="为空时使用全局推理映射">推理映射</th><th class="col-reasoning">思维链</th><th class="col-action"></th></tr></thead>
-<tbody></tbody>
-</table>
-</div>
-</section>
-</div>
-</section>
+                <section
+                    class="card tab-panel"
+                    id="tab-models"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-models"
+                    data-tab-panel="models"
+                    hidden
+                >
+                    <div class="model-routing-grid">
+                        <section class="routing-section routing-models">
+                            <div class="routing-section-head">
+                                <h3 class="routing-section-title">模型映射</h3>
+                                <div class="routing-section-actions">
+                                    <label
+                                        class="head-switch"
+                                        title="关闭时，/v1/models 和请求路由仅接受模型映射中的别名"
+                                        ><span class="head-switch-text"
+                                            >直连上游模型</span
+                                        ><span class="switch"
+                                            ><input
+                                                id="allowDirectModels"
+                                                type="checkbox" /><span
+                                                class="switch-slider"
+                                            ></span></span
+                                    ></label>
+                                    <div class="routing-model-buttons">
+                                        <button
+                                            class="btn btn-primary"
+                                            data-icon="plus"
+                                            onclick="addAliasRow()"
+                                        >
+                                            添加别名</button
+                                        ><button
+                                            class="btn btn-default"
+                                            id="modelRoutingSettingsButton"
+                                            type="button"
+                                            data-icon="settings"
+                                            aria-haspopup="dialog"
+                                            aria-controls="modelRoutingSettingsDialog"
+                                            aria-expanded="false"
+                                            onclick="
+                                                openModelRoutingSettings(this)
+                                            "
+                                        >
+                                            设置</button
+                                        ><button
+                                            class="btn btn-default"
+                                            type="button"
+                                            data-icon="brain"
+                                            aria-haspopup="dialog"
+                                            onclick="
+                                                openGlobalEffortEditor(this)
+                                            "
+                                        >
+                                            全局推理映射</button
+                                        ><button
+                                            class="btn btn-success"
+                                            data-icon="save"
+                                            onclick="saveConfig()"
+                                        >
+                                            保存全部
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="table-scroll">
+                                <table class="tbl" id="aliasTable">
+                                    <thead>
+                                        <tr>
+                                            <th class="col-alias">
+                                                别名（请求名）
+                                            </th>
+                                            <th class="col-targets">
+                                                上游模型
+                                            </th>
+                                            <th
+                                                class="col-effort"
+                                                title="为空时使用全局推理映射"
+                                            >
+                                                推理映射
+                                            </th>
+                                            <th class="col-reasoning">
+                                                思维链
+                                            </th>
+                                            <th class="col-action"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-search" role="tabpanel" aria-labelledby="tab-trigger-search" data-tab-panel="search" hidden>
-<div class="card-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>Hosted Web Search 自动回退</h2>
-</div>
-<div class="card-head-actions"><label class="head-switch" id="webSearchEnabledGroup" title="启用网关搜索回退">
-<span class="head-switch-text">启用网关搜索回退</span>
-<span class="switch">
-<input id="webSearchEnabled" type="checkbox" onchange="syncWebSearchForm()">
-<span class="switch-slider"></span>
-</span>
-</label><button class="btn btn-success" data-icon="save" onclick="saveConfig('Web Search 配置')">保存 Web Search</button></div>
-</div>
-<div class="web-search-grid">
-<div class="form-group"><label>Provider</label><select id="webSearchProvider" class="m-select" onchange="syncWebSearchForm()"><option value="searxng">SearXNG</option><option value="duckduckgo">DuckDuckGo（公共）</option><option value="tavily">Tavily</option></select></div>
-<div class="form-group"><label>最大结果数</label><input id="webSearchMaxResults" type="number" min="1" max="20" value="6"></div>
-<div class="form-group" id="webSearchSearxModeGroup"><label>SearXNG 实例模式</label><select id="webSearchSearxMode" class="m-select" onchange="syncWebSearchForm()"><option value="auto">自动优选与故障切换</option><option value="selected">从官方实时列表选择</option><option value="custom">手动指定 URL</option></select></div>
-<div class="form-group" id="webSearchFallbackProviderGroup"><label>自动模式兜底 <span class="hint">SearXNG 不可用时自动调用，无需 API Key</span></label><select id="webSearchFallbackProvider" class="m-select"><option value="duckduckgo">DuckDuckGo Lite（推荐）</option><option value="none">关闭兜底</option></select></div>
-<div class="form-group"><label>超时（秒）</label><input id="webSearchTimeout" type="number" min="1" max="60" value="10"></div>
-<div class="form-group web-search-wide" id="webSearchSearxInstanceGroup"><label>公共实例 <span class="hint" id="webSearchSearxStatus">数据来源：searx.space</span></label><div class="inline-control"><select id="webSearchSearxInstance" class="m-select" onchange="selectSearXNGInstance()"><option value="">加载实例列表…</option></select><button type="button" class="btn btn-primary" data-icon="refresh" onclick="loadSearXNGInstances(true)">刷新列表</button></div></div>
-<div class="form-group"><label>最大工具轮次</label><input id="webSearchMaxRounds" type="number" min="1" max="4" value="2"></div>
-<div class="form-group web-search-wide" id="webSearchBaseURLGroup"><label><span id="webSearchBaseURLLabel">Base URL</span> <span class="hint" id="webSearchBaseURLHint"></span></label><input id="webSearchBaseURL" type="url" placeholder="https://search.example.com"></div>
-<div class="form-group"><label>结果上限（字节）</label><input id="webSearchMaxBytes" type="number" min="1024" max="1048576" value="65536"></div>
-<div class="form-group web-search-wide" id="webSearchAPIKeyGroup"><label>API Key <span class="hint">仅 Tavily 需要；支持 env:环境变量名</span></label><input id="webSearchAPIKey" type="password" placeholder="Tavily key 或 env:TAVILY_API_KEY"></div>
-</div>
-</section>
+                <section
+                    class="card tab-panel"
+                    id="tab-search"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-search"
+                    data-tab-panel="search"
+                    hidden
+                >
+                    <div class="card-head">
+                        <div class="card-head-main">
+                            <h2 class="card-title">
+                                <span
+                                    class="dot"
+                                    style="background: var(--green)"
+                                ></span
+                                >Hosted Web Search 自动回退
+                            </h2>
+                        </div>
+                        <div class="card-head-actions">
+                            <label
+                                class="head-switch"
+                                id="webSearchEnabledGroup"
+                                title="启用网关搜索回退"
+                            >
+                                <span class="head-switch-text"
+                                    >启用网关搜索回退</span
+                                >
+                                <span class="switch">
+                                    <input
+                                        id="webSearchEnabled"
+                                        type="checkbox"
+                                        onchange="syncWebSearchForm()"
+                                    />
+                                    <span class="switch-slider"></span>
+                                </span> </label
+                            ><button
+                                class="btn btn-success"
+                                data-icon="save"
+                                onclick="saveConfig('Web Search 配置')"
+                            >
+                                保存 Web Search
+                            </button>
+                        </div>
+                    </div>
+                    <div class="web-search-grid">
+                        <div class="form-group">
+                            <label>Provider</label
+                            ><select
+                                id="webSearchProvider"
+                                class="m-select"
+                                onchange="syncWebSearchForm()"
+                            >
+                                <option value="searxng">SearXNG</option>
+                                <option value="duckduckgo">
+                                    DuckDuckGo（公共）
+                                </option>
+                                <option value="tavily">Tavily</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>最大结果数</label
+                            ><input
+                                id="webSearchMaxResults"
+                                type="number"
+                                min="1"
+                                max="20"
+                                value="6"
+                            />
+                        </div>
+                        <div class="form-group" id="webSearchSearxModeGroup">
+                            <label>SearXNG 实例模式</label
+                            ><select
+                                id="webSearchSearxMode"
+                                class="m-select"
+                                onchange="syncWebSearchForm()"
+                            >
+                                <option value="auto">自动优选与故障切换</option>
+                                <option value="selected">
+                                    从官方实时列表选择
+                                </option>
+                                <option value="custom">手动指定 URL</option>
+                            </select>
+                        </div>
+                        <div
+                            class="form-group"
+                            id="webSearchFallbackProviderGroup"
+                        >
+                            <label
+                                >自动模式兜底
+                                <span class="hint"
+                                    >SearXNG 不可用时自动调用，无需 API
+                                    Key</span
+                                ></label
+                            ><select
+                                id="webSearchFallbackProvider"
+                                class="m-select"
+                            >
+                                <option value="duckduckgo">
+                                    DuckDuckGo Lite（推荐）
+                                </option>
+                                <option value="none">关闭兜底</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>超时（秒）</label
+                            ><input
+                                id="webSearchTimeout"
+                                type="number"
+                                min="1"
+                                max="60"
+                                value="10"
+                            />
+                        </div>
+                        <div
+                            class="form-group web-search-wide"
+                            id="webSearchSearxInstanceGroup"
+                        >
+                            <label
+                                >公共实例
+                                <span class="hint" id="webSearchSearxStatus"
+                                    >数据来源：searx.space</span
+                                ></label
+                            >
+                            <div class="inline-control">
+                                <select
+                                    id="webSearchSearxInstance"
+                                    class="m-select"
+                                    onchange="selectSearXNGInstance()"
+                                >
+                                    <option value="">
+                                        加载实例列表…
+                                    </option></select
+                                ><button
+                                    type="button"
+                                    class="btn btn-primary"
+                                    data-icon="refresh"
+                                    onclick="loadSearXNGInstances(true)"
+                                >
+                                    刷新列表
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>最大工具轮次</label
+                            ><input
+                                id="webSearchMaxRounds"
+                                type="number"
+                                min="1"
+                                max="4"
+                                value="2"
+                            />
+                        </div>
+                        <div
+                            class="form-group web-search-wide"
+                            id="webSearchBaseURLGroup"
+                        >
+                            <label
+                                ><span id="webSearchBaseURLLabel"
+                                    >Base URL</span
+                                >
+                                <span
+                                    class="hint"
+                                    id="webSearchBaseURLHint"
+                                ></span></label
+                            ><input
+                                id="webSearchBaseURL"
+                                type="url"
+                                placeholder="https://search.example.com"
+                            />
+                        </div>
+                        <div class="form-group">
+                            <label>结果上限（字节）</label
+                            ><input
+                                id="webSearchMaxBytes"
+                                type="number"
+                                min="1024"
+                                max="1048576"
+                                value="65536"
+                            />
+                        </div>
+                        <div
+                            class="form-group web-search-wide"
+                            id="webSearchAPIKeyGroup"
+                        >
+                            <label
+                                >API Key
+                                <span class="hint"
+                                    >仅 Tavily 需要；支持 env:环境变量名</span
+                                ></label
+                            ><input
+                                id="webSearchAPIKey"
+                                type="password"
+                                placeholder="Tavily key 或 env:TAVILY_API_KEY"
+                            />
+                        </div>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-proxy" role="tabpanel" aria-labelledby="tab-trigger-proxy" data-tab-panel="proxy" hidden>
-<div class="card-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--accent)"></span>SOCKS5 代理</h2>
-</div>
-<div class="card-head-actions proxy-head-actions"><button class="btn btn-primary" data-icon="plus" onclick="addSocks5Row()">添加代理</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
-</div>
-<div class="table-scroll">
-<table class="tbl" id="socks5Table">
-<thead><tr><th class="col-name">名称</th><th class="col-addr">地址</th><th class="col-user">用户名</th><th class="col-pass">密码</th><th class="col-action"></th></tr></thead>
-<tbody></tbody>
-</table>
-</div>
-</section>
+                <section
+                    class="card tab-panel"
+                    id="tab-proxy"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-proxy"
+                    data-tab-panel="proxy"
+                    hidden
+                >
+                    <div class="card-head">
+                        <div class="card-head-main">
+                            <h2 class="card-title">
+                                <span
+                                    class="dot"
+                                    style="background: var(--accent)"
+                                ></span
+                                >SOCKS5 代理
+                            </h2>
+                        </div>
+                        <div class="card-head-actions proxy-head-actions">
+                            <button
+                                class="btn btn-primary"
+                                data-icon="plus"
+                                onclick="addSocks5Row()"
+                            >
+                                添加代理</button
+                            ><button
+                                class="btn btn-success"
+                                data-icon="save"
+                                onclick="saveConfig()"
+                            >
+                                保存全部
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-scroll">
+                        <table class="tbl" id="socks5Table">
+                            <thead>
+                                <tr>
+                                    <th class="col-name">名称</th>
+                                    <th class="col-addr">地址</th>
+                                    <th class="col-user">用户名</th>
+                                    <th class="col-pass">密码</th>
+                                    <th class="col-action"></th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
 
-<section class="card tab-panel" id="tab-logs" role="tabpanel" aria-labelledby="tab-trigger-logs" data-tab-panel="logs" hidden>
-<div class="card-head">
-<div class="card-head-main">
-<h2 class="card-title"><span class="dot" style="background:var(--green)"></span>实时日志</h2>
-</div>
-<div class="card-head-actions log-toolbar">
-<span class="log-status" id="logStatus" data-state="idle" aria-live="polite"><i></i><span id="logStatusText">未连接</span></span>
-<button class="btn btn-default is-active" id="logPauseBtn" type="button" data-icon="pause" onclick="toggleLogPause()" title="暂停滚动"><span class="btn-label">暂停</span></button>
-<button class="btn btn-default" type="button" data-icon="trash" onclick="clearLogView()" title="清空视图"><span class="btn-label">清空</span></button>
-<button class="btn btn-default" type="button" data-icon="arrowDown" onclick="scrollLogsToEnd()" title="跳到最新"><span class="btn-label">最新</span></button>
-<button class="btn btn-default" type="button" data-icon="refresh" onclick="restartLogStream()" title="重新连接"><span class="btn-label">重连</span></button>
-</div>
-</div>
-<div class="log-view" id="logView" role="log" aria-live="off" aria-relevant="additions" tabindex="0">
-<div class="log-empty" id="logEmpty"><b>等待日志输出</b><span>服务器控制台输出会实时同步到这里</span></div>
-</div>
-</section>
-</main>
-</div>
-<template id="modelRoutingSettingsTemplate">
-<div class="popover-header"><h3 class="popover-title" id="modelRoutingTitle">路由与故障切换</h3><button class="btn-icon" type="button" aria-label="关闭" onclick="closePopover()">×</button></div>
-<form class="routing-settings-form" onsubmit="event.preventDefault(); saveModelRoutingSettings(this)">
-<div class="routing-settings-grid">
-<div class="form-group"><label for="modelRoutingStrategy">别名选择策略</label><select id="modelRoutingStrategy" class="m-select"><option value="priority">高权重优先（同权重轮询）</option><option value="weighted_round_robin">加权轮询</option></select></div>
-<div class="form-group"><label for="modelRoutingMaxAttempts">最多尝试目标数 <span class="hint">0 为全部</span></label><input id="modelRoutingMaxAttempts" type="number" min="0" max="1000" step="1" value="0" required></div>
-<div class="form-group"><label for="modelRoutingFailureThreshold">连续故障冷却阈值</label><input id="modelRoutingFailureThreshold" type="number" min="1" max="100" step="1" value="3" required></div>
-<div class="form-group"><label for="modelRoutingCooldownSeconds" title="恢复探测连续失败时，冷却时间每轮翻倍，最长 24 小时">初始冷却时间（秒）</label><input id="modelRoutingCooldownSeconds" type="number" min="1" max="86400" step="1" value="180" required></div>
-</div>
-<div class="routing-settings-toggles">
-<label class="head-switch"><span class="head-switch-text">自动故障切换</span><span class="switch"><input id="modelRoutingFailover" type="checkbox" checked><span class="switch-slider"></span></span></label>
-<label class="head-switch" title="按上游、实际模型和 Key 分别冷却，429 仅重试和切换目标"><span class="head-switch-text">故障 Key 冷却</span><span class="switch"><input id="modelRoutingCooldown" type="checkbox" checked><span class="switch-slider"></span></span></label>
-</div>
-<div class="routing-settings-footer"><button class="btn btn-default" type="button" onclick="closePopover()">取消</button><button class="btn btn-success" type="submit">保存设置</button></div>
-</form>
-</template>
-<div id="toast"></div>
-<script src="/assets/marked.min.js"></script>
-<script src="/assets/purify.min.js"></script>
-<script src="/assets/admin.js"></script>
-</body>
+                <section
+                    class="card tab-panel"
+                    id="tab-logs"
+                    role="tabpanel"
+                    aria-labelledby="tab-trigger-logs"
+                    data-tab-panel="logs"
+                    hidden
+                >
+                    <div class="card-head">
+                        <div class="card-head-main">
+                            <h2 class="card-title">
+                                <span
+                                    class="dot"
+                                    style="background: var(--green)"
+                                ></span
+                                >实时日志
+                            </h2>
+                        </div>
+                        <div class="card-head-actions log-toolbar">
+                            <span
+                                class="log-status"
+                                id="logStatus"
+                                data-state="idle"
+                                aria-live="polite"
+                                ><i></i
+                                ><span id="logStatusText">未连接</span></span
+                            >
+                            <button
+                                class="btn btn-default is-active"
+                                id="logPauseBtn"
+                                type="button"
+                                data-icon="pause"
+                                onclick="toggleLogPause()"
+                                title="暂停滚动"
+                            >
+                                <span class="btn-label">暂停</span>
+                            </button>
+                            <button
+                                class="btn btn-default"
+                                type="button"
+                                data-icon="trash"
+                                onclick="clearLogView()"
+                                title="清空视图"
+                            >
+                                <span class="btn-label">清空</span>
+                            </button>
+                            <button
+                                class="btn btn-default"
+                                type="button"
+                                data-icon="arrowDown"
+                                onclick="scrollLogsToEnd()"
+                                title="跳到最新"
+                            >
+                                <span class="btn-label">最新</span>
+                            </button>
+                            <button
+                                class="btn btn-default"
+                                type="button"
+                                data-icon="refresh"
+                                onclick="restartLogStream()"
+                                title="重新连接"
+                            >
+                                <span class="btn-label">重连</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div
+                        class="log-view"
+                        id="logView"
+                        role="log"
+                        aria-live="off"
+                        aria-relevant="additions"
+                        tabindex="0"
+                    >
+                        <div class="log-empty" id="logEmpty">
+                            <b>等待日志输出</b
+                            ><span>服务器控制台输出会实时同步到这里</span>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+        <template id="modelRoutingSettingsTemplate">
+            <div class="popover-header">
+                <h3 class="popover-title" id="modelRoutingTitle">
+                    路由与故障切换
+                </h3>
+                <button
+                    class="btn-icon"
+                    type="button"
+                    aria-label="关闭"
+                    onclick="closePopover()"
+                >
+                    ×
+                </button>
+            </div>
+            <form
+                class="routing-settings-form"
+                onsubmit="
+                    event.preventDefault();
+                    saveModelRoutingSettings(this);
+                "
+            >
+                <div class="routing-settings-grid">
+                    <div class="form-group">
+                        <label for="modelRoutingStrategy">别名选择策略</label
+                        ><select id="modelRoutingStrategy" class="m-select">
+                            <option value="priority">
+                                高权重优先（同权重轮询）
+                            </option>
+                            <option value="weighted_round_robin">
+                                加权轮询
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="modelRoutingMaxAttempts"
+                            >最多尝试目标数
+                            <span class="hint">0 为全部</span></label
+                        ><input
+                            id="modelRoutingMaxAttempts"
+                            type="number"
+                            min="0"
+                            max="1000"
+                            step="1"
+                            value="0"
+                            required
+                        />
+                    </div>
+                    <div class="form-group">
+                        <label for="modelRoutingFailureThreshold"
+                            >连续故障冷却阈值</label
+                        ><input
+                            id="modelRoutingFailureThreshold"
+                            type="number"
+                            min="1"
+                            max="100"
+                            step="1"
+                            value="3"
+                            required
+                        />
+                    </div>
+                    <div class="form-group">
+                        <label
+                            for="modelRoutingCooldownSeconds"
+                            title="恢复探测连续失败时，冷却时间每轮翻倍，最长 24 小时"
+                            >初始冷却时间（秒）</label
+                        ><input
+                            id="modelRoutingCooldownSeconds"
+                            type="number"
+                            min="1"
+                            max="86400"
+                            step="1"
+                            value="180"
+                            required
+                        />
+                    </div>
+                </div>
+                <div class="routing-settings-toggles">
+                    <label class="head-switch"
+                        ><span class="head-switch-text">自动故障切换</span
+                        ><span class="switch"
+                            ><input
+                                id="modelRoutingFailover"
+                                type="checkbox"
+                                checked /><span
+                                class="switch-slider"
+                            ></span></span
+                    ></label>
+                    <label
+                        class="head-switch"
+                        title="按上游、实际模型和 Key 分别冷却，429 仅重试和切换目标"
+                        ><span class="head-switch-text">故障 Key 冷却</span
+                        ><span class="switch"
+                            ><input
+                                id="modelRoutingCooldown"
+                                type="checkbox"
+                                checked /><span
+                                class="switch-slider"
+                            ></span></span
+                    ></label>
+                </div>
+                <div class="routing-settings-footer">
+                    <button
+                        class="btn btn-default"
+                        type="button"
+                        onclick="closePopover()"
+                    >
+                        取消</button
+                    ><button class="btn btn-success" type="submit">
+                        保存设置
+                    </button>
+                </div>
+            </form>
+        </template>
+        <div id="toast"></div>
+        <script src="/assets/marked.min.js"></script>
+        <script src="/assets/purify.min.js"></script>
+        <script src="/assets/admin.js"></script>
+    </body>
 </html>

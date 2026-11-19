@@ -12,6 +12,8 @@ const ICONS = {
   chart:
     '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+  brain:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
   save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h7m4 0h7M3 12h5m4 0h9M3 20h9m4 0h5"/><circle cx="12" cy="4" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="14" cy="20" r="2"/></svg>',
@@ -6035,7 +6037,7 @@ function aliasEffortDisplay(map) {
 }
 
 function aliasEffortFieldContent(map) {
-  return aliasEffortDisplay(map) + '<span class="field-edit-icon">' + ICONS.edit + "</span>";
+  return aliasEffortDisplay(map) + '<span class="field-edit-icon">' + ICONS.brain + "</span>";
 }
 
 function aliasEffortFieldHtml(map) {
@@ -6081,7 +6083,7 @@ function openEffortEditor(trigger, title, map, apply) {
   const pop = openPopover(
     trigger,
     '<div class="popover-header"><span class="popover-title" id="effortEditorTitle">' +
-    ICONS.edit + "<span>" + esc(title) + '</span></span><button type="button" class="btn-icon" onclick="closePopover()" aria-label="关闭">' +
+    ICONS.brain + "<span>" + esc(title) + '</span></span><button type="button" class="btn-icon" onclick="closePopover()" aria-label="关闭">' +
     ICONS.close + '</button></div>' +
     '<form onsubmit="event.preventDefault(); applyEffortEditor(this)">' +
     '<div class="effort-map-editor">' +
@@ -7825,14 +7827,18 @@ async function loadUsageRecords(offset) {
       return;
     }
     const summary = page.summary || {};
-    document.getElementById("usageSummaryRequests").textContent = fmt(summary.request_count);
-    document.getElementById("usageSummaryPrompt").textContent = fmt(summary.prompt_tokens);
-    document.getElementById("usageSummaryCached").textContent = fmt(summary.cached_tokens);
-    document.getElementById("usageSummaryCompletion").textContent = fmt(summary.completion_tokens);
-    document.getElementById("usageSummaryTotal").textContent = fmt(summary.total_tokens);
     const start = usageTotal ? usagePageOffset + 1 : 0;
-    const end = Math.min(usagePageOffset + items.length, usageTotal);
-    document.getElementById("usageSummary").textContent = "共 " + fmt(usageTotal) + " 条 · " + fmt(start) + "–" + fmt(end);
+    usageSummarySnapshot = {
+      request_count: summary.request_count,
+      prompt_tokens: summary.prompt_tokens,
+      cached_tokens: summary.cached_tokens,
+      completion_tokens: summary.completion_tokens,
+      total_tokens: summary.total_tokens,
+      usageTotal: usageTotal,
+      start: start,
+      end: Math.min(usagePageOffset + items.length, usageTotal),
+    };
+    renderUsageSummary();
     updateUsagePagination();
     updatePageFilters("usage", usageTotal);
   } catch (e) {
@@ -7840,11 +7846,17 @@ async function loadUsageRecords(offset) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     usageRecords = [];
     tbody.innerHTML = emptyRowHtml(5, ICONS.alert, "加载失败", e.message || "请稍后重试");
-    document.getElementById("usageSummaryRequests").textContent = "0";
-    document.getElementById("usageSummaryPrompt").textContent = "0";
-    document.getElementById("usageSummaryCached").textContent = "0";
-    document.getElementById("usageSummaryCompletion").textContent = "0";
-    document.getElementById("usageSummaryTotal").textContent = "0";
+    usageSummarySnapshot = {
+      request_count: 0,
+      prompt_tokens: 0,
+      cached_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      usageTotal: 0,
+      start: 0,
+      end: 0,
+    };
+    renderUsageSummary();
     updateUsagePagination();
   } finally {
     if (loadSequence === usageLoadSequence) document.getElementById("usageTable").setAttribute("aria-busy", "false");
@@ -7891,6 +7903,85 @@ function changeUsagePage(direction) {
 
 function fmt(n) {
   return (n == null ? 0 : n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+let usageSummarySnapshot = null;
+
+function fmtCompact(n) {
+  const value = Number(n) || 0;
+  const abs = Math.abs(value);
+  if (abs < 1e3) return fmt(value);
+  const units = [
+    { limit: 1e12, suffix: "T" },
+    { limit: 1e9, suffix: "B" },
+    { limit: 1e6, suffix: "M" },
+    { limit: 1e3, suffix: "k" },
+  ];
+  for (let i = 0; i < units.length; i++) {
+    if (abs >= units[i].limit) {
+      const scaled = value / units[i].limit;
+      const digits = Math.abs(scaled) >= 100 ? 0 : 1;
+      const rounded = Number(scaled.toFixed(digits));
+      // 四舍五入后进位（如 999.9k）时改用更大的单位，避免出现 1000k。
+      if (Math.abs(rounded) >= 1e3 && i > 0) {
+        const upper = units[i - 1];
+        return Number((value / upper.limit).toFixed(1)) + upper.suffix;
+      }
+      return rounded + units[i].suffix;
+    }
+  }
+  return fmt(value);
+}
+
+function setUsageSummaryNumber(id, value, compact) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const full = fmt(value);
+  el.textContent = compact ? fmtCompact(value) : full;
+  el.title = full;
+  if (el.parentElement) el.parentElement.title = full;
+}
+
+function paintUsageSummary(compact) {
+  const snapshot = usageSummarySnapshot;
+  if (!snapshot) return;
+  setUsageSummaryNumber("usageSummaryRequests", snapshot.request_count, compact);
+  setUsageSummaryNumber("usageSummaryPrompt", snapshot.prompt_tokens, compact);
+  setUsageSummaryNumber("usageSummaryCached", snapshot.cached_tokens, compact);
+  setUsageSummaryNumber("usageSummaryCompletion", snapshot.completion_tokens, compact);
+  setUsageSummaryNumber("usageSummaryTotal", snapshot.total_tokens, compact);
+  const rangeEl = document.getElementById("usageSummary");
+  if (!rangeEl) return;
+  const full =
+    "共 " + fmt(snapshot.usageTotal) + " 条 · " + fmt(snapshot.start) + "–" + fmt(snapshot.end);
+  rangeEl.textContent = compact
+    ? "共 " + fmtCompact(snapshot.usageTotal) + " 条 · " + fmtCompact(snapshot.start) + "–" + fmtCompact(snapshot.end)
+    : full;
+  rangeEl.title = full;
+}
+
+function usageSummaryItemsOverflow() {
+  const items = document.querySelector(".usage-filter-summary-items");
+  if (!items) return false;
+  if (items.scrollWidth > items.clientWidth + 1) return true;
+  const children = items.children;
+  if (children.length < 2) return false;
+  const firstTop = children[0].offsetTop;
+  for (let i = 1; i < children.length; i++) {
+    if (Math.abs(children[i].offsetTop - firstTop) > 1) return true;
+  }
+  return false;
+}
+
+function renderUsageSummary() {
+  if (!usageSummarySnapshot) return;
+  // 先按完整数字布局，放不下时再切换为紧凑数字，保证底部统计始终一行显示。
+  paintUsageSummary(false);
+  const measure = () => {
+    if (usageSummarySnapshot && usageSummaryItemsOverflow()) paintUsageSummary(true);
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(measure);
+  else measure();
 }
 
 /* ===== 实时日志 ===== */
@@ -8090,6 +8181,12 @@ function initAdminPage() {
     baseURL.addEventListener("input", fitWebSearchBaseURLWidth);
     baseURL.addEventListener("change", fitWebSearchBaseURLWidth);
   }
+  let usageSummaryResizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (!usageSummarySnapshot) return;
+    if (usageSummaryResizeTimer) clearTimeout(usageSummaryResizeTimer);
+    usageSummaryResizeTimer = setTimeout(renderUsageSummary, 80);
+  });
   loadConfig();
   loadAPIKeys();
   loadStats();
