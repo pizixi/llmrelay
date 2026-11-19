@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"llmrelay/backend/internal/domain"
+	"llmrelay/backend/internal/routing/health"
 )
 
 const max429RetriesPerExit = 3
@@ -58,24 +61,14 @@ func NextUpstreamAPIKeyIndex(name string, total int) int {
 	return idx
 }
 
-func SelectUpstreamAPIKey(name string, upstream *UpstreamConfig) (string, int, []string) {
-	keys := GetUpstreamAPIKeys(upstream)
-	if len(keys) == 0 {
-		return "", -1, nil
-	}
-	idx := NextUpstreamAPIKeyIndex(name, len(keys))
-	return keys[idx], idx, keys
+type routingPolicyContextKey struct{}
+
+func WithRoutingPolicy(ctx context.Context, policy domain.ModelRoutingConfig) context.Context {
+	return context.WithValue(ctx, routingPolicyContextKey{}, policy)
 }
 
-func RotateUpstreamAPIKey(keys []string, current int) (string, int) {
-	if len(keys) == 0 {
-		return "", -1
-	}
-	if current < 0 {
-		current = 0
-	}
-	next := (current + 1) % len(keys)
-	return keys[next], next
+func ModelTargetAvailability(name, model string, upstream *UpstreamConfig) (bool, time.Duration) {
+	return health.NewTarget(name, model, upstream).Available(GetUpstreamAPIKeys(upstream))
 }
 
 func FormatUpstreamAPIKeySlot(index int, total int) string {
@@ -149,22 +142,6 @@ func ShouldRetryUpstreamStatus(status int) bool {
 	default:
 		return false
 	}
-}
-
-// Authentication, permission and quota failures can be specific to one key.
-// Try each remaining credential within max_retries before failing the target.
-func nextUnrejectedCredential(status int, keys []string, current int, rejected map[int]bool) (string, int, bool) {
-	if status != http.StatusUnauthorized && status != http.StatusForbidden && status != http.StatusPaymentRequired {
-		return "", current, false
-	}
-	rejected[current] = true
-	for offset := 1; offset < len(keys); offset++ {
-		next := (current + offset) % len(keys)
-		if !rejected[next] {
-			return keys[next], next, true
-		}
-	}
-	return "", current, false
 }
 
 func UpstreamAttemptLimit(upstream *UpstreamConfig, keyCount int) int {

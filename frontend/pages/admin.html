@@ -84,7 +84,7 @@
 <label class="upstream-keyword-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="upstreamKeywordFilter" type="search" placeholder="搜索名称、地址或协议" aria-label="按关键词搜索上游" oninput="scheduleFilterUpstreamRows()"></label>
 <select id="upstreamModelFilter" class="m-select" data-clearable aria-label="按模型搜索上游" onchange="filterUpstreamRows()"><option value="">全部模型</option></select>
 <button class="btn btn-default filter-reset" type="button" data-icon="close" data-filter-reset="upstream" onclick="resetPageFilters('upstream')" title="清空筛选" aria-label="清空筛选" disabled><span class="btn-label">清空筛选</span></button>
-<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()" title="添加上游" aria-label="添加上游"><span class="btn-label">添加上游</span></button><button class="btn btn-default" data-icon="layers" onclick="openBulkUpstreamEditor(this)" title="批量添加" aria-label="批量添加"><span class="btn-label">批量添加</span></button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')" title="保存上游" aria-label="保存上游"><span class="btn-label">保存上游</span></button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)" title="同步模型" aria-label="同步模型"><span class="btn-label">同步模型</span></button>
+<button class="btn btn-primary" data-icon="plus" onclick="addUpstreamRow()" title="添加上游" aria-label="添加上游"><span class="btn-label">添加上游</span></button><button class="btn btn-default" data-icon="layers" onclick="openBulkUpstreamEditor(this)" title="批量添加" aria-label="批量添加"><span class="btn-label">批量添加</span></button><button class="btn btn-default" data-icon="sync" onclick="syncAllUpstreamModels(this)" title="同步模型" aria-label="同步模型"><span class="btn-label">同步模型</span></button><button class="btn btn-success" data-icon="save" onclick="saveConfig('上游配置')" title="保存上游" aria-label="保存上游"><span class="btn-label">保存上游</span></button>
 </div>
 </div>
 <div class="active-filters" id="upstreamActiveFilters" aria-label="已选筛选条件" hidden></div>
@@ -101,23 +101,11 @@
 <section class="routing-section routing-models">
 <div class="routing-section-head">
 <h3 class="routing-section-title">模型映射</h3>
-<div class="routing-section-actions"><label class="head-switch" title="关闭时，/v1/models 和请求路由仅接受模型映射中的别名"><span class="head-switch-text">允许直接使用上游模型</span><span class="switch"><input id="allowDirectModels" type="checkbox"><span class="switch-slider"></span></span></label><div class="routing-model-buttons"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-default" id="modelRoutingSettingsButton" type="button" data-icon="settings" aria-haspopup="dialog" aria-controls="modelRoutingSettingsDialog" aria-expanded="false" onclick="openModelRoutingSettings(this)">设置</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div></div>
+<div class="routing-section-actions"><label class="head-switch" title="关闭时，/v1/models 和请求路由仅接受模型映射中的别名"><span class="head-switch-text">允许直接使用上游模型</span><span class="switch"><input id="allowDirectModels" type="checkbox"><span class="switch-slider"></span></span></label><div class="routing-model-buttons"><button class="btn btn-primary" data-icon="plus" onclick="addAliasRow()">添加别名</button><button class="btn btn-default" id="modelRoutingSettingsButton" type="button" data-icon="settings" aria-haspopup="dialog" aria-controls="modelRoutingSettingsDialog" aria-expanded="false" onclick="openModelRoutingSettings(this)">设置</button><button class="btn btn-default" type="button" data-icon="edit" aria-haspopup="dialog" onclick="openGlobalEffortEditor(this)">全局推理映射</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div></div>
 </div>
 <div class="table-scroll">
 <table class="tbl" id="aliasTable">
-<thead><tr><th class="col-select" title="选择后在右侧维护该模型的推理力度映射"></th><th class="col-alias">别名（请求名）</th><th class="col-targets">上游模型</th><th class="col-reasoning">思维链</th><th class="col-action"></th></tr></thead>
-<tbody></tbody>
-</table>
-</div>
-</section>
-<section class="routing-section routing-effort">
-<div class="routing-section-head">
-<h3 class="routing-section-title"><span id="effortMapTitle">推理力度映射（全局）</span></h3>
-<div class="routing-section-actions"><button class="btn btn-primary" data-icon="plus" onclick="addEffortRow()">添加映射</button><button class="btn btn-success" data-icon="save" onclick="saveConfig()">保存全部</button></div>
-</div>
-<div class="table-scroll">
-<table class="tbl" id="effortTable">
-<thead><tr><th class="col-key">请求值</th><th class="col-val">映射值</th><th class="col-action"></th></tr></thead>
+<thead><tr><th class="col-alias">别名（请求名）</th><th class="col-targets">上游模型</th><th class="col-effort" title="为空时使用全局推理映射">推理映射</th><th class="col-reasoning">思维链</th><th class="col-action"></th></tr></thead>
 <tbody></tbody>
 </table>
 </div>
@@ -193,11 +181,11 @@
 <div class="form-group"><label for="modelRoutingStrategy">别名选择策略</label><select id="modelRoutingStrategy" class="m-select"><option value="priority">高权重优先（同权重轮询）</option><option value="weighted_round_robin">加权轮询</option></select></div>
 <div class="form-group"><label for="modelRoutingMaxAttempts">最多尝试目标数 <span class="hint">0 为全部</span></label><input id="modelRoutingMaxAttempts" type="number" min="0" max="1000" step="1" value="0" required></div>
 <div class="form-group"><label for="modelRoutingFailureThreshold">连续故障冷却阈值</label><input id="modelRoutingFailureThreshold" type="number" min="1" max="100" step="1" value="3" required></div>
-<div class="form-group"><label for="modelRoutingCooldownSeconds">冷却时间（秒）</label><input id="modelRoutingCooldownSeconds" type="number" min="1" max="86400" step="1" value="180" required></div>
+<div class="form-group"><label for="modelRoutingCooldownSeconds" title="恢复探测连续失败时，冷却时间每轮翻倍，最长 24 小时">初始冷却时间（秒）</label><input id="modelRoutingCooldownSeconds" type="number" min="1" max="86400" step="1" value="180" required></div>
 </div>
 <div class="routing-settings-toggles">
 <label class="head-switch"><span class="head-switch-text">自动故障切换</span><span class="switch"><input id="modelRoutingFailover" type="checkbox" checked><span class="switch-slider"></span></span></label>
-<label class="head-switch" title="429 仅重试和切换目标，始终不触发模型冷却"><span class="head-switch-text">故障模型冷却</span><span class="switch"><input id="modelRoutingCooldown" type="checkbox" checked><span class="switch-slider"></span></span></label>
+<label class="head-switch" title="按上游、实际模型和 Key 分别冷却，429 仅重试和切换目标"><span class="head-switch-text">故障 Key 冷却</span><span class="switch"><input id="modelRoutingCooldown" type="checkbox" checked><span class="switch-slider"></span></span></label>
 </div>
 <div class="routing-settings-footer"><button class="btn btn-default" type="button" onclick="closePopover()">取消</button><button class="btn btn-success" type="submit">保存设置</button></div>
 </form>

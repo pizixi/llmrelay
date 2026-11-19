@@ -452,14 +452,6 @@ header {
   box-shadow: 0 0 0 3px rgba(0,0,0,0.035);
 }
 
-#effortMapTitle {
-  letter-spacing: -0.15px;
-  text-transform: none;
-  font-size: 16.5px;
-  font-weight: 650;
-  color: var(--text);
-}
-
 /* ===== Config Grid ===== */
 .config-grid {
   display: grid;
@@ -1302,13 +1294,117 @@ header {
 
 .routing-model-buttons {
   display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 6px;
 }
 
 .popover.routing-settings-popover {
   max-width: 640px;
+}
+
+.popover.effort-map-popover {
+  max-width: 560px;
+}
+
+.effort-map-popover .popover-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.effort-map-editor {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.effort-map-head,
+.effort-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 6px;
+}
+
+.effort-map-head {
+  margin: 0 0 8px;
+  color: var(--text-sec);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.effort-map-head span:last-child {
+  grid-column: 3;
+}
+
+.effort-map-rows {
+  display: grid;
+  gap: 8px;
+  max-height: min(360px, 48vh);
+  margin: -4px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.effort-map-row .popover-input {
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.effort-map-row .popover-input:not(:focus):hover {
+  border-color: var(--border-strong);
+}
+
+.effort-map-row .popover-input:focus {
+  box-shadow: var(--focus-ring);
+}
+
+.effort-map-row .popover-input::placeholder {
+  color: var(--text-ter);
+}
+
+.effort-map-arrow {
+  display: grid;
+  place-items: center;
+  color: var(--text-ter);
+}
+
+.effort-map-arrow svg {
+  width: 15px;
+  height: 15px;
+}
+
+.effort-map-empty {
+  margin: 12px 0 4px;
+  color: var(--text-ter);
+  text-align: center;
+  font-size: 13px;
+}
+
+.effort-map-rows:not(:empty) + .effort-map-empty {
+  display: none;
+}
+
+.effort-map-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.effort-map-actions .btn:first-child {
+  margin-right: auto;
 }
 
 .routing-settings-form {
@@ -2097,18 +2193,14 @@ select.m-select {
 #upstreamTable td input { min-width: 0; }
 #upstreamTable td .field-display { min-width: 0; }
 
-#effortTable .col-key { width: auto; min-width: 120px; }
-#effortTable .col-val { width: auto; min-width: 120px; }
-#effortTable .col-action { width: 58px; }
-
-#aliasTable .col-alias { width: auto; min-width: 140px; }
-#aliasTable .col-select { width: 46px; min-width: 46px; }
-#aliasTable .col-targets { width: 46%; min-width: 260px; }
+#aliasTable .col-alias { width: 22%; min-width: 140px; }
+#aliasTable .col-targets { width: auto; min-width: 260px; }
+#aliasTable .col-effort { width: 22%; min-width: 145px; }
 #aliasTable .col-reasoning { width: 96px; min-width: 96px; white-space: nowrap; text-align: center; }
 #aliasTable .col-action { width: 96px; min-width: 96px; }
 
 #aliasTable {
-  min-width: 620px;
+  min-width: 820px;
   table-layout: fixed;
 }
 
@@ -2116,12 +2208,10 @@ select.m-select {
   overflow: hidden;
 }
 
-#aliasTable .alias-effort-select {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
+#aliasTable .alias-effort-field {
+  width: 100%;
+  color: var(--text);
+  text-align: left;
 }
 
 #aliasTable td.col-reasoning,
@@ -2190,14 +2280,6 @@ select.m-select {
 
 .switch:hover .switch-slider {
   border-color: var(--border-strong);
-}
-
-#aliasTable tr.alias-selected td {
-  background: var(--accent-dim) !important;
-}
-
-#aliasTable tr.alias-selected {
-  background: var(--accent-dim);
 }
 
 #socks5Table .col-name { width: auto; min-width: 100px; }
@@ -2504,8 +2586,8 @@ select.m-select {
 .alias-target-popover {
   display: flex;
   flex-direction: column;
-  width: min(960px, calc(100vw - 32px));
-  max-width: 960px;
+  width: min(1120px, calc(100vw - 32px));
+  max-width: 1120px;
   max-height: calc(100vh - 32px);
   overflow: hidden;
   border-radius: 8px;
@@ -2700,9 +2782,9 @@ select.m-select {
 
 .alias-target-selected-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1fr) 72px 118px 58px 32px;
+  grid-template-columns: minmax(0, 1fr) max-content max-content max-content max-content 32px;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-height: 45px;
   padding: 5px 6px 5px 9px;
   border-bottom: 1px solid var(--border);
@@ -2710,6 +2792,154 @@ select.m-select {
 
 .alias-target-selected-row:last-child {
   border-bottom: 0;
+}
+
+.alias-target-key-summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-sec);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.alias-target-key-summary:enabled:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.alias-target-key-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.alias-target-key-summary:disabled {
+  color: var(--text-ter);
+  cursor: default;
+}
+
+.alias-target-key-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.alias-target-key-chevron svg {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+}
+
+.alias-target-key-summary:disabled .alias-target-key-chevron {
+  visibility: hidden;
+}
+
+.alias-target-key-summary.has-cooldown,
+.alias-target-key-summary.has-cooldown:hover {
+  border-color: color-mix(in srgb, var(--orange) 46%, var(--border));
+  background: var(--orange-dim);
+  color: var(--orange);
+}
+
+.alias-target-popover.is-viewing-key-details > .alias-target-picker,
+.alias-target-popover.is-viewing-key-details > .alias-target-selected-head,
+.alias-target-popover.is-viewing-key-details > .alias-target-selected-list,
+.alias-target-key-details[hidden],
+.alias-target-key-entries[hidden] {
+  display: none;
+}
+
+.alias-target-key-details {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 9px;
+}
+
+.alias-target-key-details-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.alias-target-key-details-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.alias-target-key-route {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.alias-target-key-counts,
+.alias-target-key-empty {
+  color: var(--text-sec);
+  font-size: 12px;
+}
+
+.alias-target-key-empty {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.alias-target-key-entries {
+  min-height: 0;
+  max-height: min(360px, 50vh);
+  overscroll-behavior: contain;
+}
+
+.alias-target-key-table th,
+.alias-target-key-table td {
+  padding: 7px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.alias-target-key-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.alias-target-key-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.alias-target-key-table th:last-child {
+  width: auto;
+}
+
+.routing-key-state {
+  display: inline-block;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.routing-key-state.has-cooldown {
+  background: var(--orange-dim);
+  color: var(--orange);
+}
+
+.alias-target-health-note {
+  margin: 8px 0 0;
+  color: var(--text-ter);
+  font-size: 11.5px;
 }
 
 .alias-target-selected-route {
@@ -6511,7 +6741,7 @@ select.m-select {
     padding-inline: 6px;
   }
   .alias-target-selected-row {
-    grid-template-columns: minmax(0, 1fr) 42px;
+    grid-template-columns: minmax(0, 1fr) max-content;
     gap: 7px;
     padding: 8px 6px 8px 8px;
   }
@@ -6522,6 +6752,7 @@ select.m-select {
   .alias-target-selected-row > .btn-icon {
     grid-column: 2;
     grid-row: 1;
+    justify-self: end;
   }
   .alias-target-weight {
     grid-column: 1;
@@ -6535,6 +6766,11 @@ select.m-select {
   .alias-target-percent {
     grid-column: 2;
     grid-row: 2;
+  }
+  .alias-target-key-summary {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: end;
   }
 }
 
@@ -7284,21 +7520,14 @@ header {
 }
 
 .model-routing-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
-  gap: 24px;
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
 }
 
 .routing-section {
   display: flex;
   min-width: 0;
   flex-direction: column;
-}
-
-.routing-effort {
-  padding-left: 24px;
-  border-left: 1px solid var(--border);
 }
 
 .routing-section-head {
@@ -7314,12 +7543,6 @@ header {
 
 .routing-section > .actions {
   margin-top: auto;
-}
-
-.routing-section #effortMapTitle {
-  font-size: inherit;
-  font-weight: inherit;
-  letter-spacing: 0;
 }
 
 .tab-panel[hidden] {
@@ -7356,20 +7579,6 @@ header {
 
   .tab-panel {
     min-height: calc(100vh - 216px);
-  }
-}
-
-@media (max-width: 980px) {
-  .model-routing-grid {
-    grid-template-columns: 1fr;
-    gap: 20px;
-  }
-
-  .routing-effort {
-    padding-top: 20px;
-    padding-left: 0;
-    border-top: 1px solid var(--border);
-    border-left: 0;
   }
 }
 
@@ -7430,7 +7639,7 @@ header {
     table-layout: auto;
   }
 
-  .routing-models #aliasTable:has(tbody .empty-state) .col-select,
+  .routing-models #aliasTable:has(tbody .empty-state) .col-effort,
   .routing-models #aliasTable:has(tbody .empty-state) .col-reasoning,
   .routing-models #aliasTable:has(tbody .empty-state) .col-action {
     display: none;
@@ -8056,75 +8265,45 @@ header {
 .usage-metric.is-completion b { color: var(--accent); }
 .usage-metric.is-cached.has-value b { color: var(--green); }
 
-/* Very narrow screens: fixed shares plus stacked labels so the table never
-   scrolls sideways. "KEY n/m" stays on one line. */
-@media (max-width: 560px) {
-  .usage-table { table-layout: fixed; }
-  .usage-table .usage-call-col { width: 25%; }
-  .usage-table .usage-route-col { width: 26%; }
-  .usage-table .usage-performance-col { width: 17%; }
-  .usage-table .usage-token-col { width: 22%; }
+/* Small screens: like the other admin lists, keep each record on a single
+   line and let the table scroll horizontally instead of stacking. */
+@media (max-width: 700px) {
+  .usage-table {
+    table-layout: auto;
+    min-width: max-content;
+  }
+  .usage-table .usage-call-col,
+  .usage-table .usage-route-col,
+  .usage-table .usage-performance-col,
+  .usage-table .usage-token-col {
+    width: auto;
+    min-width: 0;
+  }
   .usage-table .usage-action { width: 30px; min-width: 30px; }
-  .usage-table td { padding: 5px 5px; }
-  .usage-table thead th { padding: 5px 5px; font-size: 11px; }
+  .usage-table td { padding: 5px 8px; }
+  .usage-table thead th { padding: 5px 8px; font-size: 11px; }
 
-  .usage-metric {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0;
-    min-width: 0;
-  }
-
-  .usage-metric-line {
-    gap: 3px 6px;
-  }
-
-  .usage-call-line {
-    gap: 2px 5px;
-  }
-
-  /* Only on tiny screens may long names break; "KEY n/m" never does. */
-  .usage-route-model,
-  .usage-route-provider span {
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
+  .usage-metric-line,
+  .usage-call-line,
+  .usage-route-flow,
   .usage-route-tail {
-    flex: 1 1 auto;
-    flex-wrap: wrap;
-    min-width: 0;
+    flex-wrap: nowrap;
   }
 
-  .usage-key-chip {
-    white-space: normal;
-  }
-
+  .usage-route-model,
+  .usage-route-provider span,
+  .usage-key-chip,
   .usage-key-chip > span {
-    overflow-wrap: anywhere;
-  }
-
-  .usage-call-time {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0;
-  }
-
-  .usage-call-time > span {
-    font-size: 11px;
-  }
-
-  .usage-route-flow {
-    gap: 1px 4px;
+    white-space: nowrap;
   }
 
   .usage-route-provider {
-    flex: 1 1 100%;
+    flex: 0 0 auto;
   }
 
   .usage-key-slot {
-    margin-left: 0;
-    padding-left: 5px;
+    margin-left: 4px;
+    padding-left: 0;
   }
 }
 

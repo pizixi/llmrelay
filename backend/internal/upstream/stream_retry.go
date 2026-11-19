@@ -18,6 +18,20 @@ import (
 )
 
 type chatStreamReplayContextKey struct{}
+type chatStreamFallbackContextKey struct{}
+
+type ChatStreamBackup struct{ stream *retryStreamBody }
+
+type ChatStreamFallback func(context.Context, error) (*ChatStreamBackup, error)
+
+func WithChatStreamFallback(ctx context.Context, fallback ChatStreamFallback) context.Context {
+	return context.WithValue(ctx, chatStreamFallbackContextKey{}, fallback)
+}
+
+func chatStreamFallbackFromContext(ctx context.Context) ChatStreamFallback {
+	fallback, _ := ctx.Value(chatStreamFallbackContextKey{}).(ChatStreamFallback)
+	return fallback
+}
 
 // WithChatStreamReplay enables verified replay for Chat protocol converters.
 // Native passthrough does not opt in: its original framing must stay intact.
@@ -33,17 +47,19 @@ func chatStreamReplayEnabled(ctx context.Context) bool {
 // retryStreamBody shares the request's connection/status retry budget with body
 // retries. Close also cancels backoff and any replacement HTTP request.
 type retryStreamBody struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	reopen      func(error) (io.ReadCloser, error)
-	mu          sync.Mutex
-	current     io.ReadCloser
-	closed      bool
-	delivered   bool
-	terminalErr error
-	closeOnce   sync.Once
-	closeErr    error
-	requestID   string
+	ctx          context.Context
+	cancel       context.CancelFunc
+	reopen       func(error) (io.ReadCloser, error)
+	mu           sync.Mutex
+	current      io.ReadCloser
+	closed       bool
+	delivered    bool
+	terminalErr  error
+	closeOnce    sync.Once
+	closeErr     error
+	requestID    string
+	attemptLimit int
+	onVerified   func()
 }
 
 func (r *retryStreamBody) readAttempt(p []byte) (int, error) {
@@ -76,10 +92,17 @@ func (r *retryStreamBody) Read(p []byte) (int, error) {
 			r.terminalErr = err
 			return 0, err
 		}
+		if r.onVerified != nil {
+			r.onVerified()
+		}
 	}
 }
 
 func (r *retryStreamBody) retry(cause error) error {
+	return r.replace(func() (io.ReadCloser, error) { return r.reopen(cause) })
+}
+
+func (r *retryStreamBody) replace(open func() (io.ReadCloser, error)) error {
 	if r.ctx.Err() != nil {
 		return r.ctx.Err()
 	}
@@ -90,7 +113,7 @@ func (r *retryStreamBody) retry(cause error) error {
 		return io.ErrClosedPipe
 	}
 	_ = body.Close()
-	next, err := r.reopen(cause)
+	next, err := open()
 	if err != nil {
 		return err
 	}
@@ -149,9 +172,13 @@ const maxChatReplayParts = 65536
 
 type chatReplayStream struct {
 	body        *retryStreamBody
+	backup      *retryStreamBody
+	fallback    ChatStreamFallback
+	onVerified  func()
 	reader      *sse.Reader
 	pending     []byte
 	err         error
+	started     bool
 	finished    bool
 	canReplay   bool
 	prefix      []chatReplayPrefixPart
@@ -185,7 +212,7 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 		event, err := r.reader.Next()
 		if err != nil {
 			if !r.finished && r.canReplay && retryableStreamReadError(err) {
-				err = r.restart(err)
+				err = r.restart(err, true)
 				if err == nil {
 					continue
 				}
@@ -193,31 +220,37 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 			r.err = err
 			break
 		}
-		if strings.TrimSpace(event.Data) == "[DONE]" && !r.finished {
-			if r.canReplay {
-				if err := r.restart(fmt.Errorf("upstream stream ended before finish_reason: %w", io.ErrUnexpectedEOF)); err == nil {
-					continue
-				} else {
-					r.err = err
-					break
-				}
-			}
-		}
-		if event.Data == "" || r.finished {
+		if r.finished {
 			r.pending = encodeStreamEvent(event)
 			continue
 		}
-		var chunk map[string]any
-		if json.Unmarshal([]byte(event.Data), &chunk) != nil {
-			// A truncated last JSON event has no semantic output to replay.
-			// Keep its frame boundary intact for the converter, then handle the
-			// original transport error on the next iteration.
-			if !r.replaying {
-				r.pending = encodeStreamEvent(event)
+		data := strings.TrimSpace(event.Data)
+		if data == "[DONE]" {
+			err := fmt.Errorf("upstream stream ended before finish_reason: %w", io.ErrUnexpectedEOF)
+			if r.canReplay {
+				if err = r.restart(err, true); err == nil {
+					continue
+				}
 			}
+			r.err = err
+			break
+		}
+		if data == "" {
+			continue
+		}
+		var chunk map[string]any
+		if json.Unmarshal([]byte(event.Data), &chunk) != nil || chunk == nil {
+			// A truncated JSON event has no output to deliver. The reader
+			// reports the transport error after the last buffered event.
 			continue
 		}
 		if chunk["error"] != nil || chunk["type"] == "error" || chunk["type"] == "response.failed" {
+			if r.replaying {
+				if err := r.restart(errors.New("cannot resume upstream stream: replay returned an upstream error"), false); err != nil {
+					r.err = err
+				}
+				continue
+			}
 			r.canReplay = false
 			r.pending = encodeStreamEvent(event)
 			continue
@@ -228,12 +261,14 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 			parts, supported = r.parts(chunk)
 		}
 		if !supported {
+			if r.replaying {
+				if err := r.restart(errors.New("cannot resume upstream stream: replay contains unsupported deltas"), false); err != nil {
+					r.err = err
+				}
+				continue
+			}
 			r.canReplay = false
 			r.prefix = nil
-			if r.replaying {
-				r.err = errors.New("cannot resume upstream stream: replay contains unsupported deltas")
-				break
-			}
 		}
 		finish := chatChunkFinished(chunk)
 		if r.replaying {
@@ -242,8 +277,13 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 				if err == nil {
 					err = errors.New("cannot resume upstream stream: regenerated response ended before the delivered prefix")
 				}
-				r.err = err
-				break
+				if err = r.restart(err, false); err != nil {
+					r.err = err
+				}
+				continue
+			}
+			if !r.replaying {
+				r.acceptReplay()
 			}
 			if !changed && !finish {
 				// Usage preceding the replayed prefix is superseded by the new
@@ -259,12 +299,15 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 				choice, _ := choices[0].(map[string]any)
 				choice["delta"] = newDelta
 			}
-			data, _ := json.Marshal(chunk)
-			event.Data = string(data)
+			encoded, _ := json.Marshal(chunk)
+			event.Data = string(encoded)
 		} else if r.canReplay {
 			for _, part := range parts {
 				r.remember(part)
 			}
+		}
+		if len(parts) > 0 || finish || !supported {
+			r.acceptReplay()
 		}
 		if finish {
 			r.finished = true
@@ -273,6 +316,7 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 		r.pending = encodeStreamEvent(event)
 	}
 	if len(r.pending) > 0 {
+		r.started = true
 		n := copy(p, r.pending)
 		r.pending = r.pending[n:]
 		return n, nil
@@ -280,16 +324,54 @@ func (r *chatReplayStream) Read(p []byte) (int, error) {
 	return 0, r.err
 }
 
-func (r *chatReplayStream) restart(cause error) error {
-	if err := r.body.retry(cause); err != nil {
+func (r *chatReplayStream) acceptReplay() {
+	if r.onVerified != nil {
+		r.onVerified()
+		r.onVerified = nil
+	}
+}
+
+func (r *chatReplayStream) restart(cause error, tryActive bool) error {
+	active := r.body
+	if r.backup != nil {
+		active = r.backup
+	}
+	if tryActive {
+		if err := active.retry(cause); err == nil {
+			r.resetReplay(active)
+			return nil
+		} else {
+			cause = err
+		}
+	}
+	// Before returning any events, the gateway can retry in route order across
+	// all protocols. The replay path is limited to compatible Chat streams.
+	if !r.started || r.fallback == nil || r.body.ctx.Err() != nil {
+		return cause
+	}
+	var backup *ChatStreamBackup
+	if err := r.body.replace(func() (io.ReadCloser, error) {
+		var err error
+		backup, err = r.fallback(r.body.ctx, cause)
+		if err != nil {
+			return nil, err
+		}
+		return backup.stream, nil
+	}); err != nil {
 		return err
 	}
-	r.reader = sse.NewReader(streamAttemptReader{r.body})
+	r.backup = backup.stream
+	r.resetReplay(r.backup)
+	return nil
+}
+
+func (r *chatReplayStream) resetReplay(active *retryStreamBody) {
+	r.reader = sse.NewReader(streamAttemptReader{active})
 	r.tools = make(map[int]bool)
 	r.matchPart, r.matchByte, r.matchLimit = 0, 0, len(r.prefix)
 	r.replaying = r.matchLimit > 0
+	r.onVerified = active.onVerified
 	r.lastPing = time.Time{}
-	return nil
 }
 
 func (r *chatReplayStream) remember(part chatReplayPart) {
@@ -451,7 +533,11 @@ func chatChunkFinished(chunk map[string]any) bool {
 	}
 	choice, _ := choices[0].(map[string]any)
 	finish, _ := choice["finish_reason"].(string)
-	switch finish {
+	return isChatFinishReason(finish)
+}
+
+func isChatFinishReason(reason string) bool {
+	switch reason {
 	case "stop", "length", "tool_calls", "function_call", "content_filter":
 		return true
 	}

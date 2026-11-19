@@ -1,90 +1,69 @@
 package gateway
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 
-	"llmrelay/backend/internal/routing"
-	"llmrelay/backend/internal/sse"
+	"llmrelay/backend/internal/routing/health"
 	"llmrelay/backend/internal/upstream"
 )
 
 func observeUpstreamResult(ctx context.Context, body []byte, status int, err error) {
-	outcome, _ := ctx.Value(routeOutcomeKey{}).(*routeOutcome)
-	if outcome == nil {
+	outcome := observeUpstreamTransport(ctx, status, err)
+	if outcome == nil || outcome.failure != nil {
 		return
 	}
-	outcome.failure = nil
-	if err != nil && (status == 0 || (status >= 200 && status < 300)) {
-		failure := routing.ClassifyFailure(http.StatusBadGateway, body)
-		outcome.failure = &failure
+	// A 2xx response with nothing in it cannot be served to the client. Treat it
+	// as an upstream failure so routing can move on instead of forwarding an
+	// empty 200 that clients report as a broken gateway response.
+	if status >= 200 && status < 300 && len(bytes.TrimSpace(body)) == 0 {
+		outcome.failure = &health.Failure{Kind: "empty_response", Failover: true, Cooldown: true}
 	}
 }
 
-// Wait for the first upstream byte before protocol converters can emit their
-// opening events. An empty or failed stream can then move to the next target.
-func observeUpstreamStream(ctx context.Context, body io.ReadCloser, status int, headers http.Header, err error, target *UpstreamConfig) (io.ReadCloser, int, http.Header, error) {
-	observeUpstreamResult(ctx, nil, status, err)
+// observeUpstreamTransport records connection failures and failed 2xx bodies.
+func observeUpstreamTransport(ctx context.Context, status int, err error) *routeOutcome {
 	outcome, _ := ctx.Value(routeOutcomeKey{}).(*routeOutcome)
+	if outcome == nil {
+		return nil
+	}
+	outcome.noCredential = errors.Is(err, upstream.ErrNoAvailableUpstreamKey)
+	outcome.failure = nil
+	var responseErr *upstream.ResponseError
+	if errors.As(err, &responseErr) {
+		outcome.failure = &responseErr.Failure
+	} else if err != nil && (status == 0 || (status >= 200 && status < 300)) {
+		failure := health.ClassifyFailure(http.StatusBadGateway, nil)
+		outcome.failure = &failure
+	}
+	return outcome
+}
+
+// Wait for the first meaningful upstream byte before protocol converters can
+// emit their opening events. Empty, whitespace-only or non-SSE/JSON streams are
+// treated as failures so model routing can try the next target.
+func observeUpstreamStream(ctx context.Context, body io.ReadCloser, status int, headers http.Header, err error) (io.ReadCloser, int, http.Header, error) {
+	outcome := observeUpstreamTransport(ctx, status, err)
 	if outcome == nil || err != nil || status < 200 || status >= 300 || body == nil {
 		return body, status, headers, err
 	}
-	observed := &routeStreamReader{ReadCloser: body, outcome: outcome, ctx: ctx, parser: sse.NewParser(sse.DefaultMaxEventBytes), protocol: target.APIType}
-	if observed.protocol == "" {
-		observed.protocol = UpstreamOpenAI
+	reader, readErr := upstream.PeekStreamStart(body)
+	if readErr == nil {
+		return &nativeResponseReadCloser{Reader: reader, closer: body}, status, headers, nil
 	}
-	reader := bufio.NewReader(observed)
-	if _, readErr := reader.Peek(1); readErr != nil {
-		_ = body.Close()
-		failure := routing.ClassifyFailure(http.StatusBadGateway, nil)
-		outcome.failure = &failure
-		failureBody := []byte(`{"error":{"type":"upstream_error","message":"upstream stream ended before returning data"}}`)
-		return io.NopCloser(bytes.NewReader(failureBody)), http.StatusBadGateway, http.Header{"Content-Type": {"application/json"}}, readErr
+	_ = body.Close()
+	if errors.Is(readErr, upstream.ErrMalformedUpstreamStream) {
+		outcome.failure = &health.Failure{Kind: "invalid_stream", Failover: true, Cooldown: true}
+		return upstreamStreamFailureBody(readErr, upstream.ErrMalformedUpstreamStream.Error())
 	}
-	return &nativeResponseReadCloser{Reader: reader, closer: body}, status, headers, nil
+	outcome.failure = &health.Failure{Kind: "empty_response", Failover: true, Cooldown: true}
+	return upstreamStreamFailureBody(readErr, "upstream stream ended before returning data")
 }
 
-type routeStreamReader struct {
-	io.ReadCloser
-	outcome  *routeOutcome
-	ctx      context.Context
-	parser   *sse.Parser
-	protocol UpstreamType
-	terminal bool
-}
-
-func (reader *routeStreamReader) Read(body []byte) (int, error) {
-	n, err := reader.ReadCloser.Read(body)
-	reader.observe(reader.parser.Feed(body[:n]))
-	if err != nil {
-		reader.observe(reader.parser.Flush())
-	}
-	if err != nil && !errors.Is(err, io.EOF) && !(reader.terminal && errors.Is(err, io.ErrUnexpectedEOF)) && reader.ctx.Err() == nil {
-		failure := routing.ClassifyFailure(http.StatusBadGateway, nil)
-		reader.outcome.failure = &failure
-	}
-	return n, err
-}
-
-func (reader *routeStreamReader) observe(events []sse.Event) {
-	for _, event := range events {
-		reader.terminal = upstream.IsNativeStreamTerminal(event, reader.protocol) || reader.terminal
-		if reader.protocol == UpstreamOpenAI {
-			var chunk struct {
-				Choices []struct {
-					FinishReason string `json:"finish_reason"`
-				} `json:"choices"`
-			}
-			if json.Unmarshal([]byte(event.Data), &chunk) == nil && len(chunk.Choices) > 0 {
-				for _, choice := range chunk.Choices {
-					reader.terminal = choice.FinishReason != "" || reader.terminal
-				}
-			}
-		}
-	}
+func upstreamStreamFailureBody(cause error, message string) (io.ReadCloser, int, http.Header, error) {
+	failureBody := []byte(`{"error":{"type":"upstream_error","message":"` + message + `"}}`)
+	return io.NopCloser(bytes.NewReader(failureBody)), http.StatusBadGateway, http.Header{"Content-Type": {"application/json"}}, cause
 }

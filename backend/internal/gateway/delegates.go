@@ -53,13 +53,16 @@ func callUpstream(ctx context.Context, body []byte, upstreamName, model string, 
 
 func callPreparedUpstreamStream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig, raw ...bool) (io.ReadCloser, int, http.Header, error) {
 	response, status, headers, err := upstream.CallPreparedUpstreamStream(ctx, body, upstreamName, model, target, raw...)
-	return observeUpstreamStream(ctx, response, status, headers, err, target)
+	return observeUpstreamStream(ctx, response, status, headers, err)
 }
 
 func callUpstreamStream(ctx context.Context, body []byte, upstreamName, model string, target *UpstreamConfig) (io.ReadCloser, int, http.Header, error) {
 	ctx = upstream.WithChatStreamReplay(ctx)
+	if outcome, _ := ctx.Value(routeOutcomeKey{}).(*routeOutcome); outcome != nil && outcome.chatFallback != nil {
+		ctx = upstream.WithChatStreamFallback(ctx, outcome.chatFallback)
+	}
 	response, status, headers, err := upstream.CallUpstreamStream(ctx, body, upstreamName, model, target)
-	return observeUpstreamStream(ctx, response, status, headers, err, target)
+	return observeUpstreamStream(ctx, response, status, headers, err)
 }
 
 func copyFilteredResponseHeaders(dst, src http.Header) {

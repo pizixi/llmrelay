@@ -12,6 +12,9 @@ const admin = vm.createContext({
   setInterval() {},
 });
 vm.runInContext(adminSource, admin);
+admin.document.createElement = () => ({
+  get innerHTML() { return admin.escAttr(this.textContent); },
+});
 const parse = (...args) => admin.parseBulkUpstreams(...args);
 
 test("添加别名旁提供设置按钮并通过弹窗模板编辑路由配置", () => {
@@ -41,6 +44,118 @@ test("路由策略默认优先级选择并启用故障切换与冷却", () => {
     strategy: "priority", disable_failover: false, max_attempts: 0,
     disable_cooldown: false, failure_threshold: 3, cooldown_seconds: 180,
   });
+});
+
+test("模型推理映射作为可点开的行字段，全局映射有独立入口", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../pages/admin.html"), "utf8");
+  assert.match(html, /<th class="col-effort"[^>]*>推理映射<\/th>/);
+  assert.match(html, /onclick="openGlobalEffortEditor\(this\)">全局推理映射/);
+  assert.doesNotMatch(html, /id="effortTable"/);
+  const row = admin.aliasRowHtml("example", { reasoning_effort_map: { low: "medium", high: "max" } });
+  assert.match(row, /data-field="effort_map"/);
+  assert.match(row, /onclick="openAliasEffortEditor\(this\)"/);
+  assert.match(row, /low → medium/);
+  assert.match(admin.aliasRowHtml("other"), /使用全局映射/);
+  assert.match(admin.effortMapRowHtml("low", "high"), /class="popover-input" type="text" name="request_effort".*class="effort-map-arrow".*class="popover-input" type="text" name="mapped_effort"/);
+});
+
+test("删除别名时保留其他行中未命名的推理映射草稿", async () => {
+  const draftFields = {
+    '[data-field="key"]': { value: "" },
+    '[data-field="effort_map"]': { dataset: { effortMap: '{"low":"high"}' } },
+  };
+  const draft = { querySelector: (selector) => draftFields[selector] || null };
+  const tbody = { rows: [draft], innerHTML: "draft" };
+  const context = vm.createContext({
+    URL, localStorage: { getItem: () => null }, setInterval() {},
+    document: {
+      readyState: "loading", addEventListener() {},
+      createElement: admin.document.createElement,
+      querySelector: () => tbody, querySelectorAll: () => tbody.rows,
+    },
+  });
+  vm.runInContext(adminSource, context);
+  context.confirmConfigDelete = async () => true;
+  const saved = {
+    dataset: { aliasKey: "saved" },
+    querySelector: () => ({ value: "saved" }),
+    remove: () => tbody.rows.shift(),
+  };
+  tbody.rows.unshift(saved);
+  await context.delAlias({ closest: () => saved });
+  assert.equal(tbody.innerHTML, "draft");
+  assert.equal(context.validateAliasRows().message, "请先填写映射模型名");
+});
+
+test("上游模型列表只显示冷却数量，并提供单独的详情视图", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../pages/admin.html"), "utf8");
+  assert.doesNotMatch(html, /openRoutingHealth|冷却状态<\/button>/);
+  assert.doesNotMatch(admin.upstreamRowHtml("provider", {}), /冷却状态|upstream-key-health/);
+  const targets = [{ upstream: "provider", target_model: "actual", weight: 1, enabled: true }];
+  assert.doesNotMatch(admin.aliasTargetsFieldHtml(targets), /alias-target-key-summary/);
+  const selected = admin.buildAliasTargetSelectedRows(targets);
+  assert.match(selected, /data-model="actual"[\s\S]*onclick="openAliasTargetKeyDetails\(this\)"/);
+  assert.doesNotMatch(selected, /routing-key-state|alias-target-key-table/);
+  assert.match(admin.buildAliasTargetsPopoverHtml(targets), /<section class="alias-target-key-details"[^>]*hidden>[\s\S]*返回列表/);
+});
+
+test("100 个 Key 汇总为单个计数，详情只渲染有故障记录的 Key", () => {
+  function targetRow(model) {
+    const button = { firstElementChild: {}, classList: { toggle() {} } };
+    return { button, dataset: { upstream: "provider", model }, querySelector: () => button };
+  }
+  const affected = targetRow("affected");
+  const normal = targetRow("normal");
+  const statusNote = {};
+  const pop = {
+    _aliasTargetHealth: {
+      receivedAt: 1000,
+      snapshot: {
+        enabled: true,
+        upstreams: {
+          provider: {
+            key_count: 100,
+            models: { affected: [
+              { slot: 2, state: "cooling", failures: 3, remaining_ms: 91000 },
+              { slot: 80, state: "probing", failures: 1 },
+            ] },
+          },
+        },
+      },
+    },
+    querySelector: () => statusNote,
+    querySelectorAll: () => [affected, normal],
+  };
+  admin.renderAliasTargetKeyHealth(pop, 2000);
+  assert.equal(affected.button.firstElementChild.textContent, "冷却 1 / 100");
+  assert.equal(normal.button.firstElementChild.textContent, "冷却 0 / 100");
+
+  const countdowns = [{}, {}];
+  const tbody = { querySelectorAll: () => countdowns };
+  const counts = {};
+  const list = { querySelector: () => tbody };
+  const empty = {};
+  const detail = { querySelector: (selector) => ({
+    ".alias-target-key-counts": counts,
+    ".alias-target-key-entries": list,
+    ".alias-target-key-empty": empty,
+  })[selector] };
+  const health = pop._aliasTargetHealth;
+  const status = admin.aliasTargetKeyStatus(health, affected.dataset, 2000);
+  admin.renderAliasTargetKeyDetails(detail, status, 2000, health.receivedAt);
+  assert.equal(counts.textContent, "100 个 Key · 冷却 1 · 恢复探测 1 · 可用 98");
+  assert.equal((tbody.innerHTML.match(/<tr>/g) || []).length, 2);
+  assert.match(tbody.innerHTML, /Key 2<\/td>[\s\S]*冷却中/);
+  assert.match(tbody.innerHTML, /Key 80<\/td>[\s\S]*探测中/);
+  assert.equal(countdowns[0].textContent, "01:30");
+  assert.equal(countdowns[1].textContent, "—");
+
+  admin.renderAliasTargetKeyHealth(pop, 92001);
+  assert.equal(affected.button.firstElementChild.textContent, "冷却 0 / 100");
+  const expired = admin.aliasTargetKeyStatus(health, affected.dataset, 92001);
+  admin.renderAliasTargetKeyDetails(detail, expired, 92001, health.receivedAt);
+  assert.match(tbody.innerHTML, /Key 2<\/td>[\s\S]*待探测/);
+  assert.equal(countdowns[0].textContent, "—");
 });
 
 test("路由策略表单读取和回显保留关闭开关及加权轮询配置", () => {

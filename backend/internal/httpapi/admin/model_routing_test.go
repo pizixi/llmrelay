@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"llmrelay/backend/internal/config"
+	"llmrelay/backend/internal/routing/health"
 )
 
 func TestAdminModelRoutingConfigPreservationAndValidation(t *testing.T) {
@@ -46,5 +47,51 @@ func TestAdminModelRoutingConfigPreservationAndValidation(t *testing.T) {
 	AdminConfigHandler(response, httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"model_routing":{"strategy":"invalid"}}`)))
 	if response.Code != http.StatusBadRequest || config.Snapshot().ModelRouting != want {
 		t.Fatalf("invalid policy status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminRoutingHealthReportsSlotsAndCountdown(t *testing.T) {
+	previous := config.Snapshot()
+	t.Cleanup(func() { config.ApplyConfig(previous) })
+	config.ApplyConfig(config.AppConfig{
+		ModelRouting: config.ModelRoutingConfig{FailureThreshold: 1, CooldownSeconds: 95},
+		Upstreams: map[string]*config.UpstreamConfig{
+			"routing-health-test": {BaseURL: "https://cooldown.example/v1", APIKey: "private-failed\nprivate-working"},
+		},
+	})
+	cfg := config.Snapshot()
+	target := health.NewTarget("routing-health-test", "actual-model", cfg.Upstreams["routing-health-test"])
+	attempt, _ := target.TryKey("private-failed", cfg.ModelRouting)
+	if attempt == nil {
+		t.Fatal("test credential unexpectedly unavailable")
+	}
+	failed := health.ClassifyFailure(401, nil)
+	attempt.Complete(&failed)
+	response := httptest.NewRecorder()
+	AdminRoutingHealthHandler(response, httptest.NewRequest(http.MethodGet, "/api/routing/health", nil))
+	if response.Code != 200 || response.Header().Get("Cache-Control") != "no-store" || strings.Contains(response.Body.String(), "private-") {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	var result struct {
+		Enabled   bool                      `json:"enabled"`
+		Upstreams map[string]upstreamHealth `json:"upstreams"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	status := result.Upstreams["routing-health-test"]
+	keys := status.Models["actual-model"]
+	if !result.Enabled || status.KeyCount != 2 || len(keys) != 1 {
+		t.Fatalf("status=%#v", result)
+	}
+	if key := keys[0]; key.Slot != 1 || key.State != "cooling" || key.Failures != 1 || key.RemainingMS <= 0 || key.RemainingMS > 95000 {
+		t.Fatalf("key=%#v", key)
+	}
+	cfg.ModelRouting.DisableCooldown = true
+	config.ApplyConfig(cfg)
+	response = httptest.NewRecorder()
+	AdminRoutingHealthHandler(response, httptest.NewRequest(http.MethodGet, "/api/routing/health", nil))
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Enabled || len(result.Upstreams["routing-health-test"].Models) != 0 {
+		t.Fatalf("disabled cooldown status=%s err=%v", response.Body, err)
 	}
 }

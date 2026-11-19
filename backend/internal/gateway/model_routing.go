@@ -3,27 +3,34 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"llmrelay/backend/internal/config"
-	"llmrelay/backend/internal/routing"
+	"llmrelay/backend/internal/routing/health"
 	"llmrelay/backend/internal/upstream"
 )
 
 type routedRequest struct {
-	Body           []byte
-	Envelope       NativeRequestEnvelope
-	RequestedModel string
-	Route          config.ModelRoute
+	Body              []byte
+	Envelope          NativeRequestEnvelope
+	RequestedModel    string
+	Route             config.ModelRoute
+	CaptureChatStream func(context.Context, []byte)
 }
 
 type routeOutcomeKey struct{}
 
-type routeOutcome struct{ failure *routing.Failure }
+type routeOutcome struct {
+	failure      *health.Failure
+	noCredential bool
+	chatFallback upstream.ChatStreamFallback
+}
 
 func serveModelRequest(w http.ResponseWriter, r *http.Request, serve func(http.ResponseWriter, *http.Request, routedRequest)) {
 	if r.Method != http.MethodPost {
@@ -52,50 +59,62 @@ func serveModelRequest(w http.ResponseWriter, r *http.Request, serve func(http.R
 	}
 	r, release := trackModelRequest(r, model)
 	defer release()
-	routes, matched, policy := config.ResolveRequestModelCandidates(model, routing.TargetAvailable)
+	routes, matched, policy := config.ResolveRequestModelCandidates(model, func(route config.ModelRoute) bool {
+		available, _ := upstream.ModelTargetAvailability(route.UpstreamName, route.Model, route.Upstream)
+		return available
+	})
 	if !matched {
 		writeModelNotFoundError(w, r.URL.Path, model)
 		return
 	}
 	attempts := 0
 	var retryDelay time.Duration
-	for _, route := range routes {
+	r = r.WithContext(upstream.WithRoutingPolicy(r.Context(), policy))
+	for index, route := range routes {
 		if r.Context().Err() != nil {
 			return
 		}
 		if (policy.DisableFailover && attempts > 0) || (policy.MaxAttempts > 0 && attempts >= policy.MaxAttempts) {
 			break
 		}
-		attempt, delay := routing.TryTarget(route, policy)
-		if attempt == nil {
-			retryDelay = minimumRetryDelay(retryDelay, delay)
-			continue
+		if !policy.DisableCooldown {
+			if available, delay := upstream.ModelTargetAvailability(route.UpstreamName, route.Model, route.Upstream); !available {
+				retryDelay = minimumRetryDelay(retryDelay, delay)
+				continue
+			}
 		}
-		defer attempt.Complete(nil)
 		attempts++
 		outcome := &routeOutcome{}
 		attemptRequest := r.WithContext(context.WithValue(r.Context(), routeOutcomeKey{}, outcome))
 		response := &routeResponseWriter{destination: w, header: w.Header().Clone()}
+		request := routedRequest{Body: body, Envelope: envelope, RequestedModel: model, Route: route}
+		remaining := routes[index+1:]
+		if envelope.Stream && isChatModelRoute(route) && !policy.DisableFailover &&
+			(policy.MaxAttempts == 0 || attempts < policy.MaxAttempts) && slices.ContainsFunc(remaining, isChatModelRoute) {
+			outcome.chatFallback = chatModelFallback(r, request, remaining, policy, &attempts, serve)
+		}
 		if route.Upstream == nil {
 			writeExternalAPIError(response, r.URL.Path, http.StatusInternalServerError, "upstream_configuration_error", "selected upstream is not configured")
 		} else {
-			serve(response, attemptRequest, routedRequest{Body: body, Envelope: envelope, RequestedModel: model, Route: route})
+			serve(response, attemptRequest, request)
 		}
 		if r.Context().Err() != nil {
-			attempt.Complete(nil)
 			return
 		}
-		failure := routing.ClassifyFailure(response.statusCode(), response.errorBody.Bytes())
+		failure := health.ClassifyFailure(response.statusCode(), response.errorBody.Bytes())
 		if outcome.failure != nil {
 			failure = *outcome.failure
 		}
-		cooldown := attempt.Complete(&failure)
-		retryDelay = minimumRetryDelay(retryDelay, cooldown)
+		if !policy.DisableCooldown && (outcome.noCredential || failure.Failover) {
+			_, delay := upstream.ModelTargetAvailability(route.UpstreamName, route.Model, route.Upstream)
+			retryDelay = minimumRetryDelay(retryDelay, delay)
+		}
+		if outcome.noCredential && !response.committed {
+			attempts--
+			continue
+		}
 		if failure.Kind == "rate_limit" {
 			retryDelay = minimumRetryDelay(retryDelay, upstream.ParseRetryAfterDelay(response.header.Get("Retry-After")))
-		}
-		if cooldown > 0 {
-			log.Printf("[模型冷却] 请求=%d 上游=%s 模型=%s 分类=%s 冷却=%s", count, route.UpstreamName, route.Model, failure.Kind, cooldown)
 		}
 		if response.committed || !failure.Failover || policy.DisableFailover {
 			response.finish()
@@ -108,6 +127,54 @@ func serveModelRequest(w http.ResponseWriter, r *http.Request, serve func(http.R
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(int((retryDelay+time.Second-1)/time.Second)))
 	writeExternalAPIError(w, r.URL.Path, http.StatusServiceUnavailable, "upstream_unavailable", "all configured model targets are temporarily unavailable")
+}
+
+func isChatModelRoute(route config.ModelRoute) bool {
+	return route.Upstream != nil && route.Upstream.APIType == UpstreamOpenAI
+}
+
+func chatModelFallback(r *http.Request, request routedRequest, remaining []config.ModelRoute,
+	policy config.ModelRoutingConfig, attempts *int, serve func(http.ResponseWriter, *http.Request, routedRequest)) upstream.ChatStreamFallback {
+	return func(ctx context.Context, cause error) (*upstream.ChatStreamBackup, error) {
+		// The existing converter verifies the delivered output against the backup
+		// stream before forwarding new deltas.
+		for len(remaining) > 0 && (policy.MaxAttempts == 0 || *attempts < policy.MaxAttempts) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			route := remaining[0]
+			remaining = remaining[1:]
+			if !isChatModelRoute(route) {
+				continue
+			}
+			if !policy.DisableCooldown {
+				if available, _ := upstream.ModelTargetAvailability(route.UpstreamName, route.Model, route.Upstream); !available {
+					continue
+				}
+			}
+			var backupCtx context.Context
+			var chatBody []byte
+			request.Route = route
+			request.CaptureChatStream = func(ctx context.Context, body []byte) {
+				backupCtx, chatBody = ctx, body
+			}
+			serve(&routeResponseWriter{header: make(http.Header)}, r.WithContext(ctx), request)
+			if chatBody == nil {
+				continue
+			}
+			(*attempts)++
+			backup, status, err := upstream.OpenChatStreamBackup(backupCtx, chatBody, route.UpstreamName, route.Model, route.Upstream)
+			if errors.Is(err, upstream.ErrNoAvailableUpstreamKey) {
+				(*attempts)--
+				continue
+			}
+			log.Printf("[模型流故障切换] 别名=%s 上游=%s 模型=%s 状态码=%d 尝试=%d 原因=%v", request.RequestedModel, route.UpstreamName, route.Model, status, *attempts, cause)
+			if err == nil {
+				return backup, nil
+			}
+		}
+		return nil, cause
+	}
 }
 
 func minimumRetryDelay(current, next time.Duration) time.Duration {
@@ -149,6 +216,9 @@ func (writer *routeResponseWriter) Write(body []byte) (int, error) {
 	if writer.status >= 400 {
 		return writer.errorBody.Write(body)
 	}
+	if writer.destination == nil {
+		return len(body), nil
+	}
 	writer.commit()
 	return writer.destination.Write(body)
 }
@@ -168,7 +238,7 @@ func (writer *routeResponseWriter) commit() {
 }
 
 func (writer *routeResponseWriter) Flush() {
-	if writer.statusCode() < 400 {
+	if writer.destination != nil && writer.statusCode() < 400 {
 		writer.commit()
 		_ = http.NewResponseController(writer.destination).Flush()
 	}

@@ -32,15 +32,17 @@ type RequestTiming struct {
 	id        uint64
 	startedAt time.Time
 
-	mu               sync.Mutex
-	firstWriteAt     time.Time
-	finishedAt       time.Time
-	finished         bool
-	pending          []usageSample
-	apiKeyID         string
-	apiKeyName       string
-	upstreamKeyIndex int
-	upstreamKeyTotal int
+	mu                sync.Mutex
+	firstWriteAt      time.Time
+	finishedAt        time.Time
+	finished          bool
+	pending           []usageSample
+	apiKeyID          string
+	apiKeyName        string
+	upstreamKeyIndex  int
+	upstreamKeyTotal  int
+	recoveredUpstream string
+	recoveredModel    string
 }
 
 var (
@@ -62,11 +64,11 @@ func newRequestTiming(ctx context.Context) *RequestTiming {
 }
 
 // RecordUpstreamKeySlot remembers which upstream credential was used by the
-// request that owns ctx. The last successful attempt wins, so retries that
-// rotate to another key report the key that actually answered.
+// request that owns ctx. The last successful attempt wins, including a target
+// that answers without a key.
 func RecordUpstreamKeySlot(ctx context.Context, index, total int) {
-	if index < 0 || total <= 0 {
-		return
+	if index < 0 || index >= total {
+		index, total = -1, 0
 	}
 	timing := requestTimingFromContext(ctx)
 	if timing == nil {
@@ -78,11 +80,24 @@ func RecordUpstreamKeySlot(ctx context.Context, index, total int) {
 	timing.mu.Unlock()
 }
 
+// RecordRecoveredStreamRoute updates usage only after the backup's output has
+// been verified against what was already sent to the client.
+func RecordRecoveredStreamRoute(ctx context.Context, upstreamName, upstreamModel string, index, total int) {
+	if timing := requestTimingFromContext(ctx); timing != nil {
+		timing.mu.Lock()
+		defer timing.mu.Unlock()
+		timing.recoveredUpstream, timing.recoveredModel = upstreamName, upstreamModel
+		timing.upstreamKeyIndex, timing.upstreamKeyTotal = index+1, total
+	}
+}
+
 type requestIdentity struct {
-	apiKeyID         string
-	apiKeyName       string
-	upstreamKeyIndex int
-	upstreamKeyTotal int
+	apiKeyID          string
+	apiKeyName        string
+	upstreamKeyIndex  int
+	upstreamKeyTotal  int
+	recoveredUpstream string
+	recoveredModel    string
 }
 
 func (t *RequestTiming) identityLocked() requestIdentity {
@@ -90,10 +105,12 @@ func (t *RequestTiming) identityLocked() requestIdentity {
 		return requestIdentity{}
 	}
 	return requestIdentity{
-		apiKeyID:         t.apiKeyID,
-		apiKeyName:       t.apiKeyName,
-		upstreamKeyIndex: t.upstreamKeyIndex,
-		upstreamKeyTotal: t.upstreamKeyTotal,
+		apiKeyID:          t.apiKeyID,
+		apiKeyName:        t.apiKeyName,
+		upstreamKeyIndex:  t.upstreamKeyIndex,
+		upstreamKeyTotal:  t.upstreamKeyTotal,
+		recoveredUpstream: t.recoveredUpstream,
+		recoveredModel:    t.recoveredModel,
 	}
 }
 
@@ -110,6 +127,9 @@ func (identity requestIdentity) attach(sample *usageSample) {
 	if sample.upstreamKeyTotal == 0 {
 		sample.upstreamKeyIndex = identity.upstreamKeyIndex
 		sample.upstreamKeyTotal = identity.upstreamKeyTotal
+	}
+	if identity.recoveredUpstream != "" {
+		sample.upstreamName, sample.upstreamModel = identity.recoveredUpstream, identity.recoveredModel
 	}
 }
 

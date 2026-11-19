@@ -207,6 +207,13 @@ func serveClaudeMessages(w http.ResponseWriter, r *http.Request, request routedR
 			return
 		}
 	}
+	if request.CaptureChatStream != nil {
+		if decision.Upstream == WireChat && !useWebSearchFallback &&
+			(!requiresHostedWebSearch || !allowAutomaticWebSearchFallback || isHostedWebSearchKnownSupported(upstream, chatReq.Model)) {
+			request.CaptureChatStream(upstreamContext, upstreamBody)
+		}
+		return
+	}
 	activateWebSearchFallback := func() {
 		if useWebSearchFallback {
 			return

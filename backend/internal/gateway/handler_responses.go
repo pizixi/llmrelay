@@ -274,6 +274,13 @@ func serveResponses(w http.ResponseWriter, r *http.Request, request routedReques
 			return
 		}
 	}
+	if request.CaptureChatStream != nil {
+		if decision.Upstream == WireChat && !useWebSearchFallback &&
+			(!requiresHostedWebSearch || !allowAutomaticWebSearchFallback || isHostedWebSearchKnownSupported(upstream, chatReq.Model)) {
+			request.CaptureChatStream(r.Context(), upstreamBody)
+		}
+		return
+	}
 	activateWebSearchFallback := func() {
 		if useWebSearchFallback {
 			return

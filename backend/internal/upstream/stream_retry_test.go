@@ -15,6 +15,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"llmrelay/backend/internal/routing/health"
 	"llmrelay/backend/internal/sse"
 )
 
@@ -27,6 +28,40 @@ func replayTestTool(id, args string) string {
 	return replayTestChunk(map[string]any{"tool_calls": []any{map[string]any{
 		"index": 0, "id": id, "type": "function", "function": map[string]any{"name": "read_file", "arguments": args},
 	}}}, nil)
+}
+
+func TestStreamRateLimitRecognizesProviderErrorCode(t *testing.T) {
+	for _, data := range []string{
+		`{"error":{"type":"requests","code":"rate_limit_exceeded","message":"Rate limit exceeded"}}`,
+		`{"type":"error","code":"rate_limit_exceeded","message":"Rate limit exceeded"}`,
+	} {
+		if failure := streamFailure(data); failure.Kind != "rate_limit" || !failure.Failover || failure.Cooldown {
+			t.Errorf("streamFailure(%s) = %+v", data, failure)
+		}
+	}
+}
+
+func TestConvertedChatStreamHealthUsesValidFinishReason(t *testing.T) {
+	for _, test := range []struct {
+		name, stream string
+		cooldown     bool
+	}{
+		{"valid with ignored lines", strings.Repeat("\n", 64) + "provider-field: ignored\n\n" + replayTestChunk(nil, "stop"), false},
+		{"unknown reason", replayTestChunk(nil, "unknown") + "data: [DONE]\n\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var outcome *health.Failure
+			body := newKeyStreamBody(io.NopCloser(strings.NewReader(test.stream)), UpstreamOpenAI, true, func(failure *health.Failure) {
+				outcome = failure
+			})
+			if _, err := io.Copy(io.Discard, body); err != nil {
+				t.Fatal(err)
+			}
+			if outcome == nil || outcome.Cooldown != test.cooldown {
+				t.Fatalf("outcome=%+v, want cooldown=%t", outcome, test.cooldown)
+			}
+		})
+	}
 }
 
 func TestChatStreamReplayPreservesDeliveredOutput(t *testing.T) {

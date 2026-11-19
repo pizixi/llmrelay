@@ -193,9 +193,7 @@ function initAdminTabs() {
 
 /* ===== 全局状态 ===== */
 let aliasData = {},
-  effortData = {},
   globalEffortData = {},
-  selectedAliasKey = "",
   modelListByUpstream = {},
   upstreamData = {},
   savedUpstreamModelsByUpstream = {},
@@ -583,9 +581,8 @@ function reconcileRemovedUpstreamModelMappings() {
   const removedByUpstream = removedUpstreamModelsSinceSave();
   const impact = upstreamModelAliasDeleteImpact(removedByUpstream);
   if (!impact.targetCount) return impact;
-  const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
+  applyUpstreamAliasDelete(impact);
   renderAliasTable();
-  if (selectedAliasRemoved) showSelectedEffortMap();
   return impact;
 }
 
@@ -599,8 +596,6 @@ async function loadConfig() {
     rememberSavedUpstreamModels();
     normalizeAliasData();
     globalEffortData = { ...(cfg.reasoning_effort_map || {}) };
-    selectedAliasKey = "";
-    effortData = { ...globalEffortData };
     socks5Data = cfg.socks5_proxies || [];
     webSearchData = { ...(cfg.web_search || {}) };
     modelRoutingData = normalizeModelRoutingConfig(cfg.model_routing);
@@ -621,7 +616,6 @@ async function loadConfig() {
     }
     renderUpstreamTable();
     renderAliasTable();
-    renderEffortTable();
     renderSocks5Table();
     renderWebSearchConfig();
     setTimeout(() => window.scrollTo(0, sy), 0);
@@ -870,7 +864,6 @@ async function saveConfigSilent(options) {
   collectUpstreams();
   collectAliases();
   const cleanup = reconcileRemovedUpstreamModelMappings();
-  collectEfforts();
   collectSocks5();
   collectWebSearchConfig();
   collectAllowDirectModels();
@@ -2055,13 +2048,11 @@ function upstreamDeleteConfirm(triggerEl, upstreamName, impact) {
 }
 
 function applyUpstreamAliasDelete(impact) {
-  let selectedAliasRemoved = false;
   impact.aliases.forEach((item) => {
     const entry = aliasData[item.aliasName];
     if (!entry) return;
     if (item.removeAlias) {
       delete aliasData[item.aliasName];
-      if (selectedAliasKey === item.aliasName) selectedAliasRemoved = true;
       return;
     }
     aliasData[item.aliasName] = {
@@ -2069,8 +2060,6 @@ function applyUpstreamAliasDelete(impact) {
       targets: item.remainingTargets,
     };
   });
-  if (selectedAliasRemoved) selectedAliasKey = "";
-  return selectedAliasRemoved;
 }
 
 async function delUpstream(btn) {
@@ -2086,7 +2075,7 @@ async function delUpstream(btn) {
     originalUpstreamName,
   ]);
   if (!(await upstreamDeleteConfirm(btn, upstreamName, impact))) return;
-  const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
+  applyUpstreamAliasDelete(impact);
   const deletedBaseURL = row.querySelector('[data-field="base_url"]');
   if (deletedBaseURL?._upstreamNameTimer) clearTimeout(deletedBaseURL._upstreamNameTimer);
   cancelUpstreamSiteInfoFetch(deletedBaseURL);
@@ -2103,7 +2092,6 @@ async function delUpstream(btn) {
   renderUpstreamModelFilter();
   filterUpstreamRows();
   renderAliasTable();
-  if (selectedAliasRemoved) showSelectedEffortMap();
 }
 
 // Parse an upstream URL once and keep the URL used for site-level metadata
@@ -5024,7 +5012,6 @@ async function applySynchronizedModelDeletions(plan) {
 
   const beforeUpstreams = cloneAdminState(upstreamData);
   const beforeAliases = cloneAdminState(aliasData);
-  const beforeSelectedAlias = selectedAliasKey;
   Object.keys(removedByUpstream).forEach((upstreamName) => {
     const removed = removedByUpstream[upstreamName];
     const current = Array.isArray(upstreamData[upstreamName]?.custom_models)
@@ -5036,10 +5023,9 @@ async function applySynchronizedModelDeletions(plan) {
     };
   });
   const impact = upstreamModelAliasDeleteImpact(removedByUpstream);
-  const selectedAliasRemoved = applyUpstreamAliasDelete(impact);
+  applyUpstreamAliasDelete(impact);
   renderUpstreamTable();
   renderAliasTable();
-  if (selectedAliasRemoved) showSelectedEffortMap();
   renderUpstreamModelFilter();
   filterUpstreamRows();
 
@@ -5053,10 +5039,8 @@ async function applySynchronizedModelDeletions(plan) {
   } catch (e) {
     upstreamData = beforeUpstreams;
     aliasData = beforeAliases;
-    selectedAliasKey = beforeSelectedAlias;
     renderUpstreamTable();
     renderAliasTable();
-    showSelectedEffortMap();
     renderUpstreamModelFilter();
     filterUpstreamRows();
     throw e;
@@ -5469,7 +5453,7 @@ function buildAliasTargetSelectedRows(targets) {
         '">' +
         esc(target.target_model) +
         "</span></span>" +
-        '<label class="alias-target-enabled" title="启用后参与路由，禁用时保留当前权重"><span>启用</span><span class="switch"><input type="checkbox" data-field="enabled" aria-label="启用 ' +
+        '<label class="alias-target-enabled" title="启用后参与路由，禁用时保留当前权重"><span class="switch"><input type="checkbox" data-field="enabled" aria-label="启用 ' +
         escAttr(target.upstream + " / " + target.target_model) +
         '" onchange="toggleAliasTargetEnabled(this)"' +
         (target.enabled ? " checked" : "") +
@@ -5478,6 +5462,8 @@ function buildAliasTargetSelectedRows(targets) {
         target.weight +
         '" oninput="updateAliasTargetEditorState(this)" onkeydown="handleAliasTargetWeightKeydown(event)" onblur="commitAliasTargetWeightInput(this)"></label>' +
         '<span class="alias-target-percent"></span>' +
+        '<button type="button" class="alias-target-key-summary" title="查看 Key 冷却详情" aria-controls="aliasTargetKeyDetails" aria-expanded="false" onclick="openAliasTargetKeyDetails(this)" disabled>' +
+        '<span>读取中…</span><span class="alias-target-key-chevron" aria-hidden="true">' + ICONS.chevron + "</span></button>" +
         '<button type="button" class="btn-icon btn-icon-danger" onclick="removeAliasTarget(this)" title="删除此上游模型" aria-label="删除 ' +
         escAttr(target.upstream + " / " + target.target_model) +
         '">' +
@@ -5517,23 +5503,36 @@ function buildAliasTargetsPopoverHtml(targets) {
     '<div class="alias-target-selected-head"><span>已添加模型</span><span>加载时按启用状态、权重从高到低排序</span></div>' +
     '<div class="alias-target-selected-list">' +
     buildAliasTargetSelectedRows(sortAliasTargetsForDisplay(targets)) +
-    "</div>"
+    '</div><section class="alias-target-key-details" id="aliasTargetKeyDetails" aria-labelledby="aliasTargetKeyTitle" hidden>' +
+    '<div class="alias-target-key-details-head"><button type="button" class="btn btn-default" onclick="closeAliasTargetKeyDetails(this.closest(\'.alias-target-popover\'))">返回列表</button>' +
+    '<h4 id="aliasTargetKeyTitle">Key 冷却详情</h4></div>' +
+    '<p class="alias-target-key-route"></p><p class="alias-target-key-counts"></p>' +
+    '<div class="table-scroll alias-target-key-entries" tabindex="0" aria-label="Key 状态明细" hidden>' +
+    '<table class="tbl alias-target-key-table"><thead><tr><th scope="col">Key 槽位</th><th scope="col">状态</th>' +
+    '<th scope="col">剩余时间</th><th scope="col">连续失败</th></tr></thead><tbody></tbody></table></div>' +
+    '<p class="alias-target-key-empty" hidden></p></section>' +
+    '<p class="alias-target-health-note" role="status" hidden></p>'
   );
 }
 
 function openAliasTargetsEditor(el) {
   collectUpstreams();
   const targets = parseAliasTargets(el.dataset.targets || "[]");
+  const health = { controller: new AbortController(), nextRefreshAt: 0 };
+  let healthTimer;
   const pop = openPopover(
     el,
     buildAliasTargetsPopoverHtml(targets),
     function () {
+      clearInterval(healthTimer);
+      health.controller.abort();
       const nextTargets = readAliasTargetsFromPopover(pop);
       updateAliasTargetsField(el, nextTargets);
       collectAliases();
     },
   );
   pop.classList.add("alias-target-popover");
+  pop._aliasTargetHealth = health;
   pop._aliasTargetCandidates = aliasTargetCandidates(targets);
   const searchInput = pop.querySelector(".alias-target-search input");
   if (searchInput) searchInput.placeholder = "搜索未添加的上游名称或模型 ID";
@@ -5542,7 +5541,48 @@ function openAliasTargetsEditor(el) {
       closeAliasTargetOptions(pop);
     }
   });
+  pop.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && health.detailTrigger) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAliasTargetKeyDetails(pop);
+    }
+  });
   updateAliasTargetEditorState(pop);
+  loadAliasTargetHealth(pop);
+  healthTimer = setInterval(() => {
+    if (document.hidden) return;
+    const now = performance.now();
+    renderAliasTargetKeyHealth(pop, now);
+    if (now >= health.nextRefreshAt) loadAliasTargetHealth(pop);
+  }, 1000);
+}
+
+function openAliasTargetKeyDetails(trigger) {
+  const pop = trigger.closest(".alias-target-popover");
+  const row = trigger.closest(".alias-target-selected-row");
+  const detail = pop.querySelector(".alias-target-key-details");
+  pop._aliasTargetHealth.detailTrigger = trigger;
+  closeAliasTargetOptions(pop);
+  trigger.setAttribute("aria-expanded", "true");
+  detail.querySelector(".alias-target-key-route").textContent = row.dataset.upstream + " → " + row.dataset.model;
+  pop.classList.add("is-viewing-key-details");
+  detail.hidden = false;
+  renderAliasTargetKeyHealth(pop);
+  detail.querySelector(".alias-target-key-entries").scrollTop = 0;
+  detail.querySelector("button").focus();
+}
+
+function closeAliasTargetKeyDetails(pop) {
+  const health = pop._aliasTargetHealth;
+  const trigger = health.detailTrigger;
+  health.detailTrigger = null;
+  pop.querySelector(".alias-target-key-details").hidden = true;
+  pop.classList.remove("is-viewing-key-details");
+  trigger.setAttribute("aria-expanded", "false");
+  renderAliasTargetKeyHealth(pop);
+  if (trigger.disabled) pop.querySelector(".popover-header button").focus();
+  else trigger.focus();
 }
 
 function normalizeAliasTargetSearchText(value) {
@@ -5725,6 +5765,7 @@ function renderAliasTargetSelectedList(pop, targets) {
   if (!list) return;
   list.innerHTML = buildAliasTargetSelectedRows(targets);
   updateAliasTargetEditorState(pop);
+  renderAliasTargetKeyHealth(pop);
   const options = pop.querySelector(".alias-target-options");
   const input = pop.querySelector(".alias-target-search input");
   if (options && !options.hidden) renderAliasTargetOptions(pop, input?.value || "");
@@ -5865,43 +5906,22 @@ function renderAliasTable() {
     );
     return;
   }
-  tb.innerHTML = ks
-    .map((k) => {
-      const entry = aliasData[k] || {
-        targets: [],
-        with_reasoning: false,
-        reasoning_effort_map: {},
-      };
-      const selected = selectedAliasKey === k;
-      return (
-        '<tr data-alias-key="' +
-        escAttr(k) +
-        '"' +
-        (selected ? ' class="alias-selected"' : "") +
-        ">" +
-        '<td><input class="alias-effort-select" type="checkbox" aria-label="编辑 ' +
-        escAttr(k) +
-        ' 的推理力度映射"' +
-        (selected ? " checked" : "") +
-        ' onchange="selectAliasEffortMap(this)"></td>' +
-        '<td><input value="' +
-        escAttr(k) +
-        '" data-field="key"></td>' +
-        "<td>" +
-        aliasTargetsFieldHtml(entry.targets || []) +
-        "</td>" +
-        '<td class="col-reasoning">' +
-        reasoningSwitchHtml(!!entry.with_reasoning) +
-        "</td>" +
-        '<td class="action-cell">' +
-        aliasTestButtonHtml(k) +
-        '<button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
-        ICONS.trash +
-        "</button></td>" +
-        "</tr>"
-      );
-    })
-    .join("");
+  tb.innerHTML = ks.map((key) => aliasRowHtml(key, aliasData[key])).join("");
+}
+
+function aliasRowHtml(key, entry = {}) {
+  return (
+    '<tr data-alias-key="' + escAttr(key) + '">' +
+    '<td><input value="' + escAttr(key) + '" placeholder="例如: gpt-5.5" data-field="key"></td>' +
+    "<td>" + aliasTargetsFieldHtml(entry.targets || []) + "</td>" +
+    "<td>" + aliasEffortFieldHtml(entry.reasoning_effort_map || {}) + "</td>" +
+    '<td class="col-reasoning">' + reasoningSwitchHtml(!!entry.with_reasoning) + "</td>" +
+    '<td class="action-cell">' +
+    aliasTestButtonHtml(key) +
+    '<button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
+    ICONS.trash +
+    "</button></td></tr>"
+  );
 }
 
 function aliasTestButtonHtml(aliasName) {
@@ -5919,24 +5939,7 @@ function addAliasRow() {
   collectUpstreams();
   const tb = document.querySelector("#aliasTable tbody");
   if (tb.querySelector(".empty-hint, .empty-state")) tb.innerHTML = "";
-  tb.insertAdjacentHTML(
-    "beforeend",
-    "<tr>" +
-      '<td><input class="alias-effort-select" type="checkbox" aria-label="编辑该模型的推理力度映射" onchange="selectAliasEffortMap(this)"></td>' +
-      '<td><input value="" placeholder="例如: gpt-5.5" data-field="key"></td>' +
-      "<td>" +
-      aliasTargetsFieldHtml([]) +
-      "</td>" +
-      '<td class="col-reasoning">' +
-      reasoningSwitchHtml(false) +
-      "</td>" +
-      '<td class="action-cell">' +
-      aliasTestButtonHtml("") +
-      '<button class="btn-icon btn-icon-danger" onclick="delAlias(this)" title="删除">' +
-      ICONS.trash +
-      "</button></td>" +
-      "</tr>",
-  );
+  tb.insertAdjacentHTML("beforeend", aliasRowHtml(""));
 }
 
 async function delAlias(btn) {
@@ -5944,18 +5947,13 @@ async function delAlias(btn) {
   const ki = row.querySelector('[data-field="key"]');
   const rowKey = row.dataset.aliasKey || (ki ? ki.value.trim() : "");
   if (!(await confirmConfigDelete(btn, "模型别名", rowKey))) return;
-  const deletingSelected =
-    selectedAliasKey === rowKey || (ki && selectedAliasKey === ki.value.trim());
   if (rowKey) delete aliasData[rowKey];
   if (ki && ki.value.trim()) delete aliasData[ki.value.trim()];
   row.remove();
   collectAliases();
-  if (deletingSelected) {
-    selectedAliasKey = "";
-    showSelectedEffortMap();
-  }
-  if (!Object.keys(aliasData).length)
-    document.querySelector("#aliasTable tbody").innerHTML = emptyRowHtml(
+  const tbody = document.querySelector("#aliasTable tbody");
+  if (!tbody.rows.length)
+    tbody.innerHTML = emptyRowHtml(
       5,
       ICONS.layers,
       "暂无别名配置",
@@ -5971,9 +5969,8 @@ function collectAliases() {
       w = tr.querySelector('[data-field="with_reasoning"]');
     if (k && k.value.trim()) {
       const aliasKey = k.value.trim();
-      const previousKey = tr.dataset.aliasKey || aliasKey;
-      const previous = aliasData[previousKey] || aliasData[aliasKey] || {};
-      const reasoningEffortMap = { ...(previous.reasoning_effort_map || {}) };
+      const effortField = tr.querySelector('[data-field="effort_map"]');
+      const reasoningEffortMap = JSON.parse(effortField?.dataset.effortMap || "{}");
       const targets = parseAliasTargets(targetsField?.dataset.targets || "[]");
       const withReasoning = w ? w.checked : false;
       if (
@@ -5986,7 +5983,6 @@ function collectAliases() {
           with_reasoning: withReasoning,
           reasoning_effort_map: reasoningEffortMap,
         };
-        if (selectedAliasKey === previousKey) selectedAliasKey = aliasKey;
         tr.dataset.aliasKey = aliasKey;
       }
     }
@@ -6002,7 +5998,8 @@ function validateAliasRows() {
     const targetsField = row.querySelector('[data-field="targets"]');
     const key = keyInput?.value.trim() || "";
     const targets = parseAliasTargets(targetsField?.dataset.targets || "[]");
-    if (!key && !targets.length) continue;
+    const hasEffortMap = (row.querySelector('[data-field="effort_map"]')?.dataset.effortMap || "{}") !== "{}";
+    if (!key && !targets.length && !hasEffortMap) continue;
     if (!key) {
       return { message: "请先填写映射模型名", element: keyInput };
     }
@@ -6024,131 +6021,115 @@ function validateAliasRows() {
   return null;
 }
 
-function selectAliasEffortMap(checkbox) {
-  collectEfforts();
-  collectAliases();
-  const row = checkbox.closest("tr");
-  const keyInput = row ? row.querySelector('[data-field="key"]') : null;
-  const key = keyInput ? keyInput.value.trim() : "";
-  if (checkbox.checked && !key) {
-    checkbox.checked = false;
-    showToast("请先填写映射模型名", "error");
-    return;
-  }
-  selectedAliasKey = checkbox.checked ? key : "";
-  document
-    .querySelectorAll("#aliasTable .alias-effort-select")
-    .forEach((item) => {
-      item.checked = item === checkbox && checkbox.checked;
-      const itemRow = item.closest("tr");
-      if (itemRow) itemRow.classList.toggle("alias-selected", item.checked);
-    });
-  showSelectedEffortMap();
-}
-
-function showSelectedEffortMap() {
-  if (selectedAliasKey && aliasData[selectedAliasKey]) {
-    effortData = {
-      ...(aliasData[selectedAliasKey].reasoning_effort_map || {}),
-    };
-  } else {
-    selectedAliasKey = "";
-    effortData = { ...globalEffortData };
-  }
-  const title = document.getElementById("effortMapTitle");
-  if (title)
-    title.textContent = selectedAliasKey
-      ? "推理力度映射（" + selectedAliasKey + "）"
-      : "推理力度映射（全局）";
-  renderEffortTable();
-}
-
-/* ===== Effort 映射表 ===== */
-function renderEffortTable() {
-  const tb = document.querySelector("#effortTable tbody");
-  const ks = Object.keys(effortData);
-  if (!ks.length) {
-    tb.innerHTML = emptyRowHtml(
-      3,
-      ICONS.edit,
-      "暂无映射配置",
-      selectedAliasKey
-        ? "为当前模型添加推理力度映射"
-        : "可配置全局或按模型的推理力度映射",
-    );
-    return;
-  }
-  tb.innerHTML = ks
-    .map(
-      (k) =>
-        "<tr>" +
-        '<td><input value="' +
-        escAttr(k) +
-        '" data-field="key"></td>' +
-        '<td><input value="' +
-        escAttr(effortData[k]) +
-        '" data-field="val"></td>' +
-        '<td class="action-cell"><button class="btn-icon btn-icon-danger" onclick="delEffort(this)" title="删除">' +
-        ICONS.trash +
-        "</button></td>" +
-        "</tr>",
-    )
-    .join("");
-}
-
-function addEffortRow() {
-  const tb = document.querySelector("#effortTable tbody");
-  if (tb.querySelector(".empty-hint, .empty-state")) tb.innerHTML = "";
-  tb.insertAdjacentHTML(
-    "beforeend",
-    "<tr>" +
-      '<td><input value="" placeholder="例如: low" data-field="key"></td>' +
-      '<td><input value="" placeholder="例如: high" data-field="val"></td>' +
-      '<td class="action-cell"><button class="btn-icon btn-icon-danger" onclick="delEffort(this)" title="删除">' +
-      ICONS.trash +
-      "</button></td>" +
-      "</tr>",
+function aliasEffortDisplay(map) {
+  const entries = Object.entries(map);
+  if (!entries.length) return '<span class="field-placeholder">使用全局映射</span>';
+  const [request, mapped] = entries[0];
+  return (
+    '<span class="field-value"><span class="field-text">' +
+    esc(request + " → " + (mapped || "空值")) +
+    "</span>" +
+    (entries.length > 1 ? '<span class="field-count">+' + (entries.length - 1) + "</span>" : "") +
+    "</span>"
   );
 }
 
-async function delEffort(btn) {
-  const row = btn.closest("tr");
-  const ki = row.querySelector('[data-field="key"]');
-  if (
-    !(await confirmConfigDelete(
-      btn,
-      "推理力度映射",
-      ki?.value?.trim() || "",
-    ))
-  )
-    return;
-  if (ki && ki.value && effortData[ki.value]) delete effortData[ki.value];
-  row.remove();
-  if (!Object.keys(effortData).length)
-    document.querySelector("#effortTable tbody").innerHTML = emptyRowHtml(
-      3,
-      ICONS.edit,
-      "暂无映射配置",
-      selectedAliasKey
-        ? "为当前模型添加推理力度映射"
-        : "可配置全局或按模型的推理力度映射",
-    );
+function aliasEffortFieldContent(map) {
+  return aliasEffortDisplay(map) + '<span class="field-edit-icon">' + ICONS.edit + "</span>";
 }
 
-function collectEfforts() {
-  const r = {};
-  document.querySelectorAll("#effortTable tbody tr").forEach((tr) => {
-    const k = tr.querySelector('[data-field="key"]'),
-      v = tr.querySelector('[data-field="val"]');
-    if (k && k.value.trim()) r[k.value.trim()] = v ? v.value.trim() : "";
+function aliasEffortFieldHtml(map) {
+  return (
+    '<button type="button" class="field-display alias-effort-field" data-field="effort_map"' +
+    ' data-effort-map="' + escAttr(JSON.stringify(map)) + '" title="编辑模型推理映射"' +
+    ' aria-label="编辑模型推理映射" aria-haspopup="dialog" onclick="openAliasEffortEditor(this)">' +
+    aliasEffortFieldContent(map) +
+    "</button>"
+  );
+}
+
+function openAliasEffortEditor(field) {
+  const alias = field.closest("tr")?.querySelector('[data-field="key"]')?.value.trim();
+  openEffortEditor(field, alias ? "推理映射 · " + alias : "模型推理映射", JSON.parse(field.dataset.effortMap), (map) => {
+    field.dataset.effortMap = JSON.stringify(map);
+    field.innerHTML = aliasEffortFieldContent(map);
+    collectAliases();
   });
-  effortData = r;
-  if (selectedAliasKey && aliasData[selectedAliasKey]) {
-    aliasData[selectedAliasKey].reasoning_effort_map = { ...r };
-  } else {
-    globalEffortData = { ...r };
+}
+
+function openGlobalEffortEditor(trigger) {
+  openEffortEditor(trigger, "全局推理映射", globalEffortData, (map) => {
+    globalEffortData = map;
+  });
+}
+
+function effortMapRowHtml(request = "", mapped = "") {
+  return (
+    '<div class="effort-map-row">' +
+    '<input class="popover-input" type="text" name="request_effort" aria-label="请求值" placeholder="例如 low" autocomplete="off" autocapitalize="none" spellcheck="false" value="' + escAttr(request) + '">' +
+    '<span class="effort-map-arrow" aria-hidden="true">' + ICONS.arrowRight + "</span>" +
+    '<input class="popover-input" type="text" name="mapped_effort" aria-label="映射值" placeholder="例如 high" autocomplete="off" autocapitalize="none" spellcheck="false" value="' + escAttr(mapped) + '">' +
+    '<button type="button" class="btn-icon btn-icon-danger" aria-label="删除此映射" title="删除" onclick="this.closest(\'.effort-map-row\').remove()">' +
+    ICONS.trash +
+    "</button></div>"
+  );
+}
+
+function openEffortEditor(trigger, title, map, apply) {
+  const entries = Object.entries(map);
+  const container = document.querySelector(".container");
+  const pop = openPopover(
+    trigger,
+    '<div class="popover-header"><span class="popover-title" id="effortEditorTitle">' +
+    ICONS.edit + "<span>" + esc(title) + '</span></span><button type="button" class="btn-icon" onclick="closePopover()" aria-label="关闭">' +
+    ICONS.close + '</button></div>' +
+    '<form onsubmit="event.preventDefault(); applyEffortEditor(this)">' +
+    '<div class="effort-map-editor">' +
+    '<div class="effort-map-head" aria-hidden="true"><span>请求值</span><span>映射值</span></div>' +
+    '<div class="effort-map-rows">' +
+    (entries.length ? entries.map(([request, mapped]) => effortMapRowHtml(request, mapped)).join("") : effortMapRowHtml()) +
+    '</div><p class="effort-map-empty">暂无映射</p></div>' +
+    '<div class="effort-map-actions">' +
+    '<button type="button" class="btn btn-default" onclick="addEffortEditorRow(this)">' + ICONS.plus + '添加映射</button>' +
+    '<button type="button" class="btn btn-default" onclick="closePopover()">取消</button>' +
+    '<button type="submit" class="btn btn-primary">应用</button>' +
+    "</div></form>",
+    () => {
+      container.inert = false;
+      trigger.focus();
+    },
+  );
+  pop.classList.add("effort-map-popover");
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-modal", "true");
+  pop.setAttribute("aria-labelledby", "effortEditorTitle");
+  container.inert = true;
+  pop._applyEffortMap = apply;
+  pop.querySelector("input")?.focus();
+}
+
+function addEffortEditorRow(button) {
+  const rows = button.closest("form").querySelector(".effort-map-rows");
+  rows.insertAdjacentHTML("beforeend", effortMapRowHtml());
+  rows.lastElementChild.querySelector("input")?.focus();
+}
+
+function applyEffortEditor(form) {
+  const map = Object.create(null);
+  for (const row of form.querySelectorAll(".effort-map-row")) {
+    const field = row.querySelector('[name="request_effort"]');
+    const request = field.value.trim();
+    const mapped = row.querySelector('[name="mapped_effort"]').value.trim();
+    if (!request && !mapped) continue;
+    if (!request || Object.hasOwn(map, request)) {
+      showToast(!request ? "请填写请求值" : "请求值重复：" + request, "error");
+      field.focus();
+      return;
+    }
+    map[request] = mapped;
   }
-  return r;
+  form.closest(".effort-map-popover")._applyEffortMap(map);
+  closePopover();
 }
 
 /* ===== SOCKS5 表格 ===== */
@@ -6447,6 +6428,143 @@ function normalizeModelRoutingConfig(value = {}) {
   };
 }
 
+async function loadAliasTargetHealth(pop) {
+  const health = pop._aliasTargetHealth;
+  const signal = health.controller.signal;
+  if (health.pending || signal.aborted) return;
+  health.pending = true;
+  renderAliasTargetKeyHealth(pop);
+  try {
+    health.snapshot = await apiJSON("/api/routing/health", { signal });
+    health.receivedAt = performance.now();
+    health.error = false;
+  } catch (_) {
+    health.error = !signal.aborted;
+  } finally {
+    health.pending = false;
+    health.nextRefreshAt = performance.now() + 5000;
+    if (!signal.aborted) renderAliasTargetKeyHealth(pop);
+  }
+}
+
+function formatRoutingCooldown(seconds) {
+  const part = (n) => String(n).padStart(2, "0");
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  return (hours ? part(hours) + ":" : "") + part(minutes) + ":" + part(seconds % 60);
+}
+
+function routingKeyState(item, now, receivedAt) {
+  if (item.state !== "cooling") return { state: item.state, seconds: 0 };
+  const seconds = Math.max(0, Math.ceil((receivedAt + item.remaining_ms - now) / 1000));
+  return { state: seconds > 0 ? "cooling" : "ready_for_probe", seconds: seconds };
+}
+
+function aliasTargetKeyStatus(health, target, now) {
+  const upstreams = health.snapshot?.upstreams || {};
+  if (!health.snapshot?.enabled || !Object.hasOwn(upstreams, target.upstream)) return null;
+  const upstream = upstreams[target.upstream];
+  const models = upstream.models || {};
+  const keys = Object.hasOwn(models, target.model) ? models[target.model] : [];
+  let cooling = 0;
+  let recovering = 0;
+  for (const key of keys) {
+    const { state } = routingKeyState(key, now, health.receivedAt);
+    if (state === "cooling") cooling++;
+    if (state === "probing" || state === "ready_for_probe") recovering++;
+  }
+  return { total: upstream.key_count, cooling, recovering, keys };
+}
+
+function routingKeyStatusRowHtml(item) {
+  const key = item.slot ? "Key " + item.slot : "无 Key";
+  const label = {
+    cooling: "冷却中",
+    ready_for_probe: "待探测",
+    probing: "探测中",
+    available: "可用",
+  }[item.state] || "可用";
+  return (
+    '<tr><td>' + key + '</td><td><span class="routing-key-state' +
+    (item.state === "available" ? "" : " has-cooldown") + '">' + label +
+    '</span></td><td class="routing-key-time"></td><td>' + item.failures + "</td></tr>"
+  );
+}
+
+function renderAliasTargetKeyDetails(pop, status, now, receivedAt) {
+  const counts = pop.querySelector(".alias-target-key-counts");
+  const list = pop.querySelector(".alias-target-key-entries");
+  const empty = pop.querySelector(".alias-target-key-empty");
+  const caption = status
+    ? (status.total ? status.total + " 个 Key" : "无 Key") + " · 冷却 " + status.cooling +
+      " · 恢复探测 " + status.recovering + (status.total ? " · 可用 " + (status.total - status.cooling - status.recovering) : "")
+    : "";
+  if (counts.textContent !== caption) counts.textContent = caption;
+  const keys = (status?.keys || [])
+    .map((key) => ({ ...key, ...routingKeyState(key, now, receivedAt) }))
+    .sort((a, b) => a.slot - b.slot);
+  list.hidden = !keys.length;
+  empty.hidden = !!keys.length;
+  const message = status ? "当前没有 Key 故障记录。" : "当前无法查看 Key 状态。";
+  if (empty.textContent !== message) empty.textContent = message;
+
+  const tbody = list.querySelector("tbody");
+  const html = keys.map(routingKeyStatusRowHtml).join("");
+  if (tbody._lastHtml !== html) {
+    tbody._lastHtml = html;
+    tbody.innerHTML = html;
+  }
+  tbody.querySelectorAll(".routing-key-time").forEach((cell, index) => {
+    const seconds = keys[index].seconds;
+    const remaining = seconds ? formatRoutingCooldown(seconds) : "—";
+    if (cell.textContent !== remaining) cell.textContent = remaining;
+  });
+}
+
+function renderAliasTargetKeyHealth(pop, now = performance.now()) {
+  const health = pop._aliasTargetHealth;
+  const { snapshot, receivedAt, error, detailTrigger } = health;
+  const rows = pop.querySelectorAll(".alias-target-selected-row");
+  const note = pop.querySelector(".alias-target-health-note");
+  let message = "";
+  if (rows.length) {
+    if (error) {
+      message = snapshot ? "刷新失败，显示上次读取的状态。" : "暂时无法读取 Key 状态。";
+    } else if (!snapshot) {
+      message = "正在读取 Key 状态…";
+    } else if (!snapshot.enabled) {
+      message = "故障 Key 冷却已关闭。";
+    }
+  }
+  note.hidden = !message;
+  if (note.textContent !== message) note.textContent = message;
+
+  if (detailTrigger) {
+    const target = detailTrigger.closest(".alias-target-selected-row").dataset;
+    renderAliasTargetKeyDetails(pop, aliasTargetKeyStatus(health, target, now), now, receivedAt);
+    return;
+  }
+
+  rows.forEach((row) => {
+    const button = row.querySelector(".alias-target-key-summary");
+    const label = button.firstElementChild;
+    const status = aliasTargetKeyStatus(health, row.dataset, now);
+    let text = "读取中…";
+    if (status) {
+      text = status.total
+        ? "冷却 " + status.cooling + " / " + status.total
+        : status.cooling ? "无 Key · 冷却中" : "无 Key";
+    } else if (snapshot) {
+      text = snapshot.enabled ? "保存后可查看" : "冷却已关闭";
+    } else if (error) {
+      text = "状态不可用";
+    }
+    if (label.textContent !== text) label.textContent = text;
+    button.disabled = !status;
+    button.classList.toggle("has-cooldown", !!status?.cooling);
+  });
+}
+
 const modelRoutingFields = {
   strategy: "modelRoutingStrategy",
   max_attempts: "modelRoutingMaxAttempts",
@@ -6522,7 +6640,6 @@ async function saveConfig(section) {
   }
   collectAliases();
   const cleanup = reconcileRemovedUpstreamModelMappings();
-  collectEfforts();
   collectSocks5();
   collectWebSearchConfig();
   collectAllowDirectModels();

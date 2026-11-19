@@ -180,6 +180,147 @@ func TestModelFailoverStatusPolicyAndCooldown(t *testing.T) {
 	}
 }
 
+func TestModelCooldownKeepsSiblingKeyRoutable(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			var badCalls, goodCalls, backupCalls atomic.Int32
+			var allFailed atomic.Bool
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") == "Bearer bad-key" {
+					badCalls.Add(1)
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				goodCalls.Add(1)
+				if allFailed.Load() {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				writeRoutingSuccess(w, UpstreamOpenAI, stream)
+			}))
+			defer primary.Close()
+			backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupCalls.Add(1)
+				writeRoutingSuccess(w, UpstreamOpenAI, stream)
+			}))
+			defer backup.Close()
+			cfg := installFailoverConfig(t, primary, backup, UpstreamOpenAI, UpstreamOpenAI, config.ModelRoutingConfig{FailureThreshold: 1})
+			one := 1
+			cfg.Upstreams["primary"].APIKey = "bad-key\ngood-key"
+			cfg.Upstreams["primary"].MaxRetries = &one
+			config.ApplyConfig(cfg)
+			body := fmt.Sprintf(`{"model":"alias","stream":%t,"messages":[]}`, stream)
+			for range 5 {
+				response := httptest.NewRecorder()
+				ChatCompletionsHandler(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+				if response.Code != 200 || !strings.Contains(response.Body.String(), "backup-ok") {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			if badCalls.Load() != 1 || goodCalls.Load() != 5 || backupCalls.Load() != 0 {
+				t.Fatalf("one cooled key: bad=%d good=%d backup=%d", badCalls.Load(), goodCalls.Load(), backupCalls.Load())
+			}
+			allFailed.Store(true)
+			for range 2 {
+				response := httptest.NewRecorder()
+				ChatCompletionsHandler(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+				if response.Code != 200 || !strings.Contains(response.Body.String(), "backup-ok") {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			if badCalls.Load() != 1 || goodCalls.Load() != 6 || backupCalls.Load() != 2 {
+				t.Fatalf("all keys cooled: bad=%d good=%d backup=%d", badCalls.Load(), goodCalls.Load(), backupCalls.Load())
+			}
+		})
+	}
+}
+
+func TestModelFailoverUsesOriginalUpstreamFailure(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"code":"model_not_found","message":"The request was rejected"}`)
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeRoutingSuccess(w, UpstreamAnthropic, false)
+	}))
+	defer backup.Close()
+	installFailoverConfig(t, primary, backup, UpstreamOpenAI, UpstreamAnthropic, config.ModelRoutingConfig{})
+	response := httptest.NewRecorder()
+	request := `{"model":"alias","max_tokens":64,"messages":[]}`
+	ClaudeMessagesHandler(response, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(request)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "backup-ok") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestModelFailoverOnEmptyNonStreamBody(t *testing.T) {
+	for _, client := range []UpstreamType{UpstreamOpenAI, UpstreamAnthropic, UpstreamResponses} {
+		t.Run(string(client), func(t *testing.T) {
+			var primaryCalls, backupCalls atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer primary.Close()
+			backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupCalls.Add(1)
+				writeRoutingSuccess(w, UpstreamOpenAI, false)
+			}))
+			defer backup.Close()
+			installFailoverConfig(t, primary, backup, UpstreamOpenAI, UpstreamOpenAI, config.ModelRoutingConfig{})
+			path, handler := "/v1/chat/completions", ChatCompletionsHandler
+			body := `{"model":"alias","messages":[]}`
+			if client == UpstreamAnthropic {
+				path, handler = "/v1/messages", ClaudeMessagesHandler
+				body = `{"model":"alias","max_tokens":64,"messages":[]}`
+			} else if client == UpstreamResponses {
+				path, handler = "/v1/responses", ResponsesHandler
+				body = `{"model":"alias","input":"hello"}`
+			}
+			response := httptest.NewRecorder()
+			stats.TrackRequest(handler)(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "backup-ok") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
+				t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+			}
+		})
+	}
+}
+
+func TestModelFailoverOnStreamWithoutEvents(t *testing.T) {
+	for _, primaryType := range []UpstreamType{UpstreamOpenAI, UpstreamAnthropic, UpstreamResponses} {
+		t.Run(string(primaryType), func(t *testing.T) {
+			var primaryCalls, backupCalls atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				// A 200 stream that contains no SSE events must not be committed
+				// to the client; routing should move to the backup target.
+				_, _ = io.WriteString(w, "\n\n")
+			}))
+			defer primary.Close()
+			backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupCalls.Add(1)
+				writeRoutingSuccess(w, UpstreamAnthropic, true)
+			}))
+			defer backup.Close()
+			installFailoverConfig(t, primary, backup, primaryType, UpstreamAnthropic, config.ModelRoutingConfig{})
+			response := httptest.NewRecorder()
+			ClaudeMessagesHandler(response, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"alias","stream":true,"max_tokens":64,"messages":[]}`)))
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "backup-ok") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
+				t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+			}
+		})
+	}
+}
+
 func TestModelFailoverExhaustionAndCancellation(t *testing.T) {
 	var calls atomic.Int32
 	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -248,6 +389,47 @@ func TestModelFailoverAfterCommittedStreamUsesCooldownForNextRequest(t *testing.
 	}
 	if primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
 		t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+}
+
+func TestModelCooldownAfterMalformedStream(t *testing.T) {
+	var primaryCalls, backupCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "malformed stream")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backupCalls.Add(1)
+		writeRoutingSuccess(w, UpstreamOpenAI, true)
+	}))
+	defer backup.Close()
+	cfg := installFailoverConfig(t, primary, backup, UpstreamOpenAI, UpstreamOpenAI, config.ModelRoutingConfig{FailureThreshold: 1})
+	cfg.Upstreams["primary"].APIKey = "primary-key"
+	config.ApplyConfig(cfg)
+	handler := stats.TrackRequest(ChatCompletionsHandler)
+	for range 2 {
+		response := httptest.NewRecorder()
+		request := `{"model":"alias","stream":true,"messages":[]}`
+		handler(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(request)))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "backup-ok") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body)
+		}
+	}
+	if primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
+		t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+	usage, err := stats.ListUsageRecords(stats.UsageQuery{Limit: 10})
+	if err != nil || len(usage.Items) != 2 {
+		t.Fatalf("usage=%#v err=%v", usage, err)
+	}
+	for _, item := range usage.Items {
+		if item.UpstreamName != "backup" || item.UpstreamKeyIndex != 0 || item.UpstreamKeyTotal != 0 {
+			t.Errorf("usage inherited a key slot from the failed target: %#v", item)
+		}
 	}
 }
 
