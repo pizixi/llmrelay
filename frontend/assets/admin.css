@@ -7953,6 +7953,48 @@ header {
   color: var(--accent);
 }
 
+.usage-number {
+  min-inline-size: 24px;
+  min-block-size: 24px;
+  padding: 0 1px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline dotted var(--border-strong);
+  text-underline-offset: 3px;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.usage-number:hover,
+.usage-number:focus-visible {
+  text-decoration-color: currentColor;
+}
+
+.usage-number:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.usage-number-tooltip {
+  position: fixed;
+  z-index: 250;
+  inline-size: max-content;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font: 600 12px/1.4 var(--mono);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
 .usage-table-scroll {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -8321,6 +8363,13 @@ header {
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.usage-page-range .usage-number {
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 .usage-pagination-actions {

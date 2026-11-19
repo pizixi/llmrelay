@@ -146,9 +146,11 @@ function activateAdminTab(tabName, options) {
     panel.hidden = !active;
     panel.classList.toggle("is-active", active);
   });
-	if (activeName === "usage" && typeof loadUsageRecords === "function") {
-		loadUsageRecords();
-	}
+  if (activeName === "usage" && typeof loadUsageRecords === "function") {
+    loadUsageRecords();
+  } else {
+    hideUsageNumberTooltip();
+  }
   if (typeof syncLogStreamWithTab === "function") syncLogStreamWithTab(activeName === "logs");
 
   try {
@@ -7826,19 +7828,8 @@ async function loadUsageRecords(offset) {
       loadUsageRecords(0);
       return;
     }
-    const summary = page.summary || {};
     const start = usageTotal ? usagePageOffset + 1 : 0;
-    usageSummarySnapshot = {
-      request_count: summary.request_count,
-      prompt_tokens: summary.prompt_tokens,
-      cached_tokens: summary.cached_tokens,
-      completion_tokens: summary.completion_tokens,
-      total_tokens: summary.total_tokens,
-      usageTotal: usageTotal,
-      start: start,
-      end: Math.min(usagePageOffset + items.length, usageTotal),
-    };
-    renderUsageSummary();
+    renderUsageSummary(page.summary || {}, usageTotal, start, Math.min(usagePageOffset + items.length, usageTotal));
     updateUsagePagination();
     updatePageFilters("usage", usageTotal);
   } catch (e) {
@@ -7846,16 +7837,6 @@ async function loadUsageRecords(offset) {
     if (String(e.message || "").indexOf("登录已失效") !== -1) return;
     usageRecords = [];
     tbody.innerHTML = emptyRowHtml(5, ICONS.alert, "加载失败", e.message || "请稍后重试");
-    usageSummarySnapshot = {
-      request_count: 0,
-      prompt_tokens: 0,
-      cached_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      usageTotal: 0,
-      start: 0,
-      end: 0,
-    };
     renderUsageSummary();
     updateUsagePagination();
   } finally {
@@ -7905,8 +7886,6 @@ function fmt(n) {
   return (n == null ? 0 : n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-let usageSummarySnapshot = null;
-
 function fmtCompact(n) {
   const value = Number(n) || 0;
   const abs = Math.abs(value);
@@ -7933,55 +7912,124 @@ function fmtCompact(n) {
   return fmt(value);
 }
 
-function setUsageSummaryNumber(id, value, compact) {
+function setUsageSummaryValue(id, compact, full, label) {
   const el = document.getElementById(id);
   if (!el) return;
-  const full = fmt(value);
-  el.textContent = compact ? fmtCompact(value) : full;
-  el.title = full;
-  if (el.parentElement) el.parentElement.title = full;
-}
 
-function paintUsageSummary(compact) {
-  const snapshot = usageSummarySnapshot;
-  if (!snapshot) return;
-  setUsageSummaryNumber("usageSummaryRequests", snapshot.request_count, compact);
-  setUsageSummaryNumber("usageSummaryPrompt", snapshot.prompt_tokens, compact);
-  setUsageSummaryNumber("usageSummaryCached", snapshot.cached_tokens, compact);
-  setUsageSummaryNumber("usageSummaryCompletion", snapshot.completion_tokens, compact);
-  setUsageSummaryNumber("usageSummaryTotal", snapshot.total_tokens, compact);
-  const rangeEl = document.getElementById("usageSummary");
-  if (!rangeEl) return;
-  const full =
-    "共 " + fmt(snapshot.usageTotal) + " 条 · " + fmt(snapshot.start) + "–" + fmt(snapshot.end);
-  rangeEl.textContent = compact
-    ? "共 " + fmtCompact(snapshot.usageTotal) + " 条 · " + fmtCompact(snapshot.start) + "–" + fmtCompact(snapshot.end)
-    : full;
-  rangeEl.title = full;
-}
-
-function usageSummaryItemsOverflow() {
-  const items = document.querySelector(".usage-filter-summary-items");
-  if (!items) return false;
-  if (items.scrollWidth > items.clientWidth + 1) return true;
-  const children = items.children;
-  if (children.length < 2) return false;
-  const firstTop = children[0].offsetTop;
-  for (let i = 1; i < children.length; i++) {
-    if (Math.abs(children[i].offsetTop - firstTop) > 1) return true;
+  let button = el.firstElementChild;
+  if (compact === full) {
+    if (button && button === activeUsageNumber) hideUsageNumberTooltip();
+    if (button || el.textContent !== full) el.textContent = full;
+    return;
   }
-  return false;
+
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "usage-number";
+    el.replaceChildren(button);
+  }
+  if (button.textContent !== compact) button.textContent = compact;
+  if (button.dataset.usageFull !== full) {
+    button.dataset.usageFull = full;
+    button.setAttribute("aria-label", label ? label + " " + full : full);
+  }
 }
 
-function renderUsageSummary() {
-  if (!usageSummarySnapshot) return;
-  // 先按完整数字布局，放不下时再切换为紧凑数字，保证底部统计始终一行显示。
-  paintUsageSummary(false);
-  const measure = () => {
-    if (usageSummarySnapshot && usageSummaryItemsOverflow()) paintUsageSummary(true);
-  };
-  if (typeof requestAnimationFrame === "function") requestAnimationFrame(measure);
-  else measure();
+function setUsageSummaryNumber(id, value, label) {
+  setUsageSummaryValue(id, fmtCompact(value), fmt(value), label);
+}
+
+function renderUsageSummary(summary = {}, total = 0, start = 0, end = 0) {
+  setUsageSummaryNumber("usageSummaryRequests", summary.request_count, "请求次数");
+  setUsageSummaryNumber("usageSummaryPrompt", summary.prompt_tokens, "输入 Token");
+  setUsageSummaryNumber("usageSummaryCached", summary.cached_tokens, "缓存 Token");
+  setUsageSummaryNumber("usageSummaryCompletion", summary.completion_tokens, "输出 Token");
+  setUsageSummaryNumber("usageSummaryTotal", summary.total_tokens, "合计 Token");
+  const formatRange = (format) => `共 ${format(total)} 条 · ${format(start)}–${format(end)}`;
+  setUsageSummaryValue("usageSummary", formatRange(fmtCompact), formatRange(fmt));
+  if (activeUsageNumber) showUsageNumberTooltip(activeUsageNumber, usageNumberPinned);
+}
+
+let activeUsageNumber = null;
+let usageNumberPinned = false;
+
+function hideUsageNumberTooltip() {
+  if (!activeUsageNumber) return;
+  document.getElementById("usageNumberTooltip").hidden = true;
+  activeUsageNumber = null;
+  usageNumberPinned = false;
+}
+
+function showUsageNumberTooltip(button, pinned = false) {
+  const tooltip = document.getElementById("usageNumberTooltip");
+  if (!tooltip) return;
+  activeUsageNumber = button;
+  usageNumberPinned = pinned;
+  const full = button.dataset.usageFull;
+  if (tooltip.textContent !== full) tooltip.textContent = full;
+  tooltip.hidden = false;
+
+  const edge = 8;
+  const gap = 6;
+  const viewport = window.visualViewport;
+  const width = viewport?.width ?? window.innerWidth;
+  const height = viewport?.height ?? window.innerHeight;
+  const leftEdge = (viewport?.offsetLeft ?? 0) + edge;
+  const topEdge = (viewport?.offsetTop ?? 0) + edge;
+  const availableWidth = Math.max(0, width - 2 * edge);
+  tooltip.style.maxWidth = availableWidth + "px";
+
+  const anchor = button.getBoundingClientRect();
+  const detail = tooltip.getBoundingClientRect();
+  const left = anchor.left + (anchor.width - detail.width) / 2;
+  const above = anchor.top - detail.height - gap;
+  const top = above >= topEdge ? above : anchor.bottom + gap;
+  const maxLeft = leftEdge + availableWidth - detail.width;
+  const maxTop = topEdge + height - 2 * edge - detail.height;
+  tooltip.style.left = Math.max(leftEdge, Math.min(left, maxLeft)) + "px";
+  tooltip.style.top = Math.max(topEdge, Math.min(top, maxTop)) + "px";
+}
+
+function bindUsageNumberTooltip() {
+  const footer = document.querySelector("#tab-usage .usage-pagination");
+  if (!footer) return;
+  const findNumber = (target) => target?.closest?.(".usage-number");
+
+  footer.addEventListener("pointerover", (event) => {
+    if (event.pointerType === "touch") return;
+    const button = findNumber(event.target);
+    if (button && button !== activeUsageNumber) showUsageNumberTooltip(button);
+  });
+  footer.addEventListener("pointerout", (event) => {
+    if (event.pointerType === "touch") return;
+    const button = findNumber(event.target);
+    if (!button || button !== activeUsageNumber || usageNumberPinned) return;
+    if (!button.matches(":focus-visible") && findNumber(event.relatedTarget) !== button) hideUsageNumberTooltip();
+  });
+  footer.addEventListener("focusin", (event) => {
+    const button = findNumber(event.target);
+    if (button?.matches(":focus-visible") && button !== activeUsageNumber) showUsageNumberTooltip(button);
+  });
+  footer.addEventListener("focusout", (event) => {
+    if (event.target === activeUsageNumber) hideUsageNumberTooltip();
+  });
+  footer.addEventListener("click", (event) => {
+    const button = findNumber(event.target);
+    if (!button) return;
+    if (button === activeUsageNumber && usageNumberPinned) hideUsageNumberTooltip();
+    else showUsageNumberTooltip(button, true);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (activeUsageNumber && findNumber(event.target) !== activeUsageNumber) hideUsageNumberTooltip();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideUsageNumberTooltip();
+  });
+  document.addEventListener("scroll", hideUsageNumberTooltip, { capture: true, passive: true });
+  window.addEventListener("resize", hideUsageNumberTooltip);
+  window.visualViewport?.addEventListener("resize", hideUsageNumberTooltip);
+  window.visualViewport?.addEventListener("scroll", hideUsageNumberTooltip);
 }
 
 /* ===== 实时日志 ===== */
@@ -8162,6 +8210,7 @@ function syncLogStreamWithTab(active) {
 /* ===== 初始化 ===== */
 function initAdminPage() {
   initAdminTabs();
+  bindUsageNumberTooltip();
   enhanceFilterInputs(document);
   new MutationObserver((mutations) => {
     mutations.forEach((mutation) => mutation.addedNodes.forEach((node) => {
@@ -8181,12 +8230,6 @@ function initAdminPage() {
     baseURL.addEventListener("input", fitWebSearchBaseURLWidth);
     baseURL.addEventListener("change", fitWebSearchBaseURLWidth);
   }
-  let usageSummaryResizeTimer = null;
-  window.addEventListener("resize", () => {
-    if (!usageSummarySnapshot) return;
-    if (usageSummaryResizeTimer) clearTimeout(usageSummaryResizeTimer);
-    usageSummaryResizeTimer = setTimeout(renderUsageSummary, 80);
-  });
   loadConfig();
   loadAPIKeys();
   loadStats();

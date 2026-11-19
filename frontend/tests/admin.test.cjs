@@ -523,19 +523,20 @@ test("使用记录行包含密钥序号、路由与性能指标", () => {
     upstream_model: "claude-sonnet-4-5-20250929",
     upstream_key_index: 1,
     upstream_key_total: 4,
-    prompt_tokens: 12,
+    prompt_tokens: 12345,
     cached_tokens: 3,
-    completion_tokens: 4,
-    total_tokens: 16,
+    completion_tokens: 4321,
+    total_tokens: 16666,
     first_byte_ms: 420,
     duration_ms: 1200,
   });
   assert.match(html, /usage-key-slot/);
   assert.match(html, /<b>1\/4</);
-  assert.match(html, /usage-metric is-total/);
+  assert.match(html, /usage-metric is-total"><em>合计<\/em><b>16,666<\/b>/);
+  assert.match(html, /usage-metric is-prompt"><em>输入<\/em><b>12,345<\/b>/);
 });
 
-test("底部统计在空间不足时使用紧凑数字并保留完整值提示", () => {
+test("底部汇总使用 k、M、B 和 T 简写", () => {
   assert.equal(admin.fmtCompact(0), "0");
   assert.equal(admin.fmtCompact(999), "999");
   assert.equal(admin.fmtCompact(1000), "1k");
@@ -544,4 +545,40 @@ test("底部统计在空间不足时使用紧凑数字并保留完整值提示",
   assert.equal(admin.fmtCompact(999999), "1M");
   assert.equal(admin.fmtCompact(1234567), "1.2M");
   assert.equal(admin.fmtCompact(3400000000), "3.4B");
+  assert.equal(admin.fmtCompact(1200000000000), "1.2T");
+});
+
+test("底部汇总在渲染时保留完整数字和记录范围", (t) => {
+  const previousDocument = admin.document;
+  t.after(() => { admin.document = previousDocument; });
+  const elements = new Map();
+  admin.document = {
+    getElementById(id) {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          firstElementChild: null,
+          replaceChildren(child) { this.firstElementChild = child; },
+        });
+      }
+      return elements.get(id);
+    },
+    createElement() {
+      return {
+        dataset: {},
+        setAttribute(name, value) { this[name] = value; },
+      };
+    },
+  };
+
+  admin.renderUsageSummary({ request_count: 12345, cached_tokens: 18, total_tokens: 3400000500 }, 50051, 1051, 1100);
+  const requests = elements.get("usageSummaryRequests").firstElementChild;
+  assert.equal(requests.textContent, "12.3k");
+  assert.equal(requests.dataset.usageFull, "12,345");
+  assert.equal(requests["aria-label"], "请求次数 12,345");
+  assert.equal(elements.get("usageSummaryCached").textContent, "18");
+  assert.equal(elements.get("usageSummaryCached").firstElementChild, null);
+  assert.equal(elements.get("usageSummaryTotal").firstElementChild.textContent, "3.4B");
+  const range = elements.get("usageSummary").firstElementChild;
+  assert.equal(range.textContent, "共 50.1k 条 · 1.1k–1.1k");
+  assert.equal(range.dataset.usageFull, "共 50,051 条 · 1,051–1,100");
 });
